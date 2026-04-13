@@ -34,6 +34,7 @@ const state = {
   profile: null,
   unsubscribers: [],
   selectedWeekStart: getMondayDate(new Date()),
+  workerUnsub: null,
 };
 
 const els = {
@@ -82,12 +83,15 @@ const els = {
 init();
 
 function init() {
+  injectWorkerHistoryUi();
   wireEvents();
 
   const storedWorkerName = localStorage.getItem('workerPunchName') || '';
   if (storedWorkerName) {
-    els.workerNameInput.value = storedWorkerName;
-    els.workerNameValue.textContent = storedWorkerName;
+    const pretty = prettifyHumanName(storedWorkerName);
+    els.workerNameInput.value = pretty;
+    els.workerNameValue.textContent = pretty;
+    attachWorkerLiveView(pretty);
   }
 
   els.weekPicker.value = formatDateInput(state.selectedWeekStart);
@@ -130,6 +134,29 @@ function init() {
   });
 }
 
+function injectWorkerHistoryUi() {
+  const workerCard = document.getElementById('workerCard');
+  if (!workerCard || document.getElementById('workerHistoryBody')) return;
+
+  const historyWrap = document.createElement('div');
+  historyWrap.className = 'mini-table-wrap';
+  historyWrap.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Date/Time</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="workerHistoryBody">
+        <tr><td colspan="2">No punches yet.</td></tr>
+      </tbody>
+    </table>
+  `;
+
+  workerCard.appendChild(historyWrap);
+}
+
 function wireEvents() {
   document.querySelectorAll('.worker-action-btn').forEach((btn) => {
     btn.addEventListener('click', () => handleWorkerPunch(btn.dataset.action));
@@ -138,8 +165,10 @@ function wireEvents() {
   els.workerNameInput.addEventListener('input', () => {
     const value = prettifyHumanName(els.workerNameInput.value.trim());
     els.workerNameValue.textContent = value || '-';
+
     if (value) {
       localStorage.setItem('workerPunchName', value);
+      attachWorkerLiveView(value);
     }
   });
 
@@ -211,13 +240,80 @@ async function handleWorkerPunch(action) {
     els.workerLastActionValue.textContent = prettyAction(action);
     els.workerLastPunchValue.textContent = formatDateTime(nowMs);
     els.workerStatusValue.textContent = statusLabelForAction(action);
-    els.workerStatusMessage.textContent = `${prettyAction(action)} saved for ${name} at ${formatTime(nowMs)}.`;
+    els.workerStatusMessage.textContent = `${prettyAction(action)} saved for ${name} at ${formatDateTime(nowMs)}.`;
 
+    attachWorkerLiveView(name);
     toast(`${prettyAction(action)} saved.`);
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not save punch.', true);
   }
+}
+
+function attachWorkerLiveView(name) {
+  if (state.workerUnsub) {
+    try { state.workerUnsub(); } catch (_) {}
+    state.workerUnsub = null;
+  }
+
+  const nameKey = normalizeName(name);
+  if (!nameKey) return;
+
+  const todayKey = formatDateKey(new Date());
+  const workerHistoryBody = document.getElementById('workerHistoryBody');
+
+  const q = query(
+    collection(db, 'punches'),
+    where('nameKey', '==', nameKey),
+    where('dateKey', '==', todayKey),
+    orderBy('timestampMs', 'desc'),
+    limit(20)
+  );
+
+  state.workerUnsub = onSnapshot(q, (snap) => {
+    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    if (!rows.length) {
+      els.workerLastActionValue.textContent = '-';
+      els.workerLastPunchValue.textContent = '-';
+      els.workerStatusValue.textContent = 'Ready';
+      els.workerStatusMessage.textContent = 'Enter your name and punch.';
+      if (workerHistoryBody) {
+        workerHistoryBody.innerHTML = '<tr><td colspan="2">No punches yet.</td></tr>';
+      }
+      return;
+    }
+
+    const last = rows[0];
+    els.workerLastActionValue.textContent = prettyAction(last.action);
+    els.workerLastPunchValue.textContent = formatDateTime(last.timestampMs);
+    els.workerStatusValue.textContent = statusLabelForAction(last.action);
+
+    const clockedInAt = findLatestClockInTime(rows);
+    els.workerStatusMessage.textContent = clockedInAt
+      ? `${statusLabelForAction(last.action)}. Clocked in at ${formatDateTime(clockedInAt)}.`
+      : `${statusLabelForAction(last.action)} at ${formatDateTime(last.timestampMs)}.`;
+
+    if (workerHistoryBody) {
+      workerHistoryBody.innerHTML = rows.map((row) => `
+        <tr>
+          <td>${formatDateTime(row.timestampMs)}</td>
+          <td>${prettyAction(row.action)}</td>
+        </tr>
+      `).join('');
+    }
+  }, (error) => {
+    console.error(error);
+    toast(error.message || 'Could not load worker punches.', true);
+  });
+}
+
+function findLatestClockInTime(rows) {
+  const sorted = [...rows].sort((a, b) => (b.timestampMs || 0) - (a.timestampMs || 0));
+  for (const row of sorted) {
+    if (row.action === 'clock_in') return row.timestampMs || 0;
+  }
+  return 0;
 }
 
 async function handleLogin(event) {
@@ -604,13 +700,8 @@ async function handleSaveProfile(event) {
 
 function clearLiveListeners() {
   state.unsubscribers.forEach((unsub) => {
-    try {
-      unsub();
-    } catch (_) {
-      // ignore cleanup errors
-    }
+    try { unsub(); } catch (_) {}
   });
-
   state.unsubscribers = [];
 }
 
