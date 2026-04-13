@@ -20,28 +20,30 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if signedIn() && (request.auth.uid == userId || isManager());
-      allow create, update: if signedIn() && (isAdmin() || request.auth.uid == userId);
+      allow create, update: if isAdmin();
       allow delete: if isAdmin();
     }
 
     match /punches/{punchId} {
-      allow read: if signedIn() && (isManager() || resource.data.uid == request.auth.uid);
-      allow create: if signedIn() && (
-        isManager() ||
-        request.resource.data.uid == request.auth.uid
-      );
+      allow create: if
+        request.resource.data.name is string &&
+        request.resource.data.name.size() >= 2 &&
+        request.resource.data.name.size() <= 80 &&
+        request.resource.data.nameKey is string &&
+        request.resource.data.nameKey.size() >= 2 &&
+        request.resource.data.action in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out'] &&
+        request.resource.data.dateKey is string &&
+        request.resource.data.weekKey is string &&
+        request.resource.data.timestampMs is number &&
+        request.resource.data.source == 'public_qr';
+
+      allow read: if isManager();
       allow update, delete: if isManager();
     }
 
     match /timesheets/{timesheetId} {
-      allow read: if signedIn() && (isManager() || resource.data.uid == request.auth.uid);
-      allow create, update: if signedIn() && (
-        isManager() ||
-        (
-          request.resource.data.uid == request.auth.uid &&
-          request.resource.data.status != 'signed'
-        )
-      );
+      allow read: if isManager();
+      allow create, update: if isManager();
       allow delete: if isAdmin();
     }
   }
