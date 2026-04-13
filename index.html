@@ -8,7 +8,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css" />
-  <script src="https://unpkg.com/html5-qrcode" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
   <script type="module" src="app.js"></script>
 </head>
@@ -29,26 +28,56 @@
   </header>
 
   <main class="shell">
-    <section id="noticeCard" class="card notice-card">
+    <section class="card notice-card">
       <h2>Setup order</h2>
       <ol>
         <li>Add your Firebase config in <code>firebase-config.js</code>.</li>
-        <li>Create users in Firebase Authentication.</li>
-        <li>Create matching Firestore docs in <code>users</code> with each person’s role.</li>
+        <li>Create manager/admin users in Firebase Authentication.</li>
+        <li>Create matching Firestore docs in <code>users</code> for managers/admins.</li>
         <li>Deploy on Firebase Hosting and print the company QR poster.</li>
       </ol>
     </section>
 
+    <section id="workerCard" class="card">
+      <div class="card-head">
+        <h2>Worker Punch</h2>
+        <p>Scan the shared QR code, type your name, then tap the action you need.</p>
+      </div>
+
+      <div class="stack gap16">
+        <label>
+          <span>Your name</span>
+          <input id="workerNameInput" type="text" placeholder="First and last name" />
+        </label>
+
+        <div class="button-grid">
+          <button class="primary-btn worker-action-btn" data-action="clock_in" type="button">Clock In</button>
+          <button class="secondary-btn worker-action-btn" data-action="start_lunch" type="button">Start Lunch</button>
+          <button class="secondary-btn worker-action-btn" data-action="end_lunch" type="button">End Lunch</button>
+          <button class="danger-btn worker-action-btn" data-action="clock_out" type="button">Clock Out</button>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card"><span>Entered name</span><strong id="workerNameValue">-</strong></div>
+          <div class="stat-card"><span>Last action</span><strong id="workerLastActionValue">-</strong></div>
+          <div class="stat-card"><span>Last punch</span><strong id="workerLastPunchValue">-</strong></div>
+          <div class="stat-card"><span>Status</span><strong id="workerStatusValue">Ready</strong></div>
+        </div>
+
+        <div id="workerStatusMessage" class="status-box">Enter your name and punch.</div>
+      </div>
+    </section>
+
     <section id="authCard" class="card auth-card">
       <div class="card-head">
-        <h2>Sign in</h2>
-        <p>Employees and managers use the same login. Role controls what they can see.</p>
+        <h2>Manager Sign In</h2>
+        <p>Managers and admins use email/password to view live punches and sign weekly timesheets.</p>
       </div>
 
       <form id="loginForm" class="grid-form">
         <label>
           <span>Email</span>
-          <input id="emailInput" type="email" placeholder="you@company.com" required />
+          <input id="emailInput" type="email" placeholder="manager@company.com" required />
         </label>
         <label>
           <span>Password</span>
@@ -59,88 +88,22 @@
           <button id="resetPasswordBtn" class="secondary-btn" type="button">Send reset email</button>
         </div>
       </form>
-      <p class="tiny">Want ultra-fast punching? Print employee QR badges and let the app fill their employee code automatically.</p>
     </section>
 
     <section id="appShell" class="hidden">
       <nav class="tabs" id="tabBar">
-        <button class="tab active" data-tab="employeeTab" type="button">Employee Punch</button>
-        <button class="tab hidden" data-tab="managerTab" type="button" id="managerTabBtn">Manager Live</button>
-        <button class="tab hidden" data-tab="timesheetsTab" type="button" id="timesheetsTabBtn">Weekly Signoff</button>
+        <button class="tab active" data-tab="managerTab" type="button" id="managerTabBtn">Manager Live</button>
+        <button class="tab" data-tab="timesheetsTab" type="button" id="timesheetsTabBtn">Weekly Signoff</button>
         <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
         <button class="tab" data-tab="qrTab" type="button">QR Tools</button>
       </nav>
 
-      <section id="employeeTab" class="tab-panel">
-        <div class="panel-grid two-up">
-          <article class="card">
-            <div class="card-head">
-              <h2>Punch actions</h2>
-              <p>Scan badge QR or type employee code. Every punch is saved to Firestore instantly.</p>
-            </div>
-
-            <div class="stack gap16">
-              <label>
-                <span>Employee code</span>
-                <div class="inline-field">
-                  <input id="employeeCodeInput" type="text" placeholder="EMP-1001" />
-                  <button id="fillMyCodeBtn" class="secondary-btn" type="button">Use mine</button>
-                </div>
-              </label>
-
-              <div class="inline-actions wrap">
-                <button id="openScannerBtn" class="secondary-btn" type="button">Scan badge QR</button>
-                <button id="stopScannerBtn" class="ghost-btn hidden" type="button">Stop scanner</button>
-              </div>
-              <div id="scannerWrap" class="scanner-wrap hidden">
-                <div id="reader"></div>
-              </div>
-
-              <div class="button-grid">
-                <button class="primary-btn action-btn" data-action="clock_in" type="button">Clock In</button>
-                <button class="secondary-btn action-btn" data-action="start_lunch" type="button">Start Lunch</button>
-                <button class="secondary-btn action-btn" data-action="end_lunch" type="button">End Lunch</button>
-                <button class="danger-btn action-btn" data-action="clock_out" type="button">Clock Out</button>
-              </div>
-            </div>
-          </article>
-
-          <article class="card">
-            <div class="card-head">
-              <h2>Today</h2>
-              <p>Quick feedback so employees know the punch saved.</p>
-            </div>
-            <div class="stats-grid">
-              <div class="stat-card"><span>Last action</span><strong id="lastActionValue">-</strong></div>
-              <div class="stat-card"><span>Last punch</span><strong id="lastPunchValue">-</strong></div>
-              <div class="stat-card"><span>Status</span><strong id="statusValue">-</strong></div>
-              <div class="stat-card"><span>Week total</span><strong id="weekHoursValue">0.00 hrs</strong></div>
-            </div>
-            <div id="employeeStatusMessage" class="status-box">Waiting for a punch.</div>
-            <div class="mini-table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Action</th>
-                    <th>By</th>
-                  </tr>
-                </thead>
-                <tbody id="myPunchesBody">
-                  <tr><td colspan="3">No punches yet.</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section id="managerTab" class="tab-panel hidden">
+      <section id="managerTab" class="tab-panel">
         <div class="panel-grid two-up">
           <article class="card">
             <div class="card-head">
               <h2>Live punch feed</h2>
-              <p>This updates automatically as employees punch from their phones.</p>
+              <p>This updates automatically as workers punch from their phones.</p>
             </div>
             <div class="mini-table-wrap tall">
               <table>
@@ -148,8 +111,8 @@
                   <tr>
                     <th>Time</th>
                     <th>Name</th>
-                    <th>Code</th>
                     <th>Action</th>
+                    <th>Source</th>
                   </tr>
                 </thead>
                 <tbody id="livePunchBody">
@@ -162,7 +125,7 @@
           <article class="card">
             <div class="card-head">
               <h2>Who is clocked in right now</h2>
-              <p>Derived from the latest punch for each employee.</p>
+              <p>Derived from the latest punch for each person.</p>
             </div>
             <div id="activeNowList" class="list-stack empty-state">Nobody is currently clocked in.</div>
           </article>
@@ -186,8 +149,7 @@
             <table>
               <thead>
                 <tr>
-                  <th>Employee</th>
-                  <th>Code</th>
+                  <th>Name</th>
                   <th>Week</th>
                   <th>Hours</th>
                   <th>Status</th>
@@ -196,7 +158,7 @@
                 </tr>
               </thead>
               <tbody id="timesheetBody">
-                <tr><td colspan="7">No timesheets yet.</td></tr>
+                <tr><td colspan="6">No timesheets yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -207,7 +169,7 @@
         <div class="panel-grid two-up">
           <article class="card">
             <div class="card-head">
-              <h2>Create or update user profile</h2>
+              <h2>Create or update manager/admin profile</h2>
               <p>This writes to Firestore. The person still needs a Firebase Auth account.</p>
             </div>
             <form id="userProfileForm" class="grid-form">
@@ -221,16 +183,11 @@
               </label>
               <label>
                 <span>Email</span>
-                <input id="userEmailInput" type="email" placeholder="worker@company.com" required />
-              </label>
-              <label>
-                <span>Employee code</span>
-                <input id="userEmployeeCodeInput" type="text" placeholder="EMP-1001" required />
+                <input id="userEmailInput" type="email" placeholder="manager@company.com" required />
               </label>
               <label>
                 <span>Role</span>
                 <select id="userRoleInput">
-                  <option value="employee">Employee</option>
                   <option value="manager">Manager</option>
                   <option value="admin">Admin</option>
                 </select>
@@ -250,8 +207,8 @@
 
           <article class="card">
             <div class="card-head">
-              <h2>User list</h2>
-              <p>Quick reference for roles and employee codes.</p>
+              <h2>Manager/Admin list</h2>
+              <p>Quick reference for people with dashboard access.</p>
             </div>
             <div class="mini-table-wrap tall">
               <table>
@@ -259,13 +216,12 @@
                   <tr>
                     <th>Name</th>
                     <th>Email</th>
-                    <th>Code</th>
                     <th>Role</th>
                     <th>Active</th>
                   </tr>
                 </thead>
                 <tbody id="userListBody">
-                  <tr><td colspan="5">No users yet.</td></tr>
+                  <tr><td colspan="4">No users yet.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -274,11 +230,11 @@
       </section>
 
       <section id="qrTab" class="tab-panel hidden">
-        <div class="panel-grid two-up">
+        <div class="panel-grid one-up">
           <article class="card">
             <div class="card-head">
               <h2>Company QR poster</h2>
-              <p>Print this and place it in the breakroom or by the time clock area.</p>
+              <p>Print this and place it in the breakroom or time clock area. Workers scan it to open the punch page.</p>
             </div>
             <form id="companyQrForm" class="grid-form compact-form">
               <label>
@@ -291,30 +247,6 @@
             </form>
             <div class="qr-stage">
               <canvas id="companyQrCanvas"></canvas>
-            </div>
-          </article>
-
-          <article class="card">
-            <div class="card-head">
-              <h2>Employee badge QR</h2>
-              <p>Each badge QR encodes the employee code so the phone can fill it quickly.</p>
-            </div>
-            <form id="employeeQrForm" class="grid-form compact-form">
-              <label>
-                <span>Employee name</span>
-                <input id="badgeNameInput" type="text" placeholder="Brandon Evanshine" />
-              </label>
-              <label>
-                <span>Employee code</span>
-                <input id="badgeCodeInput" type="text" placeholder="EMP-1001" />
-              </label>
-              <div class="form-actions full-width">
-                <button class="primary-btn" type="submit">Generate badge QR</button>
-              </div>
-            </form>
-            <div class="qr-stage">
-              <canvas id="employeeQrCanvas"></canvas>
-              <p id="badgeLabel" class="tiny center-text"></p>
             </div>
           </article>
         </div>
