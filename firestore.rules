@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return signedIn() && myProfile().role == 'admin';
+    }
+
+    function isManager() {
+      return signedIn() && (myProfile().role == 'manager' || myProfile().role == 'admin');
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isManager());
+      allow create, update: if signedIn() && (isAdmin() || request.auth.uid == userId);
+      allow delete: if isAdmin();
+    }
+
+    match /punches/{punchId} {
+      allow read: if signedIn() && (isManager() || resource.data.uid == request.auth.uid);
+      allow create: if signedIn() && (
+        isManager() ||
+        request.resource.data.uid == request.auth.uid
+      );
+      allow update, delete: if isManager();
+    }
+
+    match /timesheets/{timesheetId} {
+      allow read: if signedIn() && (isManager() || resource.data.uid == request.auth.uid);
+      allow create, update: if signedIn() && (
+        isManager() ||
+        (
+          request.resource.data.uid == request.auth.uid &&
+          request.resource.data.status != 'signed'
+        )
+      );
+      allow delete: if isAdmin();
+    }
+  }
+}
