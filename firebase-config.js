@@ -9,5 +9,5 @@ export const firebaseConfig = {
 
 export const appSettings = {
   companyName: "Chadwell",
-  "defaultAppUrl: "https://qrtimeclock-42764.web.app""
+  defaultAppUrl: "https://qrtimeclock-42764.web.app"
 };
