@@ -1137,7 +1137,7 @@ function renderAgencyPreview() {
     <div id="agencyPrintableSheet" style="background:#fff;color:#111;border-radius:12px;padding:24px;min-height:200px;">
       <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:18px;">
         <div>
-          <h2 style="margin:0 0 8px;font-size:28px;">Temp Agency Weekly Time Sheet</h2>
+          <h2 style="margin:0 0 8px;font-size:28px;">Weekly Time Sheet</h2>
           <div style="font-size:15px;line-height:1.6;">
             <div><strong>Worker:</strong> ${escapeHtml(row.name)}</div>
             <div><strong>Week Start:</strong> ${escapeHtml(row.weekKey)}</div>
