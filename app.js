@@ -12,7 +12,6 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
   setDoc,
   addDoc,
   updateDoc,
@@ -89,6 +88,7 @@ init();
 async function init() {
   injectWorkerHistoryUi();
   injectManagerPunchEditorUi();
+  injectAgencyExportUi();
   wireEvents();
 
   const storedWorkerName = localStorage.getItem('workerPunchName') || '';
@@ -136,6 +136,7 @@ async function init() {
       attachManagerLiveViews();
       attachTimesheetView();
       attachManagerPunchEditor();
+      attachAgencyExportEvents();
 
       if (isAdmin()) {
         attachUsersView();
@@ -255,6 +256,61 @@ function injectManagerPunchEditorUi() {
   `;
 
   managerTab.appendChild(card);
+}
+
+function injectAgencyExportUi() {
+  const tabBar = document.getElementById('tabBar');
+  const qrTabPanel = document.getElementById('qrTab');
+  if (!tabBar || !qrTabPanel || document.getElementById('agencyTabBtn')) return;
+
+  const qrTabButton = [...tabBar.querySelectorAll('.tab')].find((btn) => btn.dataset.tab === 'qrTab');
+
+  const agencyBtn = document.createElement('button');
+  agencyBtn.className = 'tab';
+  agencyBtn.type = 'button';
+  agencyBtn.dataset.tab = 'agencyTab';
+  agencyBtn.id = 'agencyTabBtn';
+  agencyBtn.textContent = 'Agency Export';
+
+  if (qrTabButton) {
+    tabBar.insertBefore(agencyBtn, qrTabButton);
+  } else {
+    tabBar.appendChild(agencyBtn);
+  }
+
+  const agencySection = document.createElement('section');
+  agencySection.id = 'agencyTab';
+  agencySection.className = 'tab-panel hidden';
+  agencySection.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h2>Temp Agency Export</h2>
+        <p>Preview exactly what the agency will receive, then print or save it as a PDF.</p>
+      </div>
+
+      <div class="grid-form compact-form" style="margin-bottom:16px;">
+        <label>
+          <span>Worker</span>
+          <select id="agencyWorkerSelect">
+            <option value="">Select a worker</option>
+          </select>
+        </label>
+
+        <div class="form-actions full-width">
+          <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
+          <button id="agencyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
+        </div>
+      </div>
+
+      <div id="agencyPreviewWrap" class="mini-table-wrap">
+        <div id="agencyPreview" style="padding:18px;">
+          <div class="empty-state">Choose a worker and click Preview Sheet.</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  qrTabPanel.parentNode.insertBefore(agencySection, qrTabPanel);
 }
 
 async function handleWorkerPunch(action) {
@@ -427,6 +483,7 @@ function attachRoleViews() {
   els.managerTabBtn?.classList.remove('hidden');
   els.timesheetsTabBtn?.classList.remove('hidden');
   els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
+  document.getElementById('agencyTabBtn')?.classList.remove('hidden');
   switchTab('managerTab');
 }
 
@@ -667,6 +724,8 @@ function attachTimesheetView() {
       (snap) => {
         state.selectedWeekPunchRows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         renderDerivedTimesheets();
+        populateAgencyWorkerSelect();
+        renderAgencyPreview();
       },
       (error) => {
         console.error(error);
@@ -685,6 +744,7 @@ function attachTimesheetView() {
         });
         state.selectedWeekTimesheetDocs = map;
         renderDerivedTimesheets();
+        renderAgencyPreview();
       },
       (error) => {
         console.error(error);
@@ -697,41 +757,7 @@ function attachTimesheetView() {
 function renderDerivedTimesheets() {
   if (!els.timesheetBody) return;
 
-  const weekKey = formatDateKey(state.selectedWeekStart);
-  const grouped = new Map();
-
-  state.selectedWeekPunchRows.forEach((p) => {
-    const key = p.nameKey || normalizeName(p.name || '');
-    if (!key) return;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(p);
-  });
-
-  const rows = [];
-
-  grouped.forEach((personPunches, nameKey) => {
-    const displayName = personPunches[0]?.name || nameKey;
-    const totals = buildWeekTotals(personPunches);
-    const timesheetId = `${weekKey}_${nameKey}`;
-    const saved = state.selectedWeekTimesheetDocs[timesheetId] || null;
-
-    rows.push({
-      id: timesheetId,
-      name: displayName,
-      nameKey,
-      weekKey,
-      weeklyHours: totals.weeklyHours,
-      daysWorked: totals.daysWorked,
-      dailyTotals: totals.dailyTotals,
-      lastPunchAction: totals.lastAction,
-      lastPunchAtMs: totals.lastPunchAtMs,
-      status: saved?.status || 'open',
-      managerSignedBy: saved?.managerSignedBy || '',
-      managerSignedAt: saved?.managerSignedAt || null,
-    });
-  });
-
-  rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const rows = getDerivedTimesheetRows();
 
   if (!rows.length) {
     els.timesheetBody.innerHTML = '<tr><td colspan="6">No timesheets yet.</td></tr>';
@@ -768,6 +794,45 @@ function renderDerivedTimesheets() {
   els.timesheetBody.querySelectorAll('.reopen-btn').forEach((btn) => {
     btn.addEventListener('click', () => reopenTimesheet(btn.dataset.id));
   });
+}
+
+function getDerivedTimesheetRows() {
+  const weekKey = formatDateKey(state.selectedWeekStart);
+  const grouped = new Map();
+
+  state.selectedWeekPunchRows.forEach((p) => {
+    const key = p.nameKey || normalizeName(p.name || '');
+    if (!key) return;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(p);
+  });
+
+  const rows = [];
+
+  grouped.forEach((personPunches, nameKey) => {
+    const displayName = personPunches[0]?.name || nameKey;
+    const totals = buildWeekTotals(personPunches);
+    const timesheetId = `${weekKey}_${nameKey}`;
+    const saved = state.selectedWeekTimesheetDocs[timesheetId] || null;
+
+    rows.push({
+      id: timesheetId,
+      name: displayName,
+      nameKey,
+      weekKey,
+      weeklyHours: totals.weeklyHours,
+      daysWorked: totals.daysWorked,
+      dailyTotals: totals.dailyTotals,
+      lastPunchAction: totals.lastAction,
+      lastPunchAtMs: totals.lastPunchAtMs,
+      status: saved?.status || 'open',
+      managerSignedBy: saved?.managerSignedBy || '',
+      managerSignedAt: saved?.managerSignedAt || null,
+    });
+  });
+
+  rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  return rows;
 }
 
 async function signTimesheet(timesheetId) {
@@ -835,36 +900,8 @@ async function reopenTimesheet(timesheetId) {
 }
 
 function buildCurrentTimesheetRow(timesheetId, weekKey) {
-  const grouped = new Map();
-
-  state.selectedWeekPunchRows.forEach((p) => {
-    const key = p.nameKey || normalizeName(p.name || '');
-    if (!key) return;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(p);
-  });
-
-  for (const [nameKey, personPunches] of grouped.entries()) {
-    const id = `${weekKey}_${nameKey}`;
-    if (id !== timesheetId) continue;
-
-    const displayName = personPunches[0]?.name || nameKey;
-    const totals = buildWeekTotals(personPunches);
-
-    return {
-      id,
-      name: displayName,
-      nameKey,
-      weekKey,
-      dailyTotals: totals.dailyTotals,
-      weeklyHours: totals.weeklyHours,
-      daysWorked: totals.daysWorked,
-      lastPunchAction: totals.lastAction,
-      lastPunchAtMs: totals.lastPunchAtMs,
-    };
-  }
-
-  return null;
+  const rows = getDerivedTimesheetRows();
+  return rows.find((row) => row.id === timesheetId && row.weekKey === weekKey) || null;
 }
 
 function buildWeekTotals(punches) {
@@ -880,33 +917,63 @@ function buildWeekTotals(punches) {
     const dateKey = punch.dateKey || formatDateKey(new Date(timeMs));
 
     if (!byDay[dateKey]) {
-      byDay[dateKey] = { minutes: 0 };
+      byDay[dateKey] = {
+        clock_in: '',
+        start_lunch: '',
+        end_lunch: '',
+        clock_out: '',
+        minutes: 0
+      };
     }
 
     lastAction = punch.action;
     lastPunchAtMs = Math.max(lastPunchAtMs, timeMs);
 
-    if (punch.action === 'clock_in' || punch.action === 'end_lunch') {
+    if (punch.action === 'clock_in') {
+      byDay[dateKey].clock_in = formatTime(timeMs);
       currentIn = timeMs;
     }
 
-    if ((punch.action === 'start_lunch' || punch.action === 'clock_out') && currentIn) {
-      const diff = Math.max(0, Math.round((timeMs - currentIn) / 60000));
-      weeklyMinutes += diff;
-      byDay[dateKey].minutes += diff;
-      currentIn = null;
+    if (punch.action === 'start_lunch') {
+      byDay[dateKey].start_lunch = formatTime(timeMs);
+      if (currentIn) {
+        const diff = Math.max(0, Math.round((timeMs - currentIn) / 60000));
+        weeklyMinutes += diff;
+        byDay[dateKey].minutes += diff;
+        currentIn = null;
+      }
+    }
+
+    if (punch.action === 'end_lunch') {
+      byDay[dateKey].end_lunch = formatTime(timeMs);
+      currentIn = timeMs;
+    }
+
+    if (punch.action === 'clock_out') {
+      byDay[dateKey].clock_out = formatTime(timeMs);
+      if (currentIn) {
+        const diff = Math.max(0, Math.round((timeMs - currentIn) / 60000));
+        weeklyMinutes += diff;
+        byDay[dateKey].minutes += diff;
+        currentIn = null;
+      }
     }
   });
 
   const dailyTotals = Object.fromEntries(
     Object.entries(byDay).map(([dateKey, value]) => [
       dateKey,
-      Number((value.minutes / 60).toFixed(2))
+      {
+        clock_in: value.clock_in,
+        start_lunch: value.start_lunch,
+        end_lunch: value.end_lunch,
+        clock_out: value.clock_out,
+        hours: Number((value.minutes / 60).toFixed(2))
+      }
     ])
   );
 
-  const daysWorked = Object.values(dailyTotals).filter((hours) => Number(hours) > 0).length
-    || Object.keys(dailyTotals).length;
+  const daysWorked = Object.keys(dailyTotals).length;
 
   return {
     dailyTotals,
@@ -969,6 +1036,185 @@ async function handleSaveProfile(event) {
     console.error(error);
     toast(error.message || 'Could not save profile.', true);
   }
+}
+
+function attachAgencyExportEvents() {
+  const previewBtn = document.getElementById('agencyPreviewBtn');
+  const printBtn = document.getElementById('agencyPrintBtn');
+  const select = document.getElementById('agencyWorkerSelect');
+
+  if (previewBtn && previewBtn.dataset.wired !== 'yes') {
+    previewBtn.dataset.wired = 'yes';
+    previewBtn.addEventListener('click', () => renderAgencyPreview());
+  }
+
+  if (printBtn && printBtn.dataset.wired !== 'yes') {
+    printBtn.dataset.wired = 'yes';
+    printBtn.addEventListener('click', () => printAgencyPreview());
+  }
+
+  if (select && select.dataset.wired !== 'yes') {
+    select.dataset.wired = 'yes';
+    select.addEventListener('change', () => renderAgencyPreview());
+  }
+}
+
+function populateAgencyWorkerSelect() {
+  const select = document.getElementById('agencyWorkerSelect');
+  if (!select) return;
+
+  const current = select.value;
+  const rows = getDerivedTimesheetRows();
+
+  select.innerHTML = '<option value="">Select a worker</option>' +
+    rows.map((row) => `<option value="${escapeHtml(row.nameKey)}">${escapeHtml(row.name)}</option>`).join('');
+
+  if (rows.some((row) => row.nameKey === current)) {
+    select.value = current;
+  }
+}
+
+function renderAgencyPreview() {
+  const wrap = document.getElementById('agencyPreview');
+  const select = document.getElementById('agencyWorkerSelect');
+  if (!wrap || !select) return;
+
+  const selectedNameKey = select.value;
+  if (!selectedNameKey) {
+    wrap.innerHTML = '<div class="empty-state">Choose a worker and click Preview Sheet.</div>';
+    return;
+  }
+
+  const weekKey = formatDateKey(state.selectedWeekStart);
+  const row = getDerivedTimesheetRows().find((r) => r.nameKey === selectedNameKey && r.weekKey === weekKey);
+
+  if (!row) {
+    wrap.innerHTML = '<div class="empty-state">No weekly sheet found for that worker.</div>';
+    return;
+  }
+
+  const signedAt = row.managerSignedAt?.seconds
+    ? formatDateTime(row.managerSignedAt.seconds * 1000)
+    : '-';
+
+  const dailyRows = buildAgencyDailyRows(row.dailyTotals);
+
+  wrap.innerHTML = `
+    <div id="agencyPrintableSheet" style="background:#fff;color:#111;border-radius:12px;padding:24px;min-height:200px;">
+      <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:18px;">
+        <div>
+          <h2 style="margin:0 0 8px;font-size:28px;">Temp Agency Weekly Time Sheet</h2>
+          <div style="font-size:15px;line-height:1.6;">
+            <div><strong>Worker:</strong> ${escapeHtml(row.name)}</div>
+            <div><strong>Week Start:</strong> ${escapeHtml(row.weekKey)}</div>
+            <div><strong>Status:</strong> ${escapeHtml(row.status)}</div>
+          </div>
+        </div>
+        <div style="font-size:14px;line-height:1.7;text-align:right;">
+          <div><strong>Company:</strong> ${escapeHtml(appSettings.companyName || 'Company')}</div>
+          <div><strong>Generated:</strong> ${escapeHtml(formatDateTime(Date.now()))}</div>
+        </div>
+      </div>
+
+      <table style="width:100%;border-collapse:collapse;margin-bottom:18px;">
+        <thead>
+          <tr>
+            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Date</th>
+            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Clock In</th>
+            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Lunch Out</th>
+            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Lunch In</th>
+            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Clock Out</th>
+            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Hours</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${dailyRows}
+        </tbody>
+      </table>
+
+      <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:24px;">
+        <div style="font-size:15px;line-height:1.8;">
+          <div><strong>Total Hours:</strong> ${Number(row.weeklyHours || 0).toFixed(2)}</div>
+          <div><strong>Days Worked:</strong> ${Number(row.daysWorked || 0)}</div>
+        </div>
+
+        <div style="font-size:15px;line-height:1.8;text-align:right;">
+          <div><strong>Manager:</strong> ${escapeHtml(row.managerSignedBy || '-')}</div>
+          <div><strong>Signed:</strong> ${escapeHtml(signedAt)}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function buildAgencyDailyRows(dailyTotals) {
+  const keys = Object.keys(dailyTotals || {}).sort();
+  if (!keys.length) {
+    return `
+      <tr>
+        <td colspan="6" style="border:1px solid #bbb;padding:10px;">No punches recorded for this week.</td>
+      </tr>
+    `;
+  }
+
+  return keys.map((dateKey) => {
+    const row = dailyTotals[dateKey] || {};
+    return `
+      <tr>
+        <td style="border:1px solid #bbb;padding:10px;">${escapeHtml(dateKey)}</td>
+        <td style="border:1px solid #bbb;padding:10px;">${escapeHtml(row.clock_in || '-')}</td>
+        <td style="border:1px solid #bbb;padding:10px;">${escapeHtml(row.start_lunch || '-')}</td>
+        <td style="border:1px solid #bbb;padding:10px;">${escapeHtml(row.end_lunch || '-')}</td>
+        <td style="border:1px solid #bbb;padding:10px;">${escapeHtml(row.clock_out || '-')}</td>
+        <td style="border:1px solid #bbb;padding:10px;">${Number(row.hours || 0).toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function printAgencyPreview() {
+  const sheet = document.getElementById('agencyPrintableSheet');
+  if (!sheet) {
+    toast('Preview the sheet first.', true);
+    return;
+  }
+
+  const win = window.open('', '_blank', 'width=1000,height=800');
+  if (!win) {
+    toast('Pop-up blocked. Allow pop-ups to print.', true);
+    return;
+  }
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Agency Time Sheet</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            margin: 24px;
+            color: #111;
+            background: #fff;
+          }
+          @media print {
+            body {
+              margin: 12px;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        ${sheet.outerHTML}
+        <script>
+          window.onload = function() {
+            window.print();
+          };
+        <\/script>
+      </body>
+    </html>
+  `);
+  win.document.close();
 }
 
 async function ensureQrCodeLibrary() {
