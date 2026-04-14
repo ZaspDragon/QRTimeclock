@@ -34,7 +34,8 @@
         <li>Add your Firebase config in <code>firebase-config.js</code>.</li>
         <li>Create manager/admin users in Firebase Authentication.</li>
         <li>Create matching Firestore docs in <code>users</code> for managers/admins.</li>
-        <li>Deploy on Firebase Hosting and print the company QR poster.</li>
+        <li>Publish Firestore rules and create any prompted composite indexes.</li>
+        <li>Deploy and print the company QR poster.</li>
       </ol>
     </section>
 
@@ -94,6 +95,7 @@
       <nav class="tabs" id="tabBar">
         <button class="tab active" data-tab="managerTab" type="button" id="managerTabBtn">Manager Live</button>
         <button class="tab" data-tab="timesheetsTab" type="button" id="timesheetsTabBtn">Weekly Signoff</button>
+        <button class="tab" data-tab="editPunchesTab" type="button" id="editPunchesTabBtn">Edit Punches</button>
         <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
         <button class="tab" data-tab="qrTab" type="button">QR Tools</button>
       </nav>
@@ -165,6 +167,83 @@
         </div>
       </section>
 
+      <section id="editPunchesTab" class="tab-panel hidden">
+        <div class="panel-grid two-up">
+          <article class="card">
+            <div class="card-head">
+              <h2>Manual correction</h2>
+              <p>Add a manual punch for someone when a correction is needed.</p>
+            </div>
+
+            <form id="manualPunchForm" class="grid-form">
+              <label>
+                <span>Name</span>
+                <input id="manualPunchNameInput" type="text" placeholder="Brandon Evanshine" required />
+              </label>
+              <label>
+                <span>Action</span>
+                <select id="manualPunchActionInput">
+                  <option value="clock_in">Clock In</option>
+                  <option value="start_lunch">Start Lunch</option>
+                  <option value="end_lunch">End Lunch</option>
+                  <option value="clock_out">Clock Out</option>
+                </select>
+              </label>
+              <label>
+                <span>Date</span>
+                <input id="manualPunchDateInput" type="date" required />
+              </label>
+              <label>
+                <span>Time</span>
+                <input id="manualPunchTimeInput" type="time" required />
+              </label>
+              <div class="form-actions full-width">
+                <button class="primary-btn" type="submit">Add manual punch</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Edit filters</h2>
+              <p>Filter today’s punches by name to make edits faster.</p>
+            </div>
+
+            <div class="stack gap16">
+              <label>
+                <span>Filter by name</span>
+                <input id="editFilterNameInput" type="text" placeholder="Type a name or leave blank" />
+              </label>
+            </div>
+          </article>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Punch editor</h2>
+            <p>Edit time, action, or delete incorrect punches.</p>
+          </div>
+
+          <div class="mini-table-wrap tall">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Action</th>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th>Source</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="editPunchesBody">
+                <tr><td colspan="6">No punches yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <section id="adminTab" class="tab-panel hidden">
         <div class="panel-grid two-up">
           <article class="card">
@@ -172,6 +251,7 @@
               <h2>Create or update manager/admin profile</h2>
               <p>This writes to Firestore. The person still needs a Firebase Auth account.</p>
             </div>
+
             <form id="userProfileForm" class="grid-form">
               <label>
                 <span>User UID</span>
@@ -236,6 +316,7 @@
               <h2>Company QR poster</h2>
               <p>Print this and place it in the breakroom or time clock area. Workers scan it to open the punch page.</p>
             </div>
+
             <form id="companyQrForm" class="grid-form compact-form">
               <label>
                 <span>App URL</span>
@@ -245,6 +326,7 @@
                 <button class="primary-btn" type="submit">Generate poster QR</button>
               </div>
             </form>
+
             <div class="qr-stage">
               <canvas id="companyQrCanvas"></canvas>
             </div>
