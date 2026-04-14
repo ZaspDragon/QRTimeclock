@@ -36,7 +36,6 @@ const state = {
   unsubscribers: [],
   selectedWeekStart: getMondayDate(new Date()),
   workerUnsub: null,
-  managerPunchesUnsub: null,
   allPunchRows: [],
 };
 
@@ -85,7 +84,7 @@ const els = {
 
 init();
 
-function init() {
+async function init() {
   injectWorkerHistoryUi();
   injectManagerPunchEditorUi();
   wireEvents();
@@ -102,6 +101,8 @@ function init() {
   if (els.companyUrlInput) {
     els.companyUrlInput.value = appSettings.defaultAppUrl || window.location.href;
   }
+
+  await ensureQrCodeLibrary();
   renderCompanyQr();
 
   onAuthStateChanged(auth, async (user) => {
@@ -180,8 +181,9 @@ function wireEvents() {
 
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
 
-  els.companyQrForm?.addEventListener('submit', (e) => {
+  els.companyQrForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    await ensureQrCodeLibrary();
     renderCompanyQr();
   });
 }
@@ -814,9 +816,12 @@ function buildWeekTotals(punches) {
     ])
   );
 
+  const daysWorked = Object.values(dailyTotals).filter((hours) => Number(hours) > 0).length;
+
   return {
     dailyTotals,
     weeklyHours: Number((weeklyMinutes / 60).toFixed(2)),
+    daysWorked,
     lastAction,
     lastPunchAtMs,
   };
@@ -876,10 +881,66 @@ async function handleSaveProfile(event) {
   }
 }
 
+async function ensureQrCodeLibrary() {
+  if (window.QRCode && typeof window.QRCode.toCanvas === 'function') {
+    return true;
+  }
+
+  const existing = document.querySelector('script[data-qrcode-lib="yes"]');
+  if (existing) {
+    await waitForQrCode(2000);
+    return !!window.QRCode;
+  }
+
+  const script = document.createElement('script');
+  script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';
+  script.async = true;
+  script.dataset.qrcodeLib = 'yes';
+
+  const loaded = new Promise((resolve, reject) => {
+    script.onload = () => resolve(true);
+    script.onerror = () => reject(new Error('Could not load QRCode library.'));
+  });
+
+  document.head.appendChild(script);
+
+  try {
+    await loaded;
+    await waitForQrCode(1000);
+    return !!window.QRCode;
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not load QRCode library.', true);
+    return false;
+  }
+}
+
+function waitForQrCode(timeoutMs = 1000) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+
+    function tick() {
+      if (window.QRCode && typeof window.QRCode.toCanvas === 'function') {
+        resolve(true);
+        return;
+      }
+
+      if (Date.now() - started >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+
+      setTimeout(tick, 50);
+    }
+
+    tick();
+  });
+}
+
 function renderCompanyQr() {
   const value = els.companyUrlInput?.value.trim() || window.location.href;
 
-  if (!window.QRCode) {
+  if (!window.QRCode || typeof window.QRCode.toCanvas !== 'function') {
     toast('QRCode library did not load.', true);
     return;
   }
