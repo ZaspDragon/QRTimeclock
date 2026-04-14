@@ -260,11 +260,10 @@ function injectManagerPunchEditorUi() {
 
 function injectAgencyExportUi() {
   const tabBar = document.getElementById('tabBar');
-  const qrTabPanel = document.getElementById('qrTab');
-  if (!tabBar || !qrTabPanel || document.getElementById('agencyTabBtn')) return;
+  const appShell = document.getElementById('appShell');
+  if (!tabBar || !appShell || document.getElementById('agencyTabBtn')) return;
 
-  const qrTabButton = [...tabBar.querySelectorAll('.tab')].find((btn) => btn.dataset.tab === 'qrTab');
-
+  const adminBtn = document.getElementById('adminTabBtn');
   const agencyBtn = document.createElement('button');
   agencyBtn.className = 'tab';
   agencyBtn.type = 'button';
@@ -272,11 +271,46 @@ function injectAgencyExportUi() {
   agencyBtn.id = 'agencyTabBtn';
   agencyBtn.textContent = 'Agency Export';
 
-  if (qrTabButton) {
-    tabBar.insertBefore(agencyBtn, qrTabButton);
+  if (adminBtn) {
+    adminBtn.insertAdjacentElement('afterend', agencyBtn);
   } else {
     tabBar.appendChild(agencyBtn);
   }
+
+  const agencySection = document.createElement('section');
+  agencySection.id = 'agencyTab';
+  agencySection.className = 'tab-panel hidden';
+  agencySection.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h2>Temp Agency Export</h2>
+        <p>Preview exactly what the agency will receive, then print or save it as a PDF.</p>
+      </div>
+
+      <div class="grid-form compact-form" style="margin-bottom:16px;">
+        <label>
+          <span>Worker</span>
+          <select id="agencyWorkerSelect">
+            <option value="">Select a worker</option>
+          </select>
+        </label>
+
+        <div class="form-actions full-width">
+          <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
+          <button id="agencyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
+        </div>
+      </div>
+
+      <div id="agencyPreviewWrap" class="mini-table-wrap">
+        <div id="agencyPreview" style="padding:18px;">
+          <div class="empty-state">Choose a worker and click Preview Sheet.</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  appShell.appendChild(agencySection);
+}
 
   const agencySection = document.createElement('section');
   agencySection.id = 'agencyTab';
