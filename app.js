@@ -16,6 +16,7 @@ import {
   setDoc,
   addDoc,
   updateDoc,
+  deleteDoc,
   serverTimestamp,
   query,
   where,
@@ -35,6 +36,8 @@ const state = {
   unsubscribers: [],
   selectedWeekStart: getMondayDate(new Date()),
   workerUnsub: null,
+  managerPunchesUnsub: null,
+  allPunchRows: [],
 };
 
 const els = {
@@ -84,6 +87,7 @@ init();
 
 function init() {
   injectWorkerHistoryUi();
+  injectManagerPunchEditorUi();
   wireEvents();
 
   const storedWorkerName = localStorage.getItem('workerPunchName') || '';
@@ -95,7 +99,9 @@ function init() {
   }
 
   els.weekPicker.value = formatDateInput(state.selectedWeekStart);
-  els.companyUrlInput.value = appSettings.defaultAppUrl || window.location.href;
+  if (els.companyUrlInput) {
+    els.companyUrlInput.value = appSettings.defaultAppUrl || window.location.href;
+  }
   renderCompanyQr();
 
   onAuthStateChanged(auth, async (user) => {
@@ -123,6 +129,7 @@ function init() {
       attachRoleViews();
       attachManagerLiveViews();
       attachTimesheetView();
+      attachManagerPunchEditor();
 
       if (isAdmin()) {
         attachUsersView();
@@ -131,6 +138,51 @@ function init() {
       console.error(error);
       toast(error.message || 'Sign-in setup failed.', true);
     }
+  });
+}
+
+function wireEvents() {
+  document.querySelectorAll('.worker-action-btn').forEach((btn) => {
+    btn.addEventListener('click', () => handleWorkerPunch(btn.dataset.action));
+  });
+
+  els.workerNameInput?.addEventListener('input', () => {
+    const value = prettifyHumanName(els.workerNameInput.value.trim());
+    els.workerNameValue.textContent = value || '-';
+
+    if (value) {
+      localStorage.setItem('workerPunchName', value);
+      attachWorkerLiveView(value);
+    }
+  });
+
+  els.loginForm?.addEventListener('submit', handleLogin);
+  els.resetPasswordBtn?.addEventListener('click', handlePasswordReset);
+
+  els.signOutBtn?.addEventListener('click', async () => {
+    await signOut(auth);
+  });
+
+  els.weekPicker?.addEventListener('change', () => {
+    state.selectedWeekStart = new Date(`${els.weekPicker.value}T00:00:00`);
+    if (state.me && isManager()) {
+      clearTimesheetListenerOnly();
+      attachTimesheetView();
+      attachManagerPunchEditor();
+    }
+  });
+
+  els.tabBar?.addEventListener('click', (event) => {
+    const btn = event.target.closest('.tab');
+    if (!btn) return;
+    switchTab(btn.dataset.tab);
+  });
+
+  els.userProfileForm?.addEventListener('submit', handleSaveProfile);
+
+  els.companyQrForm?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    renderCompanyQr();
   });
 }
 
@@ -157,48 +209,45 @@ function injectWorkerHistoryUi() {
   workerCard.appendChild(historyWrap);
 }
 
-function wireEvents() {
-  document.querySelectorAll('.worker-action-btn').forEach((btn) => {
-    btn.addEventListener('click', () => handleWorkerPunch(btn.dataset.action));
-  });
+function injectManagerPunchEditorUi() {
+  const managerTab = document.getElementById('managerTab');
+  if (!managerTab || document.getElementById('managerPunchEditorCard')) return;
 
-  els.workerNameInput.addEventListener('input', () => {
-    const value = prettifyHumanName(els.workerNameInput.value.trim());
-    els.workerNameValue.textContent = value || '-';
+  const card = document.createElement('article');
+  card.className = 'card';
+  card.id = 'managerPunchEditorCard';
+  card.innerHTML = `
+    <div class="card-head">
+      <h2>Edit punches</h2>
+      <p>Managers can correct punch names, times, actions, or delete bad punches.</p>
+    </div>
 
-    if (value) {
-      localStorage.setItem('workerPunchName', value);
-      attachWorkerLiveView(value);
-    }
-  });
+    <div style="display:grid;gap:12px;margin-bottom:14px;">
+      <label>
+        <span>Filter by name</span>
+        <input id="managerPunchFilterInput" type="text" placeholder="Type a worker name" />
+      </label>
+    </div>
 
-  els.loginForm.addEventListener('submit', handleLogin);
-  els.resetPasswordBtn.addEventListener('click', handlePasswordReset);
+    <div class="mini-table-wrap tall">
+      <table>
+        <thead>
+          <tr>
+            <th>Date/Time</th>
+            <th>Name</th>
+            <th>Action</th>
+            <th>Source</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="managerPunchEditorBody">
+          <tr><td colspan="5">No punches yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
 
-  els.signOutBtn.addEventListener('click', async () => {
-    await signOut(auth);
-  });
-
-  els.weekPicker.addEventListener('change', () => {
-    state.selectedWeekStart = new Date(`${els.weekPicker.value}T00:00:00`);
-    if (state.me && isManager()) {
-      clearTimesheetListenerOnly();
-      attachTimesheetView();
-    }
-  });
-
-  els.tabBar.addEventListener('click', (event) => {
-    const btn = event.target.closest('.tab');
-    if (!btn) return;
-    switchTab(btn.dataset.tab);
-  });
-
-  els.userProfileForm?.addEventListener('submit', handleSaveProfile);
-
-  els.companyQrForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    renderCompanyQr();
-  });
+  managerTab.appendChild(card);
 }
 
 async function handleWorkerPunch(action) {
@@ -285,6 +334,7 @@ function attachWorkerLiveView(name) {
     }
 
     const last = rows[0];
+    els.workerNameValue.textContent = last.name || name;
     els.workerLastActionValue.textContent = prettyAction(last.action);
     els.workerLastPunchValue.textContent = formatDateTime(last.timestampMs);
     els.workerStatusValue.textContent = statusLabelForAction(last.action);
@@ -363,9 +413,9 @@ function showLoggedIn() {
 }
 
 function attachRoleViews() {
-  els.managerTabBtn.classList.remove('hidden');
-  els.timesheetsTabBtn.classList.remove('hidden');
-  els.adminTabBtn.classList.toggle('hidden', !isAdmin());
+  els.managerTabBtn?.classList.remove('hidden');
+  els.timesheetsTabBtn?.classList.remove('hidden');
+  els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
   switchTab('managerTab');
 }
 
@@ -383,7 +433,7 @@ function attachManagerLiveViews() {
   const liveQuery = query(
     collection(db, 'punches'),
     orderBy('timestampMs', 'desc'),
-    limit(80)
+    limit(120)
   );
 
   state.unsubscribers.push(
@@ -391,13 +441,16 @@ function attachManagerLiveViews() {
       liveQuery,
       async (snap) => {
         const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        state.allPunchRows = rows;
         renderLivePunches(rows);
         renderActiveNow(rows);
+        renderManagerPunchEditor(rows);
 
         try {
           await recomputeAllTimesheetsForWeek(formatDateKey(state.selectedWeekStart));
         } catch (error) {
           console.error(error);
+          toast(error.message || 'Weekly timesheets need Firestore indexes.', true);
         }
       },
       (error) => {
@@ -432,7 +485,6 @@ function renderActiveNow(rows) {
   rows.forEach((row) => {
     const key = row.nameKey || normalizeName(row.name || '');
     if (!key) return;
-
     if (!latestByName.has(key)) {
       latestByName.set(key, row);
     }
@@ -459,6 +511,132 @@ function renderActiveNow(rows) {
       </div>
     `)
     .join('');
+}
+
+function attachManagerPunchEditor() {
+  const filterInput = document.getElementById('managerPunchFilterInput');
+  if (!filterInput || filterInput.dataset.wired === 'yes') return;
+
+  filterInput.dataset.wired = 'yes';
+  filterInput.addEventListener('input', () => {
+    renderManagerPunchEditor(state.allPunchRows);
+  });
+}
+
+function renderManagerPunchEditor(rows) {
+  const body = document.getElementById('managerPunchEditorBody');
+  const filterInput = document.getElementById('managerPunchFilterInput');
+  if (!body) return;
+
+  const filter = String(filterInput?.value || '').trim().toLowerCase();
+  const filtered = rows.filter((row) => {
+    if (!filter) return true;
+    return String(row.name || '').toLowerCase().includes(filter);
+  });
+
+  if (!filtered.length) {
+    body.innerHTML = '<tr><td colspan="5">No punches found.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = filtered.map((row) => `
+    <tr>
+      <td>${formatDateTime(row.timestampMs)}</td>
+      <td>${escapeHtml(row.name || '-')}</td>
+      <td>${prettyAction(row.action)}</td>
+      <td>${escapeHtml(row.source || '-')}</td>
+      <td>
+        <button class="secondary-btn manager-edit-punch-btn" data-id="${row.id}" type="button">Edit</button>
+        <button class="danger-btn manager-delete-punch-btn" data-id="${row.id}" type="button">Delete</button>
+      </td>
+    </tr>
+  `).join('');
+
+  body.querySelectorAll('.manager-edit-punch-btn').forEach((btn) => {
+    btn.addEventListener('click', () => editPunch(btn.dataset.id));
+  });
+
+  body.querySelectorAll('.manager-delete-punch-btn').forEach((btn) => {
+    btn.addEventListener('click', () => deletePunchRecord(btn.dataset.id));
+  });
+}
+
+async function editPunch(punchId) {
+  const row = state.allPunchRows.find((r) => r.id === punchId);
+  if (!row) {
+    toast('Punch not found.', true);
+    return;
+  }
+
+  const newName = prompt('Edit worker name:', row.name || '');
+  if (newName === null) return;
+
+  const newAction = prompt(
+    'Edit action (clock_in, start_lunch, end_lunch, clock_out):',
+    row.action || 'clock_in'
+  );
+  if (newAction === null) return;
+
+  const newDateTime = prompt(
+    'Edit date/time (example: 2026-04-14 07:26):',
+    toLocalEditString(row.timestampMs)
+  );
+  if (newDateTime === null) return;
+
+  const prettyName = prettifyHumanName(newName);
+  const nameKey = normalizeName(prettyName);
+  const action = String(newAction).trim();
+
+  if (!prettyName || nameKey.length < 2) {
+    toast('Invalid name.', true);
+    return;
+  }
+
+  if (!['clock_in', 'start_lunch', 'end_lunch', 'clock_out'].includes(action)) {
+    toast('Invalid action.', true);
+    return;
+  }
+
+  const parsedMs = parseLocalEditString(newDateTime);
+  if (!parsedMs) {
+    toast('Invalid date/time format. Use YYYY-MM-DD HH:MM', true);
+    return;
+  }
+
+  const date = new Date(parsedMs);
+  const dateKey = formatDateKey(date);
+  const weekKey = formatDateKey(getMondayDate(date));
+
+  try {
+    await updateDoc(doc(db, 'punches', punchId), {
+      name: prettyName,
+      nameKey,
+      action,
+      timestampMs: parsedMs,
+      dateKey,
+      weekKey,
+      editedAt: serverTimestamp(),
+      editedBy: state.profile?.name || state.me?.email || 'Manager'
+    });
+
+    toast('Punch updated.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not update punch.', true);
+  }
+}
+
+async function deletePunchRecord(punchId) {
+  const okay = confirm('Delete this punch?');
+  if (!okay) return;
+
+  try {
+    await deleteDoc(doc(db, 'punches', punchId));
+    toast('Punch deleted.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not delete punch.', true);
+  }
 }
 
 function attachTimesheetView() {
@@ -698,6 +876,24 @@ async function handleSaveProfile(event) {
   }
 }
 
+function renderCompanyQr() {
+  const value = els.companyUrlInput?.value.trim() || window.location.href;
+
+  if (!window.QRCode) {
+    toast('QRCode library did not load.', true);
+    return;
+  }
+
+  QRCode.toCanvas(els.companyQrCanvas, value, { width: 240 }, (error) => {
+    if (error) {
+      console.error(error);
+      toast(error.message || 'Could not generate QR.', true);
+      return;
+    }
+    toast('QR generated.');
+  });
+}
+
 function clearLiveListeners() {
   state.unsubscribers.forEach((unsub) => {
     try { unsub(); } catch (_) {}
@@ -755,6 +951,37 @@ function normalizeName(value) {
     .replaceAll(' ', '_');
 }
 
+function toLocalEditString(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hour = String(d.getHours()).padStart(2, '0');
+  const minute = String(d.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hour}:${minute}`;
+}
+
+function parseLocalEditString(value) {
+  const cleaned = String(value || '').trim().replace('T', ' ');
+  const match = cleaned.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+  if (!match) return 0;
+
+  const [, y, m, d, h, min] = match;
+  const date = new Date(
+    Number(y),
+    Number(m) - 1,
+    Number(d),
+    Number(h),
+    Number(min),
+    0,
+    0
+  );
+
+  const ms = date.getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 function getMondayDate(date) {
   const d = new Date(date);
   const day = d.getDay();
@@ -794,19 +1021,8 @@ function formatDateTime(ms) {
   });
 }
 
-function renderCompanyQr() {
-  const value = els.companyUrlInput.value.trim() || window.location.href;
-  if (!window.QRCode) return;
-
-  QRCode.toCanvas(els.companyQrCanvas, value, { width: 240 }, (error) => {
-    if (error) {
-      console.error(error);
-      toast(error.message || 'Could not generate QR.', true);
-    }
-  });
-}
-
 function toast(message, isError = false) {
+  if (!els.toast) return;
   els.toast.textContent = message;
   els.toast.classList.remove('hidden');
   els.toast.style.borderColor = isError
