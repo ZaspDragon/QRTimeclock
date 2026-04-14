@@ -37,6 +37,8 @@ const state = {
   selectedWeekStart: getMondayDate(new Date()),
   workerUnsub: null,
   allPunchRows: [],
+  selectedWeekPunchRows: [],
+  selectedWeekTimesheetDocs: {},
 };
 
 const els = {
@@ -92,12 +94,15 @@ async function init() {
   const storedWorkerName = localStorage.getItem('workerPunchName') || '';
   if (storedWorkerName) {
     const pretty = prettifyHumanName(storedWorkerName);
-    els.workerNameInput.value = pretty;
-    els.workerNameValue.textContent = pretty;
+    if (els.workerNameInput) els.workerNameInput.value = pretty;
+    if (els.workerNameValue) els.workerNameValue.textContent = pretty;
     attachWorkerLiveView(pretty);
   }
 
-  els.weekPicker.value = formatDateInput(state.selectedWeekStart);
+  if (els.weekPicker) {
+    els.weekPicker.value = formatDateInput(state.selectedWeekStart);
+  }
+
   if (els.companyUrlInput) {
     els.companyUrlInput.value = appSettings.defaultAppUrl || window.location.href;
   }
@@ -149,7 +154,7 @@ function wireEvents() {
 
   els.workerNameInput?.addEventListener('input', () => {
     const value = prettifyHumanName(els.workerNameInput.value.trim());
-    els.workerNameValue.textContent = value || '-';
+    if (els.workerNameValue) els.workerNameValue.textContent = value || '-';
 
     if (value) {
       localStorage.setItem('workerPunchName', value);
@@ -253,7 +258,7 @@ function injectManagerPunchEditorUi() {
 }
 
 async function handleWorkerPunch(action) {
-  const rawName = els.workerNameInput.value.trim();
+  const rawName = els.workerNameInput?.value.trim();
   if (!rawName) {
     toast('Enter your name first.', true);
     return;
@@ -286,12 +291,14 @@ async function handleWorkerPunch(action) {
     });
 
     localStorage.setItem('workerPunchName', name);
-    els.workerNameInput.value = name;
-    els.workerNameValue.textContent = name;
-    els.workerLastActionValue.textContent = prettyAction(action);
-    els.workerLastPunchValue.textContent = formatDateTime(nowMs);
-    els.workerStatusValue.textContent = statusLabelForAction(action);
-    els.workerStatusMessage.textContent = `${prettyAction(action)} saved for ${name} at ${formatDateTime(nowMs)}.`;
+    if (els.workerNameInput) els.workerNameInput.value = name;
+    if (els.workerNameValue) els.workerNameValue.textContent = name;
+    if (els.workerLastActionValue) els.workerLastActionValue.textContent = prettyAction(action);
+    if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = formatDateTime(nowMs);
+    if (els.workerStatusValue) els.workerStatusValue.textContent = statusLabelForAction(action);
+    if (els.workerStatusMessage) {
+      els.workerStatusMessage.textContent = `${prettyAction(action)} saved for ${name} at ${formatDateTime(nowMs)}.`;
+    }
 
     attachWorkerLiveView(name);
     toast(`${prettyAction(action)} saved.`);
@@ -325,10 +332,10 @@ function attachWorkerLiveView(name) {
     const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
     if (!rows.length) {
-      els.workerLastActionValue.textContent = '-';
-      els.workerLastPunchValue.textContent = '-';
-      els.workerStatusValue.textContent = 'Ready';
-      els.workerStatusMessage.textContent = 'Enter your name and punch.';
+      if (els.workerLastActionValue) els.workerLastActionValue.textContent = '-';
+      if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = '-';
+      if (els.workerStatusValue) els.workerStatusValue.textContent = 'Ready';
+      if (els.workerStatusMessage) els.workerStatusMessage.textContent = 'Enter your name and punch.';
       if (workerHistoryBody) {
         workerHistoryBody.innerHTML = '<tr><td colspan="2">No punches yet.</td></tr>';
       }
@@ -336,15 +343,17 @@ function attachWorkerLiveView(name) {
     }
 
     const last = rows[0];
-    els.workerNameValue.textContent = last.name || name;
-    els.workerLastActionValue.textContent = prettyAction(last.action);
-    els.workerLastPunchValue.textContent = formatDateTime(last.timestampMs);
-    els.workerStatusValue.textContent = statusLabelForAction(last.action);
+    if (els.workerNameValue) els.workerNameValue.textContent = last.name || name;
+    if (els.workerLastActionValue) els.workerLastActionValue.textContent = prettyAction(last.action);
+    if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = formatDateTime(last.timestampMs);
+    if (els.workerStatusValue) els.workerStatusValue.textContent = statusLabelForAction(last.action);
 
     const clockedInAt = findLatestClockInTime(rows);
-    els.workerStatusMessage.textContent = clockedInAt
-      ? `${statusLabelForAction(last.action)}. Clocked in at ${formatDateTime(clockedInAt)}.`
-      : `${statusLabelForAction(last.action)} at ${formatDateTime(last.timestampMs)}.`;
+    if (els.workerStatusMessage) {
+      els.workerStatusMessage.textContent = clockedInAt
+        ? `${statusLabelForAction(last.action)}. Clocked in at ${formatDateTime(clockedInAt)}.`
+        : `${statusLabelForAction(last.action)} at ${formatDateTime(last.timestampMs)}.`;
+    }
 
     if (workerHistoryBody) {
       workerHistoryBody.innerHTML = rows.map((row) => `
@@ -374,10 +383,10 @@ async function handleLogin(event) {
   try {
     await signInWithEmailAndPassword(
       auth,
-      els.emailInput.value.trim(),
-      els.passwordInput.value
+      els.emailInput?.value.trim(),
+      els.passwordInput?.value
     );
-    els.passwordInput.value = '';
+    if (els.passwordInput) els.passwordInput.value = '';
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not sign in.', true);
@@ -385,7 +394,7 @@ async function handleLogin(event) {
 }
 
 async function handlePasswordReset() {
-  const email = els.emailInput.value.trim();
+  const email = els.emailInput?.value.trim();
   if (!email) {
     toast('Enter the email first, then tap reset.', true);
     return;
@@ -401,17 +410,17 @@ async function handlePasswordReset() {
 }
 
 function showLoggedOut() {
-  els.authCard.classList.remove('hidden');
-  els.appShell.classList.add('hidden');
-  els.sessionChip.classList.add('hidden');
+  els.authCard?.classList.remove('hidden');
+  els.appShell?.classList.add('hidden');
+  els.sessionChip?.classList.add('hidden');
 }
 
 function showLoggedIn() {
-  els.authCard.classList.add('hidden');
-  els.appShell.classList.remove('hidden');
-  els.sessionChip.classList.remove('hidden');
-  els.sessionName.textContent = state.profile?.name || state.me?.email || 'Signed in';
-  els.sessionRole.textContent = state.profile?.role || 'manager';
+  els.authCard?.classList.add('hidden');
+  els.appShell?.classList.remove('hidden');
+  els.sessionChip?.classList.remove('hidden');
+  if (els.sessionName) els.sessionName.textContent = state.profile?.name || state.me?.email || 'Signed in';
+  if (els.sessionRole) els.sessionRole.textContent = state.profile?.role || 'manager';
 }
 
 function attachRoleViews() {
@@ -441,19 +450,12 @@ function attachManagerLiveViews() {
   state.unsubscribers.push(
     onSnapshot(
       liveQuery,
-      async (snap) => {
+      (snap) => {
         const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         state.allPunchRows = rows;
         renderLivePunches(rows);
         renderActiveNow(rows);
         renderManagerPunchEditor(rows);
-
-        try {
-          await recomputeAllTimesheetsForWeek(formatDateKey(state.selectedWeekStart));
-        } catch (error) {
-          console.error(error);
-          toast(error.message || 'Weekly timesheets need Firestore indexes.', true);
-        }
       },
       (error) => {
         console.error(error);
@@ -464,6 +466,8 @@ function attachManagerLiveViews() {
 }
 
 function renderLivePunches(rows) {
+  if (!els.livePunchBody) return;
+
   if (!rows.length) {
     els.livePunchBody.innerHTML = '<tr><td colspan="4">No live data yet.</td></tr>';
     return;
@@ -482,6 +486,8 @@ function renderLivePunches(rows) {
 }
 
 function renderActiveNow(rows) {
+  if (!els.activeNowList) return;
+
   const latestByName = new Map();
 
   rows.forEach((row) => {
@@ -643,28 +649,90 @@ async function deletePunchRecord(punchId) {
 
 function attachTimesheetView() {
   const weekKey = formatDateKey(state.selectedWeekStart);
-  const sheetQuery = query(
-    collection(db, 'timesheets'),
+
+  const punchesQuery = query(
+    collection(db, 'punches'),
     where('weekKey', '==', weekKey),
-    orderBy('name', 'asc')
+    orderBy('timestampMs', 'asc')
+  );
+
+  const timesheetsQuery = query(
+    collection(db, 'timesheets'),
+    where('weekKey', '==', weekKey)
   );
 
   state.unsubscribers.push(
     onSnapshot(
-      sheetQuery,
+      punchesQuery,
       (snap) => {
-        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        renderTimesheets(rows);
+        state.selectedWeekPunchRows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        renderDerivedTimesheets();
       },
       (error) => {
         console.error(error);
-        toast(error.message || 'Timesheet view failed.', true);
+        toast(error.message || 'Could not load weekly punches.', true);
+      }
+    )
+  );
+
+  state.unsubscribers.push(
+    onSnapshot(
+      timesheetsQuery,
+      (snap) => {
+        const map = {};
+        snap.docs.forEach((d) => {
+          map[d.id] = { id: d.id, ...d.data() };
+        });
+        state.selectedWeekTimesheetDocs = map;
+        renderDerivedTimesheets();
+      },
+      (error) => {
+        console.error(error);
+        toast(error.message || 'Could not load weekly signoffs.', true);
       }
     )
   );
 }
 
-function renderTimesheets(rows) {
+function renderDerivedTimesheets() {
+  if (!els.timesheetBody) return;
+
+  const weekKey = formatDateKey(state.selectedWeekStart);
+  const grouped = new Map();
+
+  state.selectedWeekPunchRows.forEach((p) => {
+    const key = p.nameKey || normalizeName(p.name || '');
+    if (!key) return;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(p);
+  });
+
+  const rows = [];
+
+  grouped.forEach((personPunches, nameKey) => {
+    const displayName = personPunches[0]?.name || nameKey;
+    const totals = buildWeekTotals(personPunches);
+    const timesheetId = `${weekKey}_${nameKey}`;
+    const saved = state.selectedWeekTimesheetDocs[timesheetId] || null;
+
+    rows.push({
+      id: timesheetId,
+      name: displayName,
+      nameKey,
+      weekKey,
+      weeklyHours: totals.weeklyHours,
+      daysWorked: totals.daysWorked,
+      dailyTotals: totals.dailyTotals,
+      lastPunchAction: totals.lastAction,
+      lastPunchAtMs: totals.lastPunchAtMs,
+      status: saved?.status || 'open',
+      managerSignedBy: saved?.managerSignedBy || '',
+      managerSignedAt: saved?.managerSignedAt || null,
+    });
+  });
+
+  rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
   if (!rows.length) {
     els.timesheetBody.innerHTML = '<tr><td colspan="6">No timesheets yet.</td></tr>';
     return;
@@ -675,11 +743,13 @@ function renderTimesheets(rows) {
       ? formatDateTime(row.managerSignedAt.seconds * 1000)
       : '-';
 
+    const hoursText = `${Number(row.weeklyHours || 0).toFixed(2)} (${row.daysWorked || 0} day${row.daysWorked === 1 ? '' : 's'})`;
+
     return `
       <tr>
         <td>${escapeHtml(row.name || '-')}</td>
         <td>${escapeHtml(row.weekKey || '-')}</td>
-        <td>${Number(row.weeklyHours || 0).toFixed(2)}</td>
+        <td>${hoursText}</td>
         <td>${escapeHtml(row.status || 'open')}</td>
         <td>${escapeHtml(row.managerSignedBy || '-')}${signedAt !== '-' ? `<br><span class="tiny">${signedAt}</span>` : ''}</td>
         <td>
@@ -701,13 +771,30 @@ function renderTimesheets(rows) {
 }
 
 async function signTimesheet(timesheetId) {
+  const weekKey = formatDateKey(state.selectedWeekStart);
+  const row = buildCurrentTimesheetRow(timesheetId, weekKey);
+
+  if (!row) {
+    toast('Could not find that weekly record.', true);
+    return;
+  }
+
   try {
-    await updateDoc(doc(db, 'timesheets', timesheetId), {
+    await setDoc(doc(db, 'timesheets', timesheetId), {
+      name: row.name,
+      nameKey: row.nameKey,
+      weekKey: row.weekKey,
+      dailyTotals: row.dailyTotals,
+      weeklyHours: row.weeklyHours,
+      daysWorked: row.daysWorked,
       status: 'signed',
       managerSignedBy: state.profile?.name || state.me?.email || 'Manager',
       managerSignedAt: Timestamp.fromDate(new Date()),
       updatedAt: serverTimestamp(),
-    });
+      lastPunchAction: row.lastPunchAction,
+      lastPunchAtMs: row.lastPunchAtMs,
+    }, { merge: true });
+
     toast('Timesheet signed.');
   } catch (error) {
     console.error(error);
@@ -716,13 +803,30 @@ async function signTimesheet(timesheetId) {
 }
 
 async function reopenTimesheet(timesheetId) {
+  const weekKey = formatDateKey(state.selectedWeekStart);
+  const row = buildCurrentTimesheetRow(timesheetId, weekKey);
+
+  if (!row) {
+    toast('Could not find that weekly record.', true);
+    return;
+  }
+
   try {
-    await updateDoc(doc(db, 'timesheets', timesheetId), {
+    await setDoc(doc(db, 'timesheets', timesheetId), {
+      name: row.name,
+      nameKey: row.nameKey,
+      weekKey: row.weekKey,
+      dailyTotals: row.dailyTotals,
+      weeklyHours: row.weeklyHours,
+      daysWorked: row.daysWorked,
       status: 'open',
       managerSignedBy: '',
       managerSignedAt: null,
       updatedAt: serverTimestamp(),
-    });
+      lastPunchAction: row.lastPunchAction,
+      lastPunchAtMs: row.lastPunchAtMs,
+    }, { merge: true });
+
     toast('Timesheet reopened.');
   } catch (error) {
     console.error(error);
@@ -730,52 +834,37 @@ async function reopenTimesheet(timesheetId) {
   }
 }
 
-async function recomputeAllTimesheetsForWeek(weekKey) {
-  if (!state.me || !isManager()) return;
+function buildCurrentTimesheetRow(timesheetId, weekKey) {
+  const grouped = new Map();
 
-  const punchesQuery = query(
-    collection(db, 'punches'),
-    where('weekKey', '==', weekKey),
-    orderBy('timestampMs', 'asc')
-  );
-
-  const snap = await getDocs(punchesQuery);
-  const punches = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-  const byName = new Map();
-
-  punches.forEach((p) => {
+  state.selectedWeekPunchRows.forEach((p) => {
     const key = p.nameKey || normalizeName(p.name || '');
     if (!key) return;
-
-    if (!byName.has(key)) {
-      byName.set(key, []);
-    }
-
-    byName.get(key).push(p);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(p);
   });
 
-  for (const [nameKey, personPunches] of byName.entries()) {
+  for (const [nameKey, personPunches] of grouped.entries()) {
+    const id = `${weekKey}_${nameKey}`;
+    if (id !== timesheetId) continue;
+
     const displayName = personPunches[0]?.name || nameKey;
     const totals = buildWeekTotals(personPunches);
-    const timesheetId = `${weekKey}_${nameKey}`;
-    const existingSnap = await getDoc(doc(db, 'timesheets', timesheetId));
-    const existing = existingSnap.exists() ? existingSnap.data() : null;
 
-    await setDoc(doc(db, 'timesheets', timesheetId), {
+    return {
+      id,
       name: displayName,
       nameKey,
       weekKey,
       dailyTotals: totals.dailyTotals,
       weeklyHours: totals.weeklyHours,
-      status: existing?.status === 'signed' ? 'signed' : 'open',
-      managerSignedBy: existing?.managerSignedBy || '',
-      managerSignedAt: existing?.managerSignedAt || null,
-      updatedAt: serverTimestamp(),
+      daysWorked: totals.daysWorked,
       lastPunchAction: totals.lastAction,
       lastPunchAtMs: totals.lastPunchAtMs,
-    }, { merge: true });
+    };
   }
+
+  return null;
 }
 
 function buildWeekTotals(punches) {
@@ -816,7 +905,8 @@ function buildWeekTotals(punches) {
     ])
   );
 
-  const daysWorked = Object.values(dailyTotals).filter((hours) => Number(hours) > 0).length;
+  const daysWorked = Object.values(dailyTotals).filter((hours) => Number(hours) > 0).length
+    || Object.keys(dailyTotals).length;
 
   return {
     dailyTotals,
@@ -864,17 +954,17 @@ async function handleSaveProfile(event) {
   event.preventDefault();
 
   try {
-    const uid = els.userUidInput.value.trim();
+    const uid = els.userUidInput?.value.trim();
     await setDoc(doc(db, 'users', uid), {
-      name: prettifyHumanName(els.userNameInput.value.trim()),
-      email: els.userEmailInput.value.trim().toLowerCase(),
-      role: els.userRoleInput.value,
-      active: els.userActiveInput.value === 'true',
+      name: prettifyHumanName(els.userNameInput?.value.trim()),
+      email: els.userEmailInput?.value.trim().toLowerCase(),
+      role: els.userRoleInput?.value,
+      active: els.userActiveInput?.value === 'true',
       updatedAt: serverTimestamp(),
     }, { merge: true });
 
     toast('User profile saved.');
-    els.userProfileForm.reset();
+    els.userProfileForm?.reset();
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not save profile.', true);
@@ -967,6 +1057,7 @@ function clearTimesheetListenerOnly() {
 
   if (state.me && isManager()) {
     attachManagerLiveViews();
+    attachTimesheetView();
     if (isAdmin()) attachUsersView();
   }
 }
