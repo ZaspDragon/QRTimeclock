@@ -312,41 +312,6 @@ function injectAgencyExportUi() {
   appShell.appendChild(agencySection);
 }
 
-  const agencySection = document.createElement('section');
-  agencySection.id = 'agencyTab';
-  agencySection.className = 'tab-panel hidden';
-  agencySection.innerHTML = `
-    <div class="card">
-      <div class="card-head">
-        <h2>Temp Agency Export</h2>
-        <p>Preview exactly what the agency will receive, then print or save it as a PDF.</p>
-      </div>
-
-      <div class="grid-form compact-form" style="margin-bottom:16px;">
-        <label>
-          <span>Worker</span>
-          <select id="agencyWorkerSelect">
-            <option value="">Select a worker</option>
-          </select>
-        </label>
-
-        <div class="form-actions full-width">
-          <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
-          <button id="agencyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
-        </div>
-      </div>
-
-      <div id="agencyPreviewWrap" class="mini-table-wrap">
-        <div id="agencyPreview" style="padding:18px;">
-          <div class="empty-state">Choose a worker and click Preview Sheet.</div>
-        </div>
-      </div>
-    </div>
-  `;
-
-  qrTabPanel.parentNode.insertBefore(agencySection, qrTabPanel);
-}
-
 async function handleWorkerPunch(action) {
   const rawName = els.workerNameInput?.value.trim();
   if (!rawName) {
