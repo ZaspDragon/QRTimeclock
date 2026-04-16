@@ -2,20 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0, viewport-fit=cover"
-  />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>QR TimeClock Pro</title>
-
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
-    rel="stylesheet"
-  />
-
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
   <script type="module" src="app.js"></script>
 </head>
 <body>
@@ -25,557 +18,285 @@
   <header class="topbar">
     <div>
       <h1>TimeClock Pro</h1>
-      <p>Simple worker punch flow. Manager dashboard stays separate.</p>
+      <p>Mobile punch tracking with live manager visibility and weekly signoff.</p>
     </div>
-
-    <div class="topbar-actions">
-      <button id="managerPortalBtn" class="secondary-btn" type="button">
-        Manager Portal
-      </button>
-
-      <div id="sessionChip" class="session-chip hidden">
-        <span id="sessionName">-</span>
-        <span id="sessionRole" class="pill">-</span>
-        <button id="signOutBtn" class="ghost-btn" type="button">Sign out</button>
-      </div>
+    <div id="sessionChip" class="session-chip hidden">
+      <span id="sessionName">-</span>
+      <span id="sessionRole" class="pill">-</span>
+      <button id="signOutBtn" class="ghost-btn" type="button">Sign out</button>
     </div>
   </header>
 
   <main class="shell">
-    <!-- WORKER VIEW -->
-    <section id="workerView" class="view active">
-      <section id="workerCard" class="card worker-card mobile-priority">
-        <div class="card-head">
-          <h2>Worker Punch</h2>
-          <p>Type your name once, then tap the button you need.</p>
+    <section id="workerCard" class="card">
+      <div class="card-head">
+        <h2>Worker Punch</h2>
+        <p>Scan the shared QR code, type your name, then tap the action you need.</p>
+      </div>
+
+      <div class="stack gap16">
+        <label>
+          <span>Your name</span>
+          <input id="workerNameInput" type="text" placeholder="First and last name" />
+        </label>
+
+        <div class="button-grid">
+          <button class="primary-btn worker-action-btn" data-action="clock_in" type="button">Clock In</button>
+          <button class="secondary-btn worker-action-btn" data-action="start_lunch" type="button">Start Lunch</button>
+          <button class="secondary-btn worker-action-btn" data-action="end_lunch" type="button">End Lunch</button>
+          <button class="danger-btn worker-action-btn" data-action="clock_out" type="button">Clock Out</button>
         </div>
 
-        <div class="stack gap16">
-          <label>
-            <span>Your name</span>
-            <input
-              id="workerNameInput"
-              type="text"
-              placeholder="First and last name"
-              autocomplete="name"
-              inputmode="text"
-            />
-          </label>
+        <div class="stats-grid">
+          <div class="stat-card"><span>Entered name</span><strong id="workerNameValue">-</strong></div>
+          <div class="stat-card"><span>Last action</span><strong id="workerLastActionValue">-</strong></div>
+          <div class="stat-card"><span>Last punch</span><strong id="workerLastPunchValue">-</strong></div>
+          <div class="stat-card"><span>Status</span><strong id="workerStatusValue">Ready</strong></div>
+        </div>
 
-          <div class="big-action-grid">
-            <button class="primary-btn giant-btn worker-action-btn" data-action="clock_in" type="button">
-              Clock In
-            </button>
-            <button class="secondary-btn giant-btn worker-action-btn" data-action="start_lunch" type="button">
-              Start Lunch
-            </button>
-            <button class="secondary-btn giant-btn worker-action-btn" data-action="end_lunch" type="button">
-              End Lunch
-            </button>
-            <button class="danger-btn giant-btn worker-action-btn" data-action="clock_out" type="button">
-              Clock Out
-            </button>
-          </div>
+        <div id="workerStatusMessage" class="status-box">Enter your name and punch.</div>
+      </div>
+    </section>
 
-          <div class="stats-grid">
-            <div class="stat-card">
-              <span>Entered name</span>
-              <strong id="workerNameValue">-</strong>
-            </div>
-            <div class="stat-card">
-              <span>Last action</span>
-              <strong id="workerLastActionValue">-</strong>
-            </div>
-            <div class="stat-card">
-              <span>Last punch</span>
-              <strong id="workerLastPunchValue">-</strong>
-            </div>
-            <div class="stat-card">
-              <span>Status</span>
-              <strong id="workerStatusValue">Ready</strong>
-            </div>
-          </div>
+    <section id="authCard" class="card auth-card">
+      <div class="card-head">
+        <h2>Manager Sign In</h2>
+        <p>Managers and admins use email/password to view live punches and sign weekly timesheets.</p>
+      </div>
 
-          <div id="workerStatusMessage" class="status-box">
-            Enter your name and punch.
-          </div>
+      <form id="loginForm" class="grid-form">
+        <label>
+          <span>Email</span>
+          <input id="emailInput" type="email" placeholder="manager@company.com" required />
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="passwordInput" type="password" placeholder="Password" required />
+        </label>
+        <div class="form-actions full-width">
+          <button class="primary-btn" type="submit">Sign in</button>
+          <button id="resetPasswordBtn" class="secondary-btn" type="button">Send reset email</button>
+        </div>
+      </form>
+    </section>
 
-          <div class="card soft-card">
-            <div class="card-head compact">
-              <h3>Today’s punches</h3>
-              <p>Your most recent punches for today.</p>
+    <section id="appShell" class="hidden">
+      <nav class="tabs" id="tabBar">
+        <button class="tab active" data-tab="managerTab" type="button" id="managerTabBtn">Manager Live</button>
+        <button class="tab" data-tab="timesheetsTab" type="button" id="timesheetsTabBtn">Weekly Signoff</button>
+        <button class="tab" data-tab="editPunchesTab" type="button" id="editPunchesTabBtn">Edit Punches</button>
+        <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
+        <button class="tab" data-tab="qrTab" type="button">QR Tools</button>
+      </nav>
+
+      <section id="managerTab" class="tab-panel">
+        <div class="panel-grid two-up">
+          <article class="card">
+            <div class="card-head">
+              <h2>Live punch feed</h2>
+              <p>This updates automatically as workers punch from their phones.</p>
             </div>
-
-            <div class="mini-table-wrap">
+            <div class="mini-table-wrap tall">
               <table>
                 <thead>
                   <tr>
-                    <th>Date/Time</th>
+                    <th>Time</th>
+                    <th>Name</th>
                     <th>Action</th>
+                    <th>Source</th>
                   </tr>
                 </thead>
-                <tbody id="workerHistoryBody">
-                  <tr><td colspan="2">No punches yet.</td></tr>
+                <tbody id="livePunchBody">
+                  <tr><td colspan="4">No live data yet.</td></tr>
                 </tbody>
               </table>
             </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Who is clocked in right now</h2>
+              <p>Derived from the latest punch for each person.</p>
+            </div>
+            <div id="activeNowList" class="list-stack empty-state">Nobody is currently clocked in.</div>
+          </article>
+        </div>
+      </section>
+
+      <section id="timesheetsTab" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Weekly timesheets</h2>
+              <p>Managers can sign each person’s weekly record. Signed sheets are locked.</p>
+            </div>
+            <div class="inline-field slim-field">
+              <label for="weekPicker">Week start</label>
+              <input id="weekPicker" type="date" />
+            </div>
+          </div>
+
+          <div class="mini-table-wrap tall">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Week</th>
+                  <th>Hours</th>
+                  <th>Status</th>
+                  <th>Signed by</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="timesheetBody">
+                <tr><td colspan="6">No timesheets yet.</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
-    </section>
 
-    <!-- MANAGER LOGIN VIEW -->
-    <section id="authView" class="view hidden">
-      <section id="authCard" class="card auth-card">
-        <div class="card-head">
-          <h2>Manager Sign In</h2>
-          <p>Managers and admins use email/password for the dashboard.</p>
-        </div>
-
-        <form id="loginForm" class="grid-form">
-          <label>
-            <span>Email</span>
-            <input id="emailInput" type="email" placeholder="manager@company.com" required />
-          </label>
-
-          <label>
-            <span>Password</span>
-            <input id="passwordInput" type="password" placeholder="Password" required />
-          </label>
-
-          <div class="form-actions full-width">
-            <button class="primary-btn" type="submit">Sign in</button>
-            <button id="resetPasswordBtn" class="secondary-btn" type="button">
-              Send reset email
-            </button>
-            <button id="backToWorkerBtn" class="ghost-btn" type="button">
-              Back to Worker View
-            </button>
-          </div>
-        </form>
-      </section>
-    </section>
-
-    <!-- MANAGER DASHBOARD VIEW -->
-    <section id="managerView" class="view hidden">
-      <section id="appShell">
-        <nav class="tabs" id="tabBar">
-          <button class="tab active" data-tab="managerTab" type="button">Manager Live</button>
-          <button class="tab" data-tab="timesheetsTab" type="button">Weekly Signoff</button>
-          <button class="tab" data-tab="editPunchesTab" type="button">Edit Punches</button>
-          <button class="tab" data-tab="exportsTab" type="button">Exports</button>
-          <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
-          <button class="tab" data-tab="auditTab" type="button">Audit Log</button>
-        </nav>
-
-        <!-- MANAGER LIVE -->
-        <section id="managerTab" class="tab-panel">
-          <div class="panel-grid two-up">
-            <article class="card">
-              <div class="card-head">
-                <h2>Live punch feed</h2>
-                <p>This updates as workers punch from their phones.</p>
-              </div>
-
-              <div class="toolbar-grid">
-                <label>
-                  <span>Time range</span>
-                  <select id="liveRangeFilter">
-                    <option value="today">Today</option>
-                    <option value="week">This Week</option>
-                    <option value="all">All Loaded</option>
-                  </select>
-                </label>
-
-                <label>
-                  <span>Worker name</span>
-                  <input id="liveNameFilter" type="text" placeholder="Filter by worker" />
-                </label>
-
-                <label>
-                  <span>Flags only</span>
-                  <select id="liveFlagFilter">
-                    <option value="">All</option>
-                    <option value="duplicates">Duplicate punches</option>
-                    <option value="open">Open shifts</option>
-                    <option value="late_lunch">Late lunch returns</option>
-                    <option value="no_lunch">No lunch taken</option>
-                  </select>
-                </label>
-              </div>
-
-              <div class="mini-table-wrap tall">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Name</th>
-                      <th>Action</th>
-                      <th>Source</th>
-                      <th>Flags</th>
-                    </tr>
-                  </thead>
-                  <tbody id="livePunchBody">
-                    <tr><td colspan="5">No live data yet.</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </article>
-
-            <article class="card">
-              <div class="card-head">
-                <h2>Who is clocked in right now</h2>
-                <p>Based on the latest punch for each person.</p>
-              </div>
-              <div id="activeNowList" class="list-stack empty-state">
-                Nobody is currently clocked in.
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <!-- TIMESHEETS -->
-        <section id="timesheetsTab" class="tab-panel hidden">
-          <div class="card">
-            <div class="card-head split-head">
-              <div>
-                <h2>Weekly timesheets</h2>
-                <p>Exceptions show before signoff so bad records do not sneak through.</p>
-              </div>
-
-              <div class="inline-field slim-field">
-                <label for="weekPicker">Week start</label>
-                <input id="weekPicker" type="date" />
-              </div>
+      <section id="editPunchesTab" class="tab-panel hidden">
+        <div class="panel-grid two-up">
+          <article class="card">
+            <div class="card-head">
+              <h2>Manual correction</h2>
+              <p>Add a manual punch for someone when a correction is needed.</p>
             </div>
 
-            <div class="toolbar-grid">
+            <form id="manualPunchForm" class="grid-form">
               <label>
                 <span>Name</span>
-                <input id="timesheetNameFilter" type="text" placeholder="Filter by worker" />
+                <input id="manualPunchNameInput" type="text" placeholder="Brandon Evanshine" required />
               </label>
-
               <label>
-                <span>Status</span>
-                <select id="timesheetStatusFilter">
-                  <option value="">All</option>
-                  <option value="open">Open</option>
-                  <option value="signed">Signed</option>
-                  <option value="exception">Exceptions Only</option>
+                <span>Action</span>
+                <select id="manualPunchActionInput">
+                  <option value="clock_in">Clock In</option>
+                  <option value="start_lunch">Start Lunch</option>
+                  <option value="end_lunch">End Lunch</option>
+                  <option value="clock_out">Clock Out</option>
                 </select>
               </label>
-
               <label>
-                <span>Unsigned only</span>
-                <select id="unsignedOnlyFilter">
-                  <option value="no">No</option>
-                  <option value="yes">Yes</option>
-                </select>
+                <span>Date</span>
+                <input id="manualPunchDateInput" type="date" required />
               </label>
-            </div>
-
-            <div class="mini-table-wrap tall">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Week</th>
-                    <th>Hours</th>
-                    <th>Status</th>
-                    <th>Flags</th>
-                    <th>Signed By</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody id="timesheetBody">
-                  <tr><td colspan="7">No timesheets yet.</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <!-- EDIT PUNCHES -->
-        <section id="editPunchesTab" class="tab-panel hidden">
-          <div class="panel-grid two-up">
-            <article class="card">
-              <div class="card-head">
-                <h2>Manual correction</h2>
-                <p>Every manual correction writes to the audit trail.</p>
+              <label>
+                <span>Time</span>
+                <input id="manualPunchTimeInput" type="time" required />
+              </label>
+              <div class="form-actions full-width">
+                <button class="primary-btn" type="submit">Add manual punch</button>
               </div>
+            </form>
+          </article>
 
-              <form id="manualPunchForm" class="grid-form">
-                <label>
-                  <span>Name</span>
-                  <input id="manualPunchNameInput" type="text" placeholder="Brandon Evanshine" required />
-                </label>
-
-                <label>
-                  <span>Action</span>
-                  <select id="manualPunchActionInput">
-                    <option value="clock_in">Clock In</option>
-                    <option value="start_lunch">Start Lunch</option>
-                    <option value="end_lunch">End Lunch</option>
-                    <option value="clock_out">Clock Out</option>
-                  </select>
-                </label>
-
-                <label>
-                  <span>Date</span>
-                  <input id="manualPunchDateInput" type="date" required />
-                </label>
-
-                <label>
-                  <span>Time</span>
-                  <input id="manualPunchTimeInput" type="time" required />
-                </label>
-
-                <label class="full-width">
-                  <span>Reason for correction</span>
-                  <input id="manualPunchReasonInput" type="text" placeholder="Missed punch, phone issue, manager correction..." required />
-                </label>
-
-                <div class="form-actions full-width">
-                  <button class="primary-btn" type="submit">Add manual punch</button>
-                </div>
-              </form>
-            </article>
-
-            <article class="card">
-              <div class="card-head">
-                <h2>Edit filters</h2>
-                <p>Find problem punches faster.</p>
-              </div>
-
-              <div class="stack gap16">
-                <label>
-                  <span>Name</span>
-                  <input id="editFilterNameInput" type="text" placeholder="Type a name or leave blank" />
-                </label>
-
-                <label>
-                  <span>Source</span>
-                  <select id="editSourceFilter">
-                    <option value="">All</option>
-                    <option value="public_qr">Worker QR</option>
-                    <option value="manager_manual">Manual</option>
-                    <option value="manager_edit">Edited</option>
-                  </select>
-                </label>
-
-                <label>
-                  <span>Corrected only</span>
-                  <select id="correctedOnlyFilter">
-                    <option value="no">No</option>
-                    <option value="yes">Yes</option>
-                  </select>
-                </label>
-              </div>
-            </article>
-          </div>
-
-          <div class="card">
+          <article class="card">
             <div class="card-head">
-              <h2>Punch editor</h2>
-              <p>Edit time, action, or delete incorrect punches. Reason required.</p>
+              <h2>Edit filters</h2>
+              <p>Filter today’s punches by name to make edits faster.</p>
             </div>
 
-            <div class="mini-table-wrap tall">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Action</th>
-                    <th>Date</th>
-                    <th>Time</th>
-                    <th>Source</th>
-                    <th>Flags</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="editPunchesBody">
-                  <tr><td colspan="7">No punches yet.</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <!-- EXPORTS -->
-        <section id="exportsTab" class="tab-panel hidden">
-          <div class="panel-grid two-up">
-            <article class="card">
-              <div class="card-head">
-                <h2>Export tools</h2>
-                <p>Useful reports managers actually need.</p>
-              </div>
-
-              <div class="stack gap16">
-                <label>
-                  <span>Worker summary</span>
-                  <select id="exportWorkerSelect">
-                    <option value="">All workers</option>
-                  </select>
-                </label>
-
-                <div class="button-grid">
-                  <button id="printTimesheetBtn" class="primary-btn" type="button">Print Selected Timesheet</button>
-                  <button id="exportPayrollCsvBtn" class="secondary-btn" type="button">Payroll CSV</button>
-                  <button id="exportExceptionsCsvBtn" class="secondary-btn" type="button">Exception Report</button>
-                  <button id="exportMissedPunchCsvBtn" class="secondary-btn" type="button">Missed Punch Report</button>
-                </div>
-              </div>
-            </article>
-
-            <article class="card">
-              <div class="card-head">
-                <h2>Worker summary preview</h2>
-                <p>Quick view before export or print.</p>
-              </div>
-              <div id="workerSummaryPreview" class="soft-card">
-                Select a worker to preview summary.
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <!-- ADMIN -->
-        <section id="adminTab" class="tab-panel hidden">
-          <div class="panel-grid two-up">
-            <article class="card">
-              <div class="card-head">
-                <h2>Create or update manager/admin profile</h2>
-                <p>Use this after the person already has Firebase Auth access.</p>
-              </div>
-
-              <form id="userProfileForm" class="grid-form">
-                <label>
-                  <span>User UID</span>
-                  <input id="userUidInput" type="text" placeholder="Paste Firebase Auth UID" required />
-                </label>
-
-                <label>
-                  <span>Full name</span>
-                  <input id="userNameInput" type="text" placeholder="Brandon Evanshine" required />
-                </label>
-
-                <label>
-                  <span>Email</span>
-                  <input id="userEmailInput" type="email" placeholder="manager@company.com" required />
-                </label>
-
-                <label>
-                  <span>Role</span>
-                  <select id="userRoleInput">
-                    <option value="manager">Manager</option>
-                    <option value="admin">Admin</option>
-                  </select>
-                </label>
-
-                <label>
-                  <span>Branch / Location</span>
-                  <input id="userBranchInput" type="text" placeholder="Columbus DC / Branch 12" />
-                </label>
-
-                <label>
-                  <span>Active</span>
-                  <select id="userActiveInput">
-                    <option value="true">Yes</option>
-                    <option value="false">No</option>
-                  </select>
-                </label>
-
-                <div class="form-actions full-width">
-                  <button class="primary-btn" type="submit">Save profile</button>
-                </div>
-              </form>
-            </article>
-
-            <article class="card">
-              <div class="card-head">
-                <h2>Manager/Admin list</h2>
-                <p>Inactive users are hidden unless you choose to show them.</p>
-              </div>
-
-              <div class="stack gap16">
-                <label>
-                  <span>Show inactive users</span>
-                  <select id="showInactiveUsersFilter">
-                    <option value="no">No</option>
-                    <option value="yes">Yes</option>
-                  </select>
-                </label>
-              </div>
-
-              <div class="mini-table-wrap tall">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Email</th>
-                      <th>Role</th>
-                      <th>Branch</th>
-                      <th>Active</th>
-                    </tr>
-                  </thead>
-                  <tbody id="userListBody">
-                    <tr><td colspan="5">No users yet.</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <!-- AUDIT -->
-        <section id="auditTab" class="tab-panel hidden">
-          <div class="card">
-            <div class="card-head">
-              <h2>Audit log</h2>
-              <p>Shows who changed what, when, and why.</p>
-            </div>
-
-            <div class="toolbar-grid">
+            <div class="stack gap16">
               <label>
-                <span>Search worker</span>
-                <input id="auditNameFilter" type="text" placeholder="Filter by worker name" />
-              </label>
-
-              <label>
-                <span>Action type</span>
-                <select id="auditActionFilter">
-                  <option value="">All</option>
-                  <option value="manual_add">Manual Add</option>
-                  <option value="edit">Edit</option>
-                  <option value="delete">Delete</option>
-                  <option value="timesheet_sign">Timesheet Sign</option>
-                  <option value="timesheet_reopen">Timesheet Reopen</option>
-                </select>
+                <span>Filter by name</span>
+                <input id="editFilterNameInput" type="text" placeholder="Type a name or leave blank" />
               </label>
             </div>
+          </article>
+        </div>
 
-            <div class="mini-table-wrap tall">
-              <table>
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>By</th>
-                    <th>Type</th>
-                    <th>Worker</th>
-                    <th>Reason</th>
-                    <th>Old Value</th>
-                    <th>New Value</th>
-                  </tr>
-                </thead>
-                <tbody id="auditBody">
-                  <tr><td colspan="7">No audit history yet.</td></tr>
-                </tbody>
-              </table>
-            </div>
+        <div class="card">
+          <div class="card-head">
+            <h2>Punch editor</h2>
+            <p>Edit time, action, or delete incorrect punches.</p>
           </div>
-        </section>
+
+          <div class="mini-table-wrap tall">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Action</th>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th>Source</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="editPunchesBody">
+                <tr><td colspan="6">No punches yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
-    </section>
+
+      <section id="adminTab" class="tab-panel hidden">
+        <div class="panel-grid two-up">
+          <article class="card">
+            <div class="card-head">
+              <h2>Create or update manager/admin profile</h2>
+              <p>This writes to Firestore. The person still needs a Firebase Auth account.</p>
+            </div>
+
+            <form id="userProfileForm" class="grid-form">
+              <label>
+                <span>User UID</span>
+                <input id="userUidInput" type="text" placeholder="Paste Firebase Auth UID" required />
+              </label>
+              <label>
+                <span>Full name</span>
+                <input id="userNameInput" type="text" placeholder="Brandon Evanshine" required />
+              </label>
+              <label>
+                <span>Email</span>
+                <input id="userEmailInput" type="email" placeholder="manager@company.com" required />
+              </label>
+              <label>
+                <span>Role</span>
+                <select id="userRoleInput">
+                  <option value="manager">Manager</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+              <label>
+                <span>Active</span>
+                <select id="userActiveInput">
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+              <div class="form-actions full-width">
+                <button class="primary-btn" type="submit">Save profile</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Manager/Admin list</h2>
+              <p>Quick reference for people with dashboard access.</p>
+            </div>
+            <div class="mini-table-wrap tall">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Active</th>
+                  </tr>
+                </thead>
+                <tbody id="userListBody">
+                  <tr><td colspan="4">No users yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
   </main>
 
   <div id="toast" class="toast hidden"></div>
