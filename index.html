@@ -55,6 +55,20 @@
         </div>
 
         <div id="workerStatusMessage" class="status-box">Enter your name and punch.</div>
+
+        <div class="mini-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date/Time</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="workerHistoryBody">
+              <tr><td colspan="2">No punches yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -86,7 +100,7 @@
         <button class="tab" data-tab="timesheetsTab" type="button" id="timesheetsTabBtn">Weekly Signoff</button>
         <button class="tab" data-tab="editPunchesTab" type="button" id="editPunchesTabBtn">Edit Punches</button>
         <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
-        <button class="tab" data-tab="qrTab" type="button">QR Tools</button>
+        <button class="tab" data-tab="agencyTab" type="button" id="agencyTabBtn">Agency Export</button>
       </nav>
 
       <section id="managerTab" class="tab-panel">
@@ -195,7 +209,7 @@
           <article class="card">
             <div class="card-head">
               <h2>Edit filters</h2>
-              <p>Filter today’s punches by name to make edits faster.</p>
+              <p>Filter punches by name to make edits faster.</p>
             </div>
 
             <div class="stack gap16">
@@ -210,7 +224,7 @@
         <div class="card">
           <div class="card-head">
             <h2>Punch editor</h2>
-            <p>Edit time, action, or delete incorrect punches.</p>
+            <p>Edit time, action, or delete incorrect punches. Admin can also see who edited each record.</p>
           </div>
 
           <div class="mini-table-wrap tall">
@@ -222,11 +236,13 @@
                   <th>Date</th>
                   <th>Time</th>
                   <th>Source</th>
+                  <th>Edited By</th>
+                  <th>Edited At</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="editPunchesBody">
-                <tr><td colspan="6">No punches yet.</td></tr>
+                <tr><td colspan="8">No punches yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -297,6 +313,36 @@
           </article>
         </div>
       </section>
+
+      <section id="agencyTab" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>Temp Agency Export</h2>
+            <p>Preview exactly what the agency will receive, then print or save it as a PDF.</p>
+          </div>
+
+          <div class="grid-form compact-form" style="margin-bottom:16px;">
+            <label>
+              <span>Worker</span>
+              <select id="agencyWorkerSelect">
+                <option value="">Select a worker</option>
+              </select>
+            </label>
+
+            <div class="form-actions full-width">
+              <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
+              <button id="agencyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
+            </div>
+          </div>
+
+          <div id="agencyPreviewWrap" class="mini-table-wrap">
+            <div id="agencyPreview" style="padding:18px;">
+              <div class="empty-state">Choose a worker and click Preview Sheet.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
   </main>
 
   <div id="toast" class="toast hidden"></div>
