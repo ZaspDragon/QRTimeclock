@@ -47,6 +47,7 @@ const els = {
   workerLastPunchValue: document.getElementById('workerLastPunchValue'),
   workerStatusValue: document.getElementById('workerStatusValue'),
   workerStatusMessage: document.getElementById('workerStatusMessage'),
+  workerHistoryBody: document.getElementById('workerHistoryBody'),
 
   authCard: document.getElementById('authCard'),
   appShell: document.getElementById('appShell'),
@@ -65,8 +66,18 @@ const els = {
   weekPicker: document.getElementById('weekPicker'),
   managerTabBtn: document.getElementById('managerTabBtn'),
   timesheetsTabBtn: document.getElementById('timesheetsTabBtn'),
+  editPunchesTabBtn: document.getElementById('editPunchesTabBtn'),
   adminTabBtn: document.getElementById('adminTabBtn'),
+  agencyTabBtn: document.getElementById('agencyTabBtn'),
   tabBar: document.getElementById('tabBar'),
+
+  manualPunchForm: document.getElementById('manualPunchForm'),
+  manualPunchNameInput: document.getElementById('manualPunchNameInput'),
+  manualPunchActionInput: document.getElementById('manualPunchActionInput'),
+  manualPunchDateInput: document.getElementById('manualPunchDateInput'),
+  manualPunchTimeInput: document.getElementById('manualPunchTimeInput'),
+  editFilterNameInput: document.getElementById('editFilterNameInput'),
+  editPunchesBody: document.getElementById('editPunchesBody'),
 
   userProfileForm: document.getElementById('userProfileForm'),
   userUidInput: document.getElementById('userUidInput'),
@@ -76,9 +87,10 @@ const els = {
   userActiveInput: document.getElementById('userActiveInput'),
   userListBody: document.getElementById('userListBody'),
 
-  companyQrForm: document.getElementById('companyQrForm'),
-  companyUrlInput: document.getElementById('companyUrlInput'),
-  companyQrCanvas: document.getElementById('companyQrCanvas'),
+  agencyWorkerSelect: document.getElementById('agencyWorkerSelect'),
+  agencyPreviewBtn: document.getElementById('agencyPreviewBtn'),
+  agencyPrintBtn: document.getElementById('agencyPrintBtn'),
+  agencyPreview: document.getElementById('agencyPreview'),
 
   toast: document.getElementById('toast'),
 };
@@ -86,9 +98,6 @@ const els = {
 init();
 
 async function init() {
-  injectWorkerHistoryUi();
-  injectManagerPunchEditorUi();
-  injectAgencyExportUi();
   wireEvents();
 
   const storedWorkerName = localStorage.getItem('workerPunchName') || '';
@@ -103,12 +112,13 @@ async function init() {
     els.weekPicker.value = formatDateInput(state.selectedWeekStart);
   }
 
-  if (els.companyUrlInput) {
-    els.companyUrlInput.value = appSettings.defaultAppUrl || window.location.href;
+  if (els.manualPunchDateInput) {
+    els.manualPunchDateInput.value = formatDateInput(new Date());
   }
 
-  await ensureQrCodeLibrary();
-  renderCompanyQr();
+  if (els.manualPunchTimeInput) {
+    els.manualPunchTimeInput.value = formatTimeForInput(Date.now());
+  }
 
   onAuthStateChanged(auth, async (user) => {
     clearLiveListeners();
@@ -135,12 +145,9 @@ async function init() {
       attachRoleViews();
       attachManagerLiveViews();
       attachTimesheetView();
-      attachManagerPunchEditor();
-      attachAgencyExportEvents();
-
-      if (isAdmin()) {
-        attachUsersView();
-      }
+      attachUsersViewIfAdmin();
+      populateAgencyWorkerSelect();
+      renderAgencyPreview();
     } catch (error) {
       console.error(error);
       toast(error.message || 'Sign-in setup failed.', true);
@@ -175,7 +182,6 @@ function wireEvents() {
     if (state.me && isManager()) {
       clearTimesheetListenerOnly();
       attachTimesheetView();
-      attachManagerPunchEditor();
     }
   });
 
@@ -185,131 +191,17 @@ function wireEvents() {
     switchTab(btn.dataset.tab);
   });
 
+  els.manualPunchForm?.addEventListener('submit', handleManualPunchSubmit);
+
+  els.editFilterNameInput?.addEventListener('input', () => {
+    renderEditPunchesTable(state.allPunchRows);
+  });
+
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
 
-  els.companyQrForm?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    await ensureQrCodeLibrary();
-    renderCompanyQr();
-  });
-}
-
-function injectWorkerHistoryUi() {
-  const workerCard = document.getElementById('workerCard');
-  if (!workerCard || document.getElementById('workerHistoryBody')) return;
-
-  const historyWrap = document.createElement('div');
-  historyWrap.className = 'mini-table-wrap';
-  historyWrap.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th>Date/Time</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody id="workerHistoryBody">
-        <tr><td colspan="2">No punches yet.</td></tr>
-      </tbody>
-    </table>
-  `;
-
-  workerCard.appendChild(historyWrap);
-}
-
-function injectManagerPunchEditorUi() {
-  const managerTab = document.getElementById('managerTab');
-  if (!managerTab || document.getElementById('managerPunchEditorCard')) return;
-
-  const card = document.createElement('article');
-  card.className = 'card';
-  card.id = 'managerPunchEditorCard';
-  card.innerHTML = `
-    <div class="card-head">
-      <h2>Edit punches</h2>
-      <p>Managers can correct punch names, times, actions, or delete bad punches.</p>
-    </div>
-
-    <div style="display:grid;gap:12px;margin-bottom:14px;">
-      <label>
-        <span>Filter by name</span>
-        <input id="managerPunchFilterInput" type="text" placeholder="Type a worker name" />
-      </label>
-    </div>
-
-    <div class="mini-table-wrap tall">
-      <table>
-        <thead>
-          <tr>
-            <th>Date/Time</th>
-            <th>Name</th>
-            <th>Action</th>
-            <th>Source</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="managerPunchEditorBody">
-          <tr><td colspan="5">No punches yet.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  `;
-
-  managerTab.appendChild(card);
-}
-
-function injectAgencyExportUi() {
-  const tabBar = document.getElementById('tabBar');
-  const appShell = document.getElementById('appShell');
-  if (!tabBar || !appShell || document.getElementById('agencyTabBtn')) return;
-
-  const adminBtn = document.getElementById('adminTabBtn');
-  const agencyBtn = document.createElement('button');
-  agencyBtn.className = 'tab';
-  agencyBtn.type = 'button';
-  agencyBtn.dataset.tab = 'agencyTab';
-  agencyBtn.id = 'agencyTabBtn';
-  agencyBtn.textContent = 'Agency Export';
-
-  if (adminBtn) {
-    adminBtn.insertAdjacentElement('afterend', agencyBtn);
-  } else {
-    tabBar.appendChild(agencyBtn);
-  }
-
-  const agencySection = document.createElement('section');
-  agencySection.id = 'agencyTab';
-  agencySection.className = 'tab-panel hidden';
-  agencySection.innerHTML = `
-    <div class="card">
-      <div class="card-head">
-        <h2>Temp Agency Export</h2>
-        <p>Preview exactly what the agency will receive, then print or save it as a PDF.</p>
-      </div>
-
-      <div class="grid-form compact-form" style="margin-bottom:16px;">
-        <label>
-          <span>Worker</span>
-          <select id="agencyWorkerSelect">
-            <option value="">Select a worker</option>
-          </select>
-        </label>
-
-        <div class="form-actions full-width">
-          <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
-          <button id="agencyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
-        </div>
-      </div>
-
-      <div id="agencyPreviewWrap" class="mini-table-wrap">
-        <div id="agencyPreview" style="padding:18px;">
-          <div class="empty-state">Choose a worker and click Preview Sheet.</div>
-        </div>
-      </div>
-    </div>
-  `;
-
-  appShell.appendChild(agencySection);
+  els.agencyPreviewBtn?.addEventListener('click', () => renderAgencyPreview());
+  els.agencyPrintBtn?.addEventListener('click', () => printAgencyPreview());
+  els.agencyWorkerSelect?.addEventListener('change', () => renderAgencyPreview());
 }
 
 async function handleWorkerPunch(action) {
@@ -363,6 +255,78 @@ async function handleWorkerPunch(action) {
   }
 }
 
+async function handleManualPunchSubmit(event) {
+  event.preventDefault();
+
+  if (!isManager()) {
+    toast('Only managers and admins can add manual punches.', true);
+    return;
+  }
+
+  const name = prettifyHumanName(els.manualPunchNameInput?.value.trim());
+  const nameKey = normalizeName(name);
+  const action = els.manualPunchActionInput?.value;
+  const dateValue = els.manualPunchDateInput?.value;
+  const timeValue = els.manualPunchTimeInput?.value;
+
+  if (!name || !nameKey) {
+    toast('Enter a valid name.', true);
+    return;
+  }
+
+  if (!action || !dateValue || !timeValue) {
+    toast('Fill out all manual punch fields.', true);
+    return;
+  }
+
+  const parsedMs = parseLocalDateAndTime(dateValue, timeValue);
+  if (!parsedMs) {
+    toast('Invalid date or time.', true);
+    return;
+  }
+
+  const punchDate = new Date(parsedMs);
+  const dateKey = formatDateKey(punchDate);
+  const weekKey = formatDateKey(getMondayDate(punchDate));
+
+  try {
+    await addDoc(collection(db, 'punches'), {
+      name,
+      nameKey,
+      action,
+      timestamp: serverTimestamp(),
+      timestampMs: parsedMs,
+      dateKey,
+      weekKey,
+      source: 'manual_manager',
+      createdAt: serverTimestamp(),
+      createdBy: state.profile?.name || state.me?.email || 'Manager'
+    });
+
+    await addDoc(collection(db, 'punch_edits'), {
+      type: 'manual_add',
+      name,
+      nameKey,
+      action,
+      timestampMs: parsedMs,
+      dateKey,
+      weekKey,
+      source: 'manual_manager',
+      editedBy: state.profile?.name || state.me?.email || 'Manager',
+      editedAt: serverTimestamp()
+    });
+
+    els.manualPunchForm?.reset();
+    if (els.manualPunchDateInput) els.manualPunchDateInput.value = formatDateInput(new Date());
+    if (els.manualPunchTimeInput) els.manualPunchTimeInput.value = formatTimeForInput(Date.now());
+
+    toast('Manual punch added.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not add manual punch.', true);
+  }
+}
+
 function attachWorkerLiveView(name) {
   if (state.workerUnsub) {
     try { state.workerUnsub(); } catch (_) {}
@@ -373,7 +337,6 @@ function attachWorkerLiveView(name) {
   if (!nameKey) return;
 
   const todayKey = formatDateKey(new Date());
-  const workerHistoryBody = document.getElementById('workerHistoryBody');
 
   const q = query(
     collection(db, 'punches'),
@@ -391,8 +354,8 @@ function attachWorkerLiveView(name) {
       if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = '-';
       if (els.workerStatusValue) els.workerStatusValue.textContent = 'Ready';
       if (els.workerStatusMessage) els.workerStatusMessage.textContent = 'Enter your name and punch.';
-      if (workerHistoryBody) {
-        workerHistoryBody.innerHTML = '<tr><td colspan="2">No punches yet.</td></tr>';
+      if (els.workerHistoryBody) {
+        els.workerHistoryBody.innerHTML = '<tr><td colspan="2">No punches yet.</td></tr>';
       }
       return;
     }
@@ -410,8 +373,8 @@ function attachWorkerLiveView(name) {
         : `${statusLabelForAction(last.action)} at ${formatDateTime(last.timestampMs)}.`;
     }
 
-    if (workerHistoryBody) {
-      workerHistoryBody.innerHTML = rows.map((row) => `
+    if (els.workerHistoryBody) {
+      els.workerHistoryBody.innerHTML = rows.map((row) => `
         <tr>
           <td>${formatDateTime(row.timestampMs)}</td>
           <td>${prettyAction(row.action)}</td>
@@ -481,8 +444,9 @@ function showLoggedIn() {
 function attachRoleViews() {
   els.managerTabBtn?.classList.remove('hidden');
   els.timesheetsTabBtn?.classList.remove('hidden');
+  els.editPunchesTabBtn?.classList.remove('hidden');
   els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
-  document.getElementById('agencyTabBtn')?.classList.remove('hidden');
+  els.agencyTabBtn?.classList.remove('hidden');
   switchTab('managerTab');
 }
 
@@ -500,7 +464,7 @@ function attachManagerLiveViews() {
   const liveQuery = query(
     collection(db, 'punches'),
     orderBy('timestampMs', 'desc'),
-    limit(120)
+    limit(250)
   );
 
   state.unsubscribers.push(
@@ -511,7 +475,7 @@ function attachManagerLiveViews() {
         state.allPunchRows = rows;
         renderLivePunches(rows);
         renderActiveNow(rows);
-        renderManagerPunchEditor(rows);
+        renderEditPunchesTable(rows);
       },
       (error) => {
         console.error(error);
@@ -577,55 +541,59 @@ function renderActiveNow(rows) {
     .join('');
 }
 
-function attachManagerPunchEditor() {
-  const filterInput = document.getElementById('managerPunchFilterInput');
-  if (!filterInput || filterInput.dataset.wired === 'yes') return;
+function renderEditPunchesTable(rows) {
+  if (!els.editPunchesBody) return;
 
-  filterInput.dataset.wired = 'yes';
-  filterInput.addEventListener('input', () => {
-    renderManagerPunchEditor(state.allPunchRows);
-  });
-}
-
-function renderManagerPunchEditor(rows) {
-  const body = document.getElementById('managerPunchEditorBody');
-  const filterInput = document.getElementById('managerPunchFilterInput');
-  if (!body) return;
-
-  const filter = String(filterInput?.value || '').trim().toLowerCase();
+  const filter = String(els.editFilterNameInput?.value || '').trim().toLowerCase();
   const filtered = rows.filter((row) => {
     if (!filter) return true;
     return String(row.name || '').toLowerCase().includes(filter);
   });
 
   if (!filtered.length) {
-    body.innerHTML = '<tr><td colspan="5">No punches found.</td></tr>';
+    els.editPunchesBody.innerHTML = '<tr><td colspan="8">No punches found.</td></tr>';
     return;
   }
 
-  body.innerHTML = filtered.map((row) => `
-    <tr>
-      <td>${formatDateTime(row.timestampMs)}</td>
-      <td>${escapeHtml(row.name || '-')}</td>
-      <td>${prettyAction(row.action)}</td>
-      <td>${escapeHtml(row.source || '-')}</td>
-      <td>
-        <button class="secondary-btn manager-edit-punch-btn" data-id="${row.id}" type="button">Edit</button>
-        <button class="danger-btn manager-delete-punch-btn" data-id="${row.id}" type="button">Delete</button>
-      </td>
-    </tr>
-  `).join('');
+  els.editPunchesBody.innerHTML = filtered.map((row) => {
+    const editedAtText = row.editedAt?.seconds
+      ? formatDateTime(row.editedAt.seconds * 1000)
+      : '-';
 
-  body.querySelectorAll('.manager-edit-punch-btn').forEach((btn) => {
+    const rowClass = row.editedBy ? 'class="edited-row"' : '';
+
+    return `
+      <tr ${rowClass}>
+        <td>${escapeHtml(row.name || '-')}</td>
+        <td>${prettyAction(row.action)}</td>
+        <td>${formatDateOnly(row.timestampMs)}</td>
+        <td>${formatTime(row.timestampMs)}</td>
+        <td>${escapeHtml(row.source || '-')}</td>
+        <td>${escapeHtml(row.editedBy || '-')}</td>
+        <td>${escapeHtml(editedAtText)}</td>
+        <td>
+          <button class="secondary-btn manager-edit-punch-btn" data-id="${row.id}" type="button">Edit</button>
+          <button class="danger-btn manager-delete-punch-btn" data-id="${row.id}" type="button">Delete</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  els.editPunchesBody.querySelectorAll('.manager-edit-punch-btn').forEach((btn) => {
     btn.addEventListener('click', () => editPunch(btn.dataset.id));
   });
 
-  body.querySelectorAll('.manager-delete-punch-btn').forEach((btn) => {
+  els.editPunchesBody.querySelectorAll('.manager-delete-punch-btn').forEach((btn) => {
     btn.addEventListener('click', () => deletePunchRecord(btn.dataset.id));
   });
 }
 
 async function editPunch(punchId) {
+  if (!isManager()) {
+    toast('Only managers and admins can edit punches.', true);
+    return;
+  }
+
   const row = state.allPunchRows.find((r) => r.id === punchId);
   if (!row) {
     toast('Punch not found.', true);
@@ -671,17 +639,45 @@ async function editPunch(punchId) {
   const dateKey = formatDateKey(date);
   const weekKey = formatDateKey(getMondayDate(date));
 
+  const updatedPayload = {
+    name: prettyName,
+    nameKey,
+    action,
+    timestampMs: parsedMs,
+    dateKey,
+    weekKey,
+    editedAt: serverTimestamp(),
+    editedBy: state.profile?.name || state.me?.email || 'Manager'
+  };
+
   try {
-    await updateDoc(doc(db, 'punches', punchId), {
-      name: prettyName,
-      nameKey,
-      action,
-      timestampMs: parsedMs,
-      dateKey,
-      weekKey,
-      editedAt: serverTimestamp(),
-      editedBy: state.profile?.name || state.me?.email || 'Manager'
+    await addDoc(collection(db, 'punch_edits'), {
+      punchId,
+      type: 'edit',
+      original: {
+        name: row.name || '',
+        nameKey: row.nameKey || '',
+        action: row.action || '',
+        timestampMs: row.timestampMs || 0,
+        dateKey: row.dateKey || '',
+        weekKey: row.weekKey || '',
+        source: row.source || '',
+        editedBy: row.editedBy || '',
+      },
+      updated: {
+        name: prettyName,
+        nameKey,
+        action,
+        timestampMs: parsedMs,
+        dateKey,
+        weekKey,
+        source: row.source || ''
+      },
+      editedBy: state.profile?.name || state.me?.email || 'Manager',
+      editedAt: serverTimestamp()
     });
+
+    await updateDoc(doc(db, 'punches', punchId), updatedPayload);
 
     toast('Punch updated.');
   } catch (error) {
@@ -691,10 +687,24 @@ async function editPunch(punchId) {
 }
 
 async function deletePunchRecord(punchId) {
+  if (!isManager()) {
+    toast('Only managers and admins can delete punches.', true);
+    return;
+  }
+
+  const row = state.allPunchRows.find((r) => r.id === punchId);
   const okay = confirm('Delete this punch?');
   if (!okay) return;
 
   try {
+    await addDoc(collection(db, 'punch_edits'), {
+      punchId,
+      type: 'delete',
+      original: row || null,
+      editedBy: state.profile?.name || state.me?.email || 'Manager',
+      editedAt: serverTimestamp()
+    });
+
     await deleteDoc(doc(db, 'punches', punchId));
     toast('Punch deleted.');
   } catch (error) {
@@ -983,6 +993,11 @@ function buildWeekTotals(punches) {
   };
 }
 
+function attachUsersViewIfAdmin() {
+  if (!isAdmin()) return;
+  attachUsersView();
+}
+
 function attachUsersView() {
   const usersQuery = query(collection(db, 'users'), orderBy('name', 'asc'));
 
@@ -1037,50 +1052,26 @@ async function handleSaveProfile(event) {
   }
 }
 
-function attachAgencyExportEvents() {
-  const previewBtn = document.getElementById('agencyPreviewBtn');
-  const printBtn = document.getElementById('agencyPrintBtn');
-  const select = document.getElementById('agencyWorkerSelect');
-
-  if (previewBtn && previewBtn.dataset.wired !== 'yes') {
-    previewBtn.dataset.wired = 'yes';
-    previewBtn.addEventListener('click', () => renderAgencyPreview());
-  }
-
-  if (printBtn && printBtn.dataset.wired !== 'yes') {
-    printBtn.dataset.wired = 'yes';
-    printBtn.addEventListener('click', () => printAgencyPreview());
-  }
-
-  if (select && select.dataset.wired !== 'yes') {
-    select.dataset.wired = 'yes';
-    select.addEventListener('change', () => renderAgencyPreview());
-  }
-}
-
 function populateAgencyWorkerSelect() {
-  const select = document.getElementById('agencyWorkerSelect');
-  if (!select) return;
+  if (!els.agencyWorkerSelect) return;
 
-  const current = select.value;
+  const current = els.agencyWorkerSelect.value;
   const rows = getDerivedTimesheetRows();
 
-  select.innerHTML = '<option value="">Select a worker</option>' +
+  els.agencyWorkerSelect.innerHTML = '<option value="">Select a worker</option>' +
     rows.map((row) => `<option value="${escapeHtml(row.nameKey)}">${escapeHtml(row.name)}</option>`).join('');
 
   if (rows.some((row) => row.nameKey === current)) {
-    select.value = current;
+    els.agencyWorkerSelect.value = current;
   }
 }
 
 function renderAgencyPreview() {
-  const wrap = document.getElementById('agencyPreview');
-  const select = document.getElementById('agencyWorkerSelect');
-  if (!wrap || !select) return;
+  if (!els.agencyPreview || !els.agencyWorkerSelect) return;
 
-  const selectedNameKey = select.value;
+  const selectedNameKey = els.agencyWorkerSelect.value;
   if (!selectedNameKey) {
-    wrap.innerHTML = '<div class="empty-state">Choose a worker and click Preview Sheet.</div>';
+    els.agencyPreview.innerHTML = '<div class="empty-state">Choose a worker and click Preview Sheet.</div>';
     return;
   }
 
@@ -1088,7 +1079,7 @@ function renderAgencyPreview() {
   const row = getDerivedTimesheetRows().find((r) => r.nameKey === selectedNameKey && r.weekKey === weekKey);
 
   if (!row) {
-    wrap.innerHTML = '<div class="empty-state">No weekly sheet found for that worker.</div>';
+    els.agencyPreview.innerHTML = '<div class="empty-state">No weekly sheet found for that worker.</div>';
     return;
   }
 
@@ -1098,7 +1089,7 @@ function renderAgencyPreview() {
 
   const dailyRows = buildAgencyDailyRows(row.dailyTotals);
 
-  wrap.innerHTML = `
+  els.agencyPreview.innerHTML = `
     <div id="agencyPrintableSheet" style="background:#fff;color:#111;border-radius:12px;padding:24px;min-height:200px;">
       <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:18px;">
         <div>
@@ -1216,80 +1207,6 @@ function printAgencyPreview() {
   win.document.close();
 }
 
-async function ensureQrCodeLibrary() {
-  if (window.QRCode && typeof window.QRCode.toCanvas === 'function') {
-    return true;
-  }
-
-  const existing = document.querySelector('script[data-qrcode-lib="yes"]');
-  if (existing) {
-    await waitForQrCode(2000);
-    return !!window.QRCode;
-  }
-
-  const script = document.createElement('script');
-  script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';
-  script.async = true;
-  script.dataset.qrcodeLib = 'yes';
-
-  const loaded = new Promise((resolve, reject) => {
-    script.onload = () => resolve(true);
-    script.onerror = () => reject(new Error('Could not load QRCode library.'));
-  });
-
-  document.head.appendChild(script);
-
-  try {
-    await loaded;
-    await waitForQrCode(1000);
-    return !!window.QRCode;
-  } catch (error) {
-    console.error(error);
-    toast(error.message || 'Could not load QRCode library.', true);
-    return false;
-  }
-}
-
-function waitForQrCode(timeoutMs = 1000) {
-  return new Promise((resolve) => {
-    const started = Date.now();
-
-    function tick() {
-      if (window.QRCode && typeof window.QRCode.toCanvas === 'function') {
-        resolve(true);
-        return;
-      }
-
-      if (Date.now() - started >= timeoutMs) {
-        resolve(false);
-        return;
-      }
-
-      setTimeout(tick, 50);
-    }
-
-    tick();
-  });
-}
-
-function renderCompanyQr() {
-  const value = els.companyUrlInput?.value.trim() || window.location.href;
-
-  if (!window.QRCode || typeof window.QRCode.toCanvas !== 'function') {
-    toast('QRCode library did not load.', true);
-    return;
-  }
-
-  QRCode.toCanvas(els.companyQrCanvas, value, { width: 240 }, (error) => {
-    if (error) {
-      console.error(error);
-      toast(error.message || 'Could not generate QR.', true);
-      return;
-    }
-    toast('QR generated.');
-  });
-}
-
 function clearLiveListeners() {
   state.unsubscribers.forEach((unsub) => {
     try { unsub(); } catch (_) {}
@@ -1303,7 +1220,7 @@ function clearTimesheetListenerOnly() {
   if (state.me && isManager()) {
     attachManagerLiveViews();
     attachTimesheetView();
-    if (isAdmin()) attachUsersView();
+    attachUsersViewIfAdmin();
   }
 }
 
@@ -1379,6 +1296,27 @@ function parseLocalEditString(value) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+function parseLocalDateAndTime(dateValue, timeValue) {
+  if (!dateValue || !timeValue) return 0;
+  const cleaned = `${dateValue} ${timeValue}`;
+  const match = cleaned.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+  if (!match) return 0;
+
+  const [, y, m, d, h, min] = match;
+  const date = new Date(
+    Number(y),
+    Number(m) - 1,
+    Number(d),
+    Number(h),
+    Number(min),
+    0,
+    0
+  );
+
+  const ms = date.getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 function getMondayDate(date) {
   const d = new Date(date);
   const day = d.getDay();
@@ -1407,6 +1345,15 @@ function formatTime(ms) {
   });
 }
 
+function formatDateOnly(ms) {
+  if (!ms) return '-';
+  return new Date(ms).toLocaleDateString([], {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  });
+}
+
 function formatDateTime(ms) {
   if (!ms) return '-';
   return new Date(ms).toLocaleString([], {
@@ -1416,6 +1363,13 @@ function formatDateTime(ms) {
     hour: 'numeric',
     minute: '2-digit'
   });
+}
+
+function formatTimeForInput(ms) {
+  const d = new Date(ms);
+  const hour = String(d.getHours()).padStart(2, '0');
+  const minute = String(d.getMinutes()).padStart(2, '0');
+  return `${hour}:${minute}`;
 }
 
 function toast(message, isError = false) {
