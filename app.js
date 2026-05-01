@@ -32,6 +32,9 @@ const db = getFirestore(app);
 const state = {
   me: null,
   profile: null,
+  companyId: null,        // from user profile
+  agencyId: null,         // from user profile (null = direct company user)
+  companyDoc: null,       // loaded from companies/{companyId}
   unsubscribers: [],
   selectedWeekStart: getMondayDate(new Date()),
   workerUnsub: null,
@@ -141,6 +144,19 @@ async function init() {
       }
 
       state.profile = profileSnap.data();
+      state.companyId = state.profile.companyId || null;
+      state.agencyId = state.profile.agencyId || null;
+
+      // Load company doc if companyId exists
+      if (state.companyId) {
+        try {
+          const compSnap = await getDoc(doc(db, 'companies', state.companyId));
+          state.companyDoc = compSnap.exists() ? compSnap.data() : null;
+        } catch (_) {
+          state.companyDoc = null;
+        }
+      }
+
       showLoggedIn();
       attachRoleViews();
       attachManagerLiveViews();
@@ -428,9 +444,15 @@ async function handlePasswordReset() {
 }
 
 function showLoggedOut() {
+  state.companyId = null;
+  state.agencyId = null;
+  state.companyDoc = null;
   els.authCard?.classList.remove('hidden');
   els.appShell?.classList.add('hidden');
   els.sessionChip?.classList.add('hidden');
+  // Reset header
+  const headerP = document.querySelector('.topbar p');
+  if (headerP) headerP.textContent = 'Mobile punch tracking with live manager visibility and weekly signoff.';
 }
 
 function showLoggedIn() {
@@ -438,7 +460,25 @@ function showLoggedIn() {
   els.appShell?.classList.remove('hidden');
   els.sessionChip?.classList.remove('hidden');
   if (els.sessionName) els.sessionName.textContent = state.profile?.name || state.me?.email || 'Signed in';
-  if (els.sessionRole) els.sessionRole.textContent = state.profile?.role || 'manager';
+  if (els.sessionRole) {
+    const roleParts = [state.profile?.role || 'manager'];
+    if (state.agencyId) roleParts.push('agency');
+    els.sessionRole.textContent = roleParts.join(' · ');
+  }
+
+  // Show company name in header
+  const companyDisplayName = state.companyDoc?.name || (state.companyId ? state.companyId : appSettings.companyName);
+  const headerP = document.querySelector('.topbar p');
+  if (headerP) headerP.textContent = companyDisplayName + ' — TimeClock Pro';
+}
+
+function getCompanyName() {
+  return state.companyDoc?.name || state.companyId || appSettings.companyName;
+}
+
+/** Returns true if current user is scoped to an agency */
+function isAgencyUser() {
+  return !!state.agencyId;
 }
 
 function attachRoleViews() {
@@ -461,10 +501,15 @@ function switchTab(tabId) {
 }
 
 function attachManagerLiveViews() {
+  const constraints = [];
+  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
+  constraints.push(orderBy('timestampMs', 'desc'));
+  constraints.push(limit(250));
+
   const liveQuery = query(
     collection(db, 'punches'),
-    orderBy('timestampMs', 'desc'),
-    limit(250)
+    ...constraints
   );
 
   state.unsubscribers.push(
@@ -716,16 +761,18 @@ async function deletePunchRecord(punchId) {
 function attachTimesheetView() {
   const weekKey = formatDateKey(state.selectedWeekStart);
 
-  const punchesQuery = query(
-    collection(db, 'punches'),
-    where('weekKey', '==', weekKey),
-    orderBy('timestampMs', 'asc')
-  );
+  const punchConstraints = [where('weekKey', '==', weekKey)];
+  if (state.companyId) punchConstraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) punchConstraints.push(where('agencyId', '==', state.agencyId));
+  punchConstraints.push(orderBy('timestampMs', 'asc'));
 
-  const timesheetsQuery = query(
-    collection(db, 'timesheets'),
-    where('weekKey', '==', weekKey)
-  );
+  const punchesQuery = query(collection(db, 'punches'), ...punchConstraints);
+
+  const tsConstraints = [where('weekKey', '==', weekKey)];
+  if (state.companyId) tsConstraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) tsConstraints.push(where('agencyId', '==', state.agencyId));
+
+  const timesheetsQuery = query(collection(db, 'timesheets'), ...tsConstraints);
 
   state.unsubscribers.push(
     onSnapshot(
@@ -999,7 +1046,11 @@ function attachUsersViewIfAdmin() {
 }
 
 function attachUsersView() {
-  const usersQuery = query(collection(db, 'users'), orderBy('name', 'asc'));
+  const userConstraints = [];
+  if (state.companyId) userConstraints.push(where('companyId', '==', state.companyId));
+  userConstraints.push(orderBy('name', 'asc'));
+
+  const usersQuery = query(collection(db, 'users'), ...userConstraints);
 
   state.unsubscribers.push(
     onSnapshot(
@@ -1036,13 +1087,17 @@ async function handleSaveProfile(event) {
 
   try {
     const uid = els.userUidInput?.value.trim();
-    await setDoc(doc(db, 'users', uid), {
+    const profilePayload = {
       name: prettifyHumanName(els.userNameInput?.value.trim()),
       email: els.userEmailInput?.value.trim().toLowerCase(),
       role: els.userRoleInput?.value,
       active: els.userActiveInput?.value === 'true',
       updatedAt: serverTimestamp(),
-    }, { merge: true });
+    };
+    // Auto-assign current user's companyId to new profiles
+    if (state.companyId) profilePayload.companyId = state.companyId;
+
+    await setDoc(doc(db, 'users', uid), profilePayload, { merge: true });
 
     toast('User profile saved.');
     els.userProfileForm?.reset();
@@ -1101,7 +1156,7 @@ function renderAgencyPreview() {
           </div>
         </div>
         <div style="font-size:14px;line-height:1.7;text-align:right;">
-          <div><strong>Company:</strong> ${escapeHtml(appSettings.companyName || 'Company')}</div>
+          <div><strong>Company:</strong> ${escapeHtml(getCompanyName())}</div>
           <div><strong>Generated:</strong> ${escapeHtml(formatDateTime(Date.now()))}</div>
         </div>
       </div>
