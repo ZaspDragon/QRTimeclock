@@ -55,9 +55,31 @@ service cloud.firestore {
 
     // ─── employees (all workers, including temps) ────────
     match /employees/{employeeId} {
+      // Authenticated manager/admin reads (full access for their company)
       allow read: if signedIn() && sameCompany(resource.data);
+
+      // Public read for autocomplete (QR punch flow, unauthenticated)
+      allow read: if resource.data.status == 'active';
+
+      // Manager creates
       allow create: if isManager() && request.resource.data.companyId == myCompanyId();
+
+      // Auto-create from public QR punch flow (unauthenticated)
+      allow create: if
+        request.resource.data.name is string &&
+        request.resource.data.name.size() >= 2 &&
+        request.resource.data.name.size() <= 80 &&
+        request.resource.data.nameKey is string &&
+        request.resource.data.employeeNumber is string &&
+        request.resource.data.status == 'active' &&
+        request.resource.data.source == 'auto_created';
+
       allow update: if isManager() && sameCompany(resource.data);
+
+      // Allow the auto-created doc to write back its own employeeId
+      allow update: if
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employeeId']);
+
       allow delete: if isAdmin() && sameCompany(resource.data);
     }
 

@@ -480,3 +480,47 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Autocomplete dropdown ────────────────────────────── */
+.autocomplete-wrap {
+  position: relative;
+}
+.autocomplete-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--card-bg, #1a2236);
+  border: 1px solid rgba(100, 180, 255, 0.3);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.autocomplete-list li {
+  padding: 10px 14px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  color: #e0e7ef;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  transition: background 0.15s;
+}
+.autocomplete-list li:last-child {
+  border-bottom: none;
+}
+.autocomplete-list li:hover,
+.autocomplete-list li.active {
+  background: rgba(59, 130, 246, 0.25);
+}
+.autocomplete-list li .emp-num {
+  font-size: 0.8rem;
+  color: #8899aa;
+  margin-left: 8px;
+}
+.autocomplete-list li.new-worker {
+  color: #3bd576;
+  font-style: italic;
+}

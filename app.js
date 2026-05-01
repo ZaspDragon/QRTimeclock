@@ -40,6 +40,7 @@ const state = {
   selectedWeekStart: getMondayDate(new Date()),
   workerUnsub: null,
   workerEmployee: null,      // looked-up employee record for public punch
+  publicEmployees: [],       // cached employee list for public QR autocomplete
   allPunchRows: [],
   selectedWeekPunchRows: [],
   selectedWeekTimesheetDocs: {},
@@ -49,9 +50,9 @@ const state = {
 };
 
 const els = {
-  workerEmpNumberInput: document.getElementById('workerEmpNumberInput'),
-  workerLookupStatus: document.getElementById('workerLookupStatus'),
   workerNameInput: document.getElementById('workerNameInput'),
+  workerAutocompleteList: document.getElementById('workerAutocompleteList'),
+  workerLookupStatus: document.getElementById('workerLookupStatus'),
   workerNameValue: document.getElementById('workerNameValue'),
   workerLastActionValue: document.getElementById('workerLastActionValue'),
   workerLastPunchValue: document.getElementById('workerLastPunchValue'),
@@ -144,16 +145,17 @@ init();
 async function init() {
   wireEvents();
 
-  // Restore saved employee number if available
-  const storedEmpNum = localStorage.getItem('workerEmpNumber') || '';
+  // Load employees for public QR autocomplete
+  loadPublicEmployees();
+
+  // Restore last-used worker name
   const storedWorkerName = localStorage.getItem('workerPunchName') || '';
-  if (storedEmpNum && els.workerEmpNumberInput) {
-    els.workerEmpNumberInput.value = storedEmpNum;
-    handleWorkerEmpLookup(); // auto-lookup on page load
-  } else if (storedWorkerName) {
+  if (storedWorkerName) {
     const pretty = prettifyHumanName(storedWorkerName);
     if (els.workerNameInput) els.workerNameInput.value = pretty;
     if (els.workerNameValue) els.workerNameValue.textContent = pretty;
+    // Try to match to an existing employee
+    restoreWorkerFromName(pretty);
     attachWorkerLiveView(pretty);
   }
 
@@ -222,12 +224,16 @@ function wireEvents() {
     btn.addEventListener('click', () => handleWorkerPunch(btn.dataset.action));
   });
 
-  els.workerEmpNumberInput?.addEventListener('input', debounce(handleWorkerEmpLookup, 500));
+  // Name input with autocomplete
+  els.workerNameInput?.addEventListener('input', debounce(handleWorkerNameAutocomplete, 250));
+  els.workerNameInput?.addEventListener('focus', () => handleWorkerNameAutocomplete());
+  els.workerNameInput?.addEventListener('keydown', handleAutocompleteKeydown);
 
-  // Legacy name input is now read-only — filled by employee lookup
-  els.workerNameInput?.addEventListener('input', () => {
-    const value = prettifyHumanName(els.workerNameInput.value.trim());
-    if (els.workerNameValue) els.workerNameValue.textContent = value || '-';
+  // Close autocomplete on outside click
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.autocomplete-wrap')) {
+      hideAutocomplete();
+    }
   });
 
   els.loginForm?.addEventListener('submit', handleLogin);
@@ -285,61 +291,203 @@ function wireEvents() {
   els.agencyWorkerSelect?.addEventListener('change', () => renderAgencyPreview());
 }
 
-async function handleWorkerEmpLookup() {
-  const empNum = String(els.workerEmpNumberInput?.value || '').trim().toUpperCase();
-
-  if (!empNum) {
-    state.workerEmployee = null;
-    if (els.workerNameInput) els.workerNameInput.value = '';
-    if (els.workerNameValue) els.workerNameValue.textContent = '-';
-    if (els.workerLookupStatus) els.workerLookupStatus.textContent = 'Enter your employee number to begin.';
-    return;
-  }
-
-  // Read companyId from URL param (QR codes will encode it)
+// ─── Public employee loading & autocomplete ─────────────
+async function loadPublicEmployees() {
   const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
-
   try {
-    const constraints = [where('employeeNumber', '==', empNum)];
+    const constraints = [];
     if (urlCompanyId) constraints.push(where('companyId', '==', urlCompanyId));
-    constraints.push(limit(1));
+    constraints.push(where('status', '==', 'active'));
+    constraints.push(orderBy('name', 'asc'));
 
     const q = query(collection(db, 'employees'), ...constraints);
     const snap = await getDocs(q);
-
-    if (snap.empty) {
-      state.workerEmployee = null;
-      if (els.workerNameInput) els.workerNameInput.value = '';
-      if (els.workerNameValue) els.workerNameValue.textContent = '-';
-      if (els.workerLookupStatus) els.workerLookupStatus.textContent = '⚠ Employee not found. Check your number.';
-      return;
-    }
-
-    const empDoc = snap.docs[0];
-    state.workerEmployee = { id: empDoc.id, ...empDoc.data() };
-    const name = state.workerEmployee.name || '';
-
-    if (els.workerNameInput) els.workerNameInput.value = name;
-    if (els.workerNameValue) els.workerNameValue.textContent = name;
-    if (els.workerLookupStatus) {
-      els.workerLookupStatus.textContent = `✓ Found: ${name}. Ready to punch.`;
-      els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
-    }
-
-    localStorage.setItem('workerEmpNumber', empNum);
-    localStorage.setItem('workerPunchName', name);
-    attachWorkerLiveView(name);
+    state.publicEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   } catch (error) {
-    console.error(error);
-    if (els.workerLookupStatus) els.workerLookupStatus.textContent = '⚠ Lookup failed. Try again.';
+    console.error('Could not load employees for autocomplete:', error);
+    state.publicEmployees = [];
   }
 }
 
-async function handleWorkerPunch(action) {
-  const emp = state.workerEmployee;
+function restoreWorkerFromName(name) {
+  const nameKey = normalizeName(name);
+  const match = state.publicEmployees.find((e) => normalizeName(e.name) === nameKey);
+  if (match) {
+    state.workerEmployee = match;
+    if (els.workerLookupStatus) {
+      els.workerLookupStatus.textContent = `✓ Welcome back, ${match.name}. Ready to punch.`;
+      els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+    }
+  }
+}
 
-  if (!emp) {
-    toast('Look up your employee number first.', true);
+let _acActiveIndex = -1;
+
+function handleWorkerNameAutocomplete() {
+  const raw = els.workerNameInput?.value.trim() || '';
+  const typed = prettifyHumanName(raw);
+  if (els.workerNameValue) els.workerNameValue.textContent = typed || '-';
+
+  if (typed.length < 2) {
+    state.workerEmployee = null;
+    hideAutocomplete();
+    if (els.workerLookupStatus) {
+      els.workerLookupStatus.textContent = 'Type your name to begin.';
+      els.workerLookupStatus.style.borderColor = '';
+    }
+    return;
+  }
+
+  const lower = typed.toLowerCase();
+  const matches = state.publicEmployees.filter((e) =>
+    (e.name || '').toLowerCase().includes(lower)
+  ).slice(0, 8);
+
+  // Check for exact match
+  const exactMatch = state.publicEmployees.find(
+    (e) => normalizeName(e.name) === normalizeName(typed)
+  );
+
+  if (exactMatch) {
+    state.workerEmployee = exactMatch;
+    if (els.workerLookupStatus) {
+      els.workerLookupStatus.textContent = `✓ Found: ${exactMatch.name} (${exactMatch.employeeNumber || 'new'}). Ready to punch.`;
+      els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+    }
+    hideAutocomplete();
+    localStorage.setItem('workerPunchName', exactMatch.name);
+    attachWorkerLiveView(exactMatch.name);
+    return;
+  }
+
+  // No exact match — show suggestions + "new worker" option
+  state.workerEmployee = null;
+  if (els.workerLookupStatus) {
+    els.workerLookupStatus.textContent = matches.length
+      ? `${matches.length} match${matches.length > 1 ? 'es' : ''} found. Select or keep typing.`
+      : `New worker — "${typed}" will be created on first punch.`;
+    els.workerLookupStatus.style.borderColor = matches.length ? '' : 'rgba(59,213,118,0.4)';
+  }
+
+  renderAutocomplete(matches, typed);
+}
+
+function renderAutocomplete(matches, typed) {
+  const list = els.workerAutocompleteList;
+  if (!list) return;
+
+  _acActiveIndex = -1;
+  let html = '';
+
+  matches.forEach((emp, i) => {
+    html += `<li data-index="${i}" data-emp-id="${emp.id}">
+      ${escapeHTML(emp.name)}<span class="emp-num">${escapeHTML(emp.employeeNumber || '')}</span>
+    </li>`;
+  });
+
+  // Always show "new worker" option at the bottom if typed name doesn't match
+  if (typed.length >= 2) {
+    html += `<li class="new-worker" data-index="${matches.length}" data-new="true">
+      + Create new: "${escapeHTML(typed)}"
+    </li>`;
+  }
+
+  list.innerHTML = html;
+  list.hidden = false;
+
+  // Wire click handlers
+  list.querySelectorAll('li').forEach((li) => {
+    li.addEventListener('click', () => {
+      if (li.dataset.new === 'true') {
+        selectNewWorker(typed);
+      } else {
+        const emp = matches[parseInt(li.dataset.index)];
+        selectAutocompleteEmployee(emp);
+      }
+    });
+  });
+}
+
+function handleAutocompleteKeydown(e) {
+  const list = els.workerAutocompleteList;
+  if (!list || list.hidden) return;
+
+  const items = list.querySelectorAll('li');
+  if (!items.length) return;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _acActiveIndex = Math.min(_acActiveIndex + 1, items.length - 1);
+    updateActiveItem(items);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _acActiveIndex = Math.max(_acActiveIndex - 1, 0);
+    updateActiveItem(items);
+  } else if (e.key === 'Enter' && _acActiveIndex >= 0) {
+    e.preventDefault();
+    items[_acActiveIndex]?.click();
+  } else if (e.key === 'Escape') {
+    hideAutocomplete();
+  }
+}
+
+function updateActiveItem(items) {
+  items.forEach((li, i) => li.classList.toggle('active', i === _acActiveIndex));
+}
+
+function selectAutocompleteEmployee(emp) {
+  state.workerEmployee = emp;
+  if (els.workerNameInput) els.workerNameInput.value = emp.name;
+  if (els.workerNameValue) els.workerNameValue.textContent = emp.name;
+  if (els.workerLookupStatus) {
+    els.workerLookupStatus.textContent = `✓ Found: ${emp.name} (${emp.employeeNumber || ''}). Ready to punch.`;
+    els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+  }
+  hideAutocomplete();
+  localStorage.setItem('workerPunchName', emp.name);
+  attachWorkerLiveView(emp.name);
+}
+
+function selectNewWorker(typed) {
+  const pretty = prettifyHumanName(typed);
+  // Set a placeholder worker employee — will be auto-created on punch
+  state.workerEmployee = { _isNew: true, name: pretty, nameKey: normalizeName(pretty) };
+  if (els.workerNameInput) els.workerNameInput.value = pretty;
+  if (els.workerNameValue) els.workerNameValue.textContent = pretty;
+  if (els.workerLookupStatus) {
+    els.workerLookupStatus.textContent = `✓ New worker: "${pretty}". Punch to clock in and create profile.`;
+    els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+  }
+  hideAutocomplete();
+  localStorage.setItem('workerPunchName', pretty);
+}
+
+function hideAutocomplete() {
+  if (els.workerAutocompleteList) {
+    els.workerAutocompleteList.hidden = true;
+    els.workerAutocompleteList.innerHTML = '';
+  }
+  _acActiveIndex = -1;
+}
+
+function escapeHTML(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+async function handleWorkerPunch(action) {
+  let emp = state.workerEmployee;
+  const typedName = prettifyHumanName(els.workerNameInput?.value.trim() || '');
+
+  // If nothing selected but a name was typed, treat as new worker
+  if (!emp && typedName.length >= 2) {
+    emp = { _isNew: true, name: typedName, nameKey: normalizeName(typedName) };
+    state.workerEmployee = emp;
+  }
+
+  if (!emp || !emp.name) {
+    toast('Type your name first.', true);
     return;
   }
 
@@ -348,13 +496,50 @@ async function handleWorkerPunch(action) {
     return;
   }
 
+  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
+
+  // Auto-create employee if new
+  if (emp._isNew) {
+    try {
+      const empNumber = await generateNextPublicEmployeeNumber();
+      const newPayload = {
+        name: emp.name,
+        nameKey: normalizeName(emp.name),
+        employeeNumber: empNumber,
+        companyId: urlCompanyId || '',
+        agencyId: '',
+        assignedSiteId: '',
+        status: 'active',
+        source: 'auto_created',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      const newRef = await addDoc(collection(db, 'employees'), newPayload);
+      await updateDoc(newRef, { employeeId: newRef.id });
+
+      emp = { id: newRef.id, employeeId: newRef.id, ...newPayload };
+      state.workerEmployee = emp;
+
+      // Update local cache
+      state.publicEmployees.push(emp);
+
+      if (els.workerLookupStatus) {
+        els.workerLookupStatus.textContent = `✓ Created: ${emp.name} (${empNumber}). Punching…`;
+        els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+      }
+    } catch (error) {
+      console.error('Auto-create employee failed:', error);
+      toast('Could not create employee. ' + (error.message || ''), true);
+      return;
+    }
+  }
+
   const name = emp.name || '';
   const nameKey = normalizeName(name);
   const now = new Date();
   const nowMs = Date.now();
   const dateKey = formatDateKey(now);
   const weekKey = formatDateKey(getMondayDate(now));
-  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
 
   try {
     await addDoc(collection(db, 'punches'), {
@@ -381,11 +566,25 @@ async function handleWorkerPunch(action) {
     }
 
     attachWorkerLiveView(name);
+    localStorage.setItem('workerPunchName', name);
     toast(`${prettyAction(action)} saved.`);
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not save punch.', true);
   }
+}
+
+async function generateNextPublicEmployeeNumber() {
+  // Check both local cache and generate next EMP number
+  const prefix = 'EMP-';
+  const existing = (state.publicEmployees || [])
+    .map((e) => e.employeeNumber || '')
+    .filter((n) => n.startsWith(prefix))
+    .map((n) => parseInt(n.replace(prefix, ''), 10))
+    .filter((n) => !isNaN(n));
+
+  const maxNum = existing.length ? Math.max(...existing) : 1000;
+  return prefix + String(maxNum + 1);
 }
 
 async function handleManualPunchSubmit(event) {
