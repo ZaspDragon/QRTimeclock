@@ -107,6 +107,7 @@
         <button class="tab active" data-tab="managerTab" type="button" id="managerTabBtn">Manager Live</button>
         <button class="tab" data-tab="timesheetsTab" type="button" id="timesheetsTabBtn">Weekly Signoff</button>
         <button class="tab" data-tab="editPunchesTab" type="button" id="editPunchesTabBtn">Edit Punches</button>
+        <button class="tab" data-tab="approvalsTab" type="button" id="approvalsTabBtn">Approvals</button>
         <button class="tab" data-tab="employeesTab" type="button" id="employeesTabBtn">Employees</button>
         <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
         <button class="tab" data-tab="agencyTab" type="button" id="agencyTabBtn">Agency Export</button>
@@ -355,6 +356,43 @@
               </thead>
               <tbody id="editPunchesBody">
                 <tr><td colspan="8">No punches yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="approvalsTab" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>Missed Punch Approvals</h2>
+            <p>Review and approve or deny employee missed-punch requests. Approved requests auto-create a punch.</p>
+          </div>
+
+          <div class="stack gap16" style="margin-bottom:12px;">
+            <div class="form-actions">
+              <button id="approvalFilterAll" class="secondary-btn" type="button">All</button>
+              <button id="approvalFilterPending" class="primary-btn" type="button">Pending</button>
+              <button id="approvalFilterApproved" class="ghost-btn" type="button">Approved</button>
+              <button id="approvalFilterDenied" class="ghost-btn" type="button">Denied</button>
+            </div>
+          </div>
+
+          <div class="mini-table-wrap tall">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Requested Date</th>
+                  <th>Time</th>
+                  <th>Action</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="approvalListBody">
+                <tr><td colspan="7">No requests found.</td></tr>
               </tbody>
             </table>
           </div>

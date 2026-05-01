@@ -44,6 +44,8 @@ const state = {
   selectedWeekPunchRows: [],
   selectedWeekTimesheetDocs: {},
   allEmployees: [],
+  allMissedRequests: [],
+  approvalFilter: 'pending',
 };
 
 const els = {
@@ -109,6 +111,13 @@ const els = {
   myTcLastPunch: document.getElementById('myTcLastPunch'),
   myTcStatus: document.getElementById('myTcStatus'),
   myTimecardBody: document.getElementById('myTimecardBody'),
+
+  approvalsTabBtn: document.getElementById('approvalsTabBtn'),
+  approvalFilterAll: document.getElementById('approvalFilterAll'),
+  approvalFilterPending: document.getElementById('approvalFilterPending'),
+  approvalFilterApproved: document.getElementById('approvalFilterApproved'),
+  approvalFilterDenied: document.getElementById('approvalFilterDenied'),
+  approvalListBody: document.getElementById('approvalListBody'),
 
   employeesTabBtn: document.getElementById('employeesTabBtn'),
   employeeForm: document.getElementById('employeeForm'),
@@ -257,6 +266,14 @@ function wireEvents() {
       clearMyTimecardListener();
       attachMyTimecardView();
     }
+  });
+
+  [['approvalFilterAll', 'all'], ['approvalFilterPending', 'pending'],
+   ['approvalFilterApproved', 'approved'], ['approvalFilterDenied', 'denied']].forEach(([id, val]) => {
+    els[id]?.addEventListener('click', () => {
+      state.approvalFilter = val;
+      renderApprovalList(state.allMissedRequests);
+    });
   });
 
   els.employeeForm?.addEventListener('submit', handleSaveEmployee);
@@ -603,6 +620,7 @@ function attachRoleViews() {
   els.managerTabBtn?.classList.toggle('hidden', emp);
   els.timesheetsTabBtn?.classList.toggle('hidden', emp);
   els.editPunchesTabBtn?.classList.toggle('hidden', emp);
+  els.approvalsTabBtn?.classList.toggle('hidden', !mgr);
   els.employeesTabBtn?.classList.toggle('hidden', !mgr);
   els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
   els.agencyTabBtn?.classList.toggle('hidden', emp);
@@ -617,7 +635,10 @@ function attachRoleViews() {
     attachMyMissedPunchView();
   } else {
     switchTab('managerTab');
-    if (mgr) attachEmployeesView();
+    if (mgr) {
+      attachEmployeesView();
+      attachApprovalView();
+    }
   }
 }
 
@@ -1355,6 +1376,143 @@ function renderMyMissedPunches(rows) {
       </tr>
     `;
   }).join('');
+}
+
+/* ───────────────────────────────────────────────────
+   MANAGER APPROVAL DASHBOARD
+   ─────────────────────────────────────────────────── */
+
+function attachApprovalView() {
+  const constraints = [];
+  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
+
+  const q = query(collection(db, 'missedPunchRequests'), ...constraints);
+
+  state.unsubscribers.push(
+    onSnapshot(q, (snap) => {
+      state.allMissedRequests = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      state.allMissedRequests.sort((a, b) => (b.requestedTimestampMs || 0) - (a.requestedTimestampMs || 0));
+      renderApprovalList(state.allMissedRequests);
+    }, (error) => {
+      console.error(error);
+      toast(error.message || 'Could not load approval requests.', true);
+    })
+  );
+}
+
+function renderApprovalList(requests) {
+  if (!els.approvalListBody) return;
+
+  const filtered = state.approvalFilter === 'all'
+    ? requests
+    : requests.filter((r) => r.status === state.approvalFilter);
+
+  if (!filtered.length) {
+    els.approvalListBody.innerHTML = `<tr><td colspan="7">No ${state.approvalFilter} requests.</td></tr>`;
+    return;
+  }
+
+  els.approvalListBody.innerHTML = filtered.map((r) => {
+    const statusClass = r.status === 'approved' ? 'color:var(--good)' :
+                        r.status === 'denied' ? 'color:var(--danger)' : 'color:var(--warn)';
+    const actions = r.status === 'pending'
+      ? `<button class="primary-btn approve-req-btn" data-id="${r.id}" type="button" style="margin-right:6px;">Approve</button>
+         <button class="danger-btn deny-req-btn" data-id="${r.id}" type="button">Deny</button>`
+      : `<span class="tiny">${escapeHtml(r.reviewedBy || '-')}</span>`;
+
+    return `
+      <tr>
+        <td>${escapeHtml(r.name || '-')}</td>
+        <td>${escapeHtml(r.requestedDate || '-')}</td>
+        <td>${escapeHtml(r.requestedTime || '-')}</td>
+        <td>${prettyAction(r.requestedAction)}</td>
+        <td>${escapeHtml(r.reason || '-')}</td>
+        <td><span style="${statusClass};font-weight:700;text-transform:capitalize;">${escapeHtml(r.status)}</span></td>
+        <td>${actions}</td>
+      </tr>
+    `;
+  }).join('');
+
+  els.approvalListBody.querySelectorAll('.approve-req-btn').forEach((btn) => {
+    btn.addEventListener('click', () => approveRequest(btn.dataset.id));
+  });
+
+  els.approvalListBody.querySelectorAll('.deny-req-btn').forEach((btn) => {
+    btn.addEventListener('click', () => denyRequest(btn.dataset.id));
+  });
+}
+
+async function approveRequest(requestId) {
+  if (!isManager()) { toast('Only managers can approve.', true); return; }
+
+  const req = state.allMissedRequests.find((r) => r.id === requestId);
+  if (!req) { toast('Request not found.', true); return; }
+
+  const managerName = state.profile?.name || state.me?.email || 'Manager';
+  const now = Timestamp.fromDate(new Date());
+
+  try {
+    // 1. Update the request status
+    await updateDoc(doc(db, 'missedPunchRequests', requestId), {
+      status: 'approved',
+      reviewedBy: managerName,
+      reviewedAt: now,
+      approvedBy: managerName,
+      approvedAt: now,
+      updatedAt: serverTimestamp(),
+    });
+
+    // 2. Auto-create the actual punch
+    const punchDate = new Date(req.requestedTimestampMs);
+    const dateKey = formatDateKey(punchDate);
+    const weekKey = formatDateKey(getMondayDate(punchDate));
+
+    await addDoc(collection(db, 'punches'), {
+      name: req.name || '',
+      nameKey: normalizeName(req.name || ''),
+      action: req.requestedAction,
+      timestamp: serverTimestamp(),
+      timestampMs: req.requestedTimestampMs,
+      dateKey,
+      weekKey,
+      source: 'missed_punch_approved',
+      createdAt: serverTimestamp(),
+      createdBy: managerName,
+      approvedBy: managerName,
+      approvedAt: now,
+      companyId: req.companyId || '',
+      agencyId: req.agencyId || '',
+      employeeId: req.employeeId || '',
+    });
+
+    toast('Request approved — punch created.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not approve request.', true);
+  }
+}
+
+async function denyRequest(requestId) {
+  if (!isManager()) { toast('Only managers can deny.', true); return; }
+
+  const reason = prompt('Denial reason (optional):') || '';
+  const managerName = state.profile?.name || state.me?.email || 'Manager';
+
+  try {
+    await updateDoc(doc(db, 'missedPunchRequests', requestId), {
+      status: 'denied',
+      reviewedBy: managerName,
+      reviewedAt: Timestamp.fromDate(new Date()),
+      editReason: reason,
+      updatedAt: serverTimestamp(),
+    });
+
+    toast('Request denied.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not deny request.', true);
+  }
 }
 
 /* ───────────────────────────────────────────────────
