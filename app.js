@@ -553,7 +553,7 @@ async function handleWorkerPunch(action) {
       weekKey,
       source: 'public_qr',
       createdAt: serverTimestamp(),
-      employeeId: emp.employeeId || emp.id,
+      employeeId: emp.employeeId || emp.id || '',
       employeeNumber: emp.employeeNumber || '',
       companyId: emp.companyId || urlCompanyId || '',
       agencyId: emp.agencyId || '',
