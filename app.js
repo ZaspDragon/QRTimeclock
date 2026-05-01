@@ -96,6 +96,13 @@ const els = {
   userListBody: document.getElementById('userListBody'),
 
   myTimecardTabBtn: document.getElementById('myTimecardTabBtn'),
+  missedPunchTabBtn: document.getElementById('missedPunchTabBtn'),
+  missedPunchForm: document.getElementById('missedPunchForm'),
+  mpActionInput: document.getElementById('mpActionInput'),
+  mpDateInput: document.getElementById('mpDateInput'),
+  mpTimeInput: document.getElementById('mpTimeInput'),
+  mpReasonInput: document.getElementById('mpReasonInput'),
+  myMissedPunchBody: document.getElementById('myMissedPunchBody'),
   myTimecardWeekPicker: document.getElementById('myTimecardWeekPicker'),
   myTcTotalHours: document.getElementById('myTcTotalHours'),
   myTcDaysWorked: document.getElementById('myTcDaysWorked'),
@@ -242,6 +249,8 @@ function wireEvents() {
   });
 
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
+
+  els.missedPunchForm?.addEventListener('submit', handleMissedPunchSubmit);
 
   els.myTimecardWeekPicker?.addEventListener('change', () => {
     if (state.me && isEmployee()) {
@@ -586,8 +595,9 @@ function attachRoleViews() {
   const emp = isEmployee();
   const mgr = isManager();
 
-  // Employee-only tab
+  // Employee-only tabs
   els.myTimecardTabBtn?.classList.toggle('hidden', !emp);
+  els.missedPunchTabBtn?.classList.toggle('hidden', !emp);
 
   // Manager/admin tabs
   els.managerTabBtn?.classList.toggle('hidden', emp);
@@ -601,8 +611,10 @@ function attachRoleViews() {
     if (els.myTimecardWeekPicker) {
       els.myTimecardWeekPicker.value = formatDateInput(state.selectedWeekStart);
     }
+    if (els.mpDateInput) els.mpDateInput.value = formatDateInput(new Date());
     switchTab('myTimecardTab');
     attachMyTimecardView();
+    attachMyMissedPunchView();
   } else {
     switchTab('managerTab');
     if (mgr) attachEmployeesView();
@@ -1239,6 +1251,107 @@ function renderMyTimecard(punches) {
         <td>${escapeHtml(d.end_lunch || '-')}</td>
         <td>${escapeHtml(d.clock_out || '-')}</td>
         <td>${Number(d.hours || 0).toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+/* ───────────────────────────────────────────────────
+   MISSED PUNCH REQUESTS
+   ─────────────────────────────────────────────────── */
+
+async function handleMissedPunchSubmit(event) {
+  event.preventDefault();
+
+  if (!state.me || !state.profile) {
+    toast('You must be signed in.', true);
+    return;
+  }
+
+  const action = els.mpActionInput?.value;
+  const dateValue = els.mpDateInput?.value;
+  const timeValue = els.mpTimeInput?.value;
+  const reason = els.mpReasonInput?.value.trim();
+
+  if (!action || !dateValue || !timeValue || !reason) {
+    toast('Fill out all fields.', true);
+    return;
+  }
+
+  const requestedTimestampMs = parseLocalDateAndTime(dateValue, timeValue);
+  if (!requestedTimestampMs) {
+    toast('Invalid date or time.', true);
+    return;
+  }
+
+  try {
+    await addDoc(collection(db, 'missedPunchRequests'), {
+      uid: state.me.uid,
+      employeeId: state.profile.employeeId || '',
+      companyId: state.companyId || '',
+      agencyId: state.agencyId || '',
+      name: state.profile.name || '',
+      requestedAction: action,
+      requestedDate: dateValue,
+      requestedTime: timeValue,
+      requestedTimestampMs,
+      reason,
+      status: 'pending',
+      reviewedBy: '',
+      reviewedAt: null,
+      approvedBy: '',
+      approvedAt: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    els.missedPunchForm?.reset();
+    if (els.mpDateInput) els.mpDateInput.value = formatDateInput(new Date());
+    toast('Missed punch request submitted.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not submit request.', true);
+  }
+}
+
+function attachMyMissedPunchView() {
+  if (!state.me) return;
+
+  const constraints = [where('uid', '==', state.me.uid)];
+  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+
+  const q = query(collection(db, 'missedPunchRequests'), ...constraints);
+
+  state.unsubscribers.push(
+    onSnapshot(q, (snap) => {
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      rows.sort((a, b) => (b.requestedTimestampMs || 0) - (a.requestedTimestampMs || 0));
+      renderMyMissedPunches(rows);
+    }, (error) => {
+      console.error(error);
+    })
+  );
+}
+
+function renderMyMissedPunches(rows) {
+  if (!els.myMissedPunchBody) return;
+
+  if (!rows.length) {
+    els.myMissedPunchBody.innerHTML = '<tr><td colspan="6">No requests yet.</td></tr>';
+    return;
+  }
+
+  els.myMissedPunchBody.innerHTML = rows.map((r) => {
+    const statusClass = r.status === 'approved' ? 'color:var(--good)' :
+                        r.status === 'denied' ? 'color:var(--danger)' : 'color:var(--warn)';
+    return `
+      <tr>
+        <td>${escapeHtml(r.requestedDate || '-')}</td>
+        <td>${escapeHtml(r.requestedTime || '-')}</td>
+        <td>${prettyAction(r.requestedAction)}</td>
+        <td>${escapeHtml(r.reason || '-')}</td>
+        <td><span style="${statusClass};font-weight:700;text-transform:capitalize;">${escapeHtml(r.status || 'pending')}</span></td>
+        <td>${escapeHtml(r.reviewedBy || '-')}</td>
       </tr>
     `;
   }).join('');

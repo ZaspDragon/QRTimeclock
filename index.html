@@ -103,6 +103,7 @@
     <section id="appShell" class="hidden">
       <nav class="tabs" id="tabBar">
         <button class="tab hidden" data-tab="myTimecardTab" type="button" id="myTimecardTabBtn">My Timecard</button>
+        <button class="tab hidden" data-tab="missedPunchTab" type="button" id="missedPunchTabBtn">Request Punch</button>
         <button class="tab active" data-tab="managerTab" type="button" id="managerTabBtn">Manager Live</button>
         <button class="tab" data-tab="timesheetsTab" type="button" id="timesheetsTabBtn">Weekly Signoff</button>
         <button class="tab" data-tab="editPunchesTab" type="button" id="editPunchesTabBtn">Edit Punches</button>
@@ -148,6 +149,69 @@
               </tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <section id="missedPunchTab" class="tab-panel hidden">
+        <div class="panel-grid two-up">
+          <article class="card">
+            <div class="card-head">
+              <h2>Request a Missed Punch</h2>
+              <p>Forgot to clock in or out? Submit a request for your manager to approve.</p>
+            </div>
+
+            <form id="missedPunchForm" class="grid-form">
+              <label>
+                <span>Action</span>
+                <select id="mpActionInput">
+                  <option value="clock_in">Clock In</option>
+                  <option value="start_lunch">Start Lunch</option>
+                  <option value="end_lunch">End Lunch</option>
+                  <option value="clock_out">Clock Out</option>
+                </select>
+              </label>
+              <label>
+                <span>Date</span>
+                <input id="mpDateInput" type="date" required />
+              </label>
+              <label>
+                <span>Time</span>
+                <input id="mpTimeInput" type="time" required />
+              </label>
+              <label class="full-width">
+                <span>Reason</span>
+                <input id="mpReasonInput" type="text" placeholder="e.g. Forgot to clock in" required />
+              </label>
+              <div class="form-actions full-width">
+                <button class="primary-btn" type="submit">Submit Request</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>My Requests</h2>
+              <p>Track the status of your submitted requests.</p>
+            </div>
+
+            <div class="mini-table-wrap tall">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Action</th>
+                    <th>Reason</th>
+                    <th>Status</th>
+                    <th>Reviewed By</th>
+                  </tr>
+                </thead>
+                <tbody id="myMissedPunchBody">
+                  <tr><td colspan="6">No requests yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
         </div>
       </section>
 
