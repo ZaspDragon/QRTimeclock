@@ -295,16 +295,18 @@ function wireEvents() {
 async function loadPublicEmployees() {
   const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
   try {
+    // Simple query: filter by status only (no orderBy to avoid composite index requirement)
     const constraints = [];
     if (urlCompanyId) constraints.push(where('companyId', '==', urlCompanyId));
     constraints.push(where('status', '==', 'active'));
-    constraints.push(orderBy('name', 'asc'));
 
     const q = query(collection(db, 'employees'), ...constraints);
     const snap = await getDocs(q);
-    state.publicEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    state.publicEmployees = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   } catch (error) {
-    console.error('Could not load employees for autocomplete:', error);
+    console.warn('Could not load employees for autocomplete:', error.message);
     state.publicEmployees = [];
   }
 }
@@ -719,8 +721,13 @@ function attachWorkerLiveView(name) {
       `).join('');
     }
   }, (error) => {
-    console.error(error);
-    toast(error.message || 'Could not load worker punches.', true);
+    // Permission errors are expected for unauthenticated workers (original rules restrict reads to managers)
+    if (error.code === 'permission-denied' || (error.message && error.message.includes('permissions'))) {
+      console.info('Live punch view not available (read requires authentication). Punch data was saved.');
+    } else {
+      console.error('Live view error:', error);
+      toast(error.message || 'Could not load worker punches.', true);
+    }
   });
 }
 
