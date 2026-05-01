@@ -36,9 +36,15 @@
 
       <div class="stack gap16">
         <label>
-          <span>Your name</span>
-          <input id="workerNameInput" type="text" placeholder="First and last name" />
+          <span>Employee number</span>
+          <input id="workerEmpNumberInput" type="text" placeholder="e.g. EMP-1001" />
         </label>
+        <label>
+          <span>Your name</span>
+          <input id="workerNameInput" type="text" placeholder="First and last name" readonly
+            style="opacity:0.6;cursor:not-allowed;" />
+        </label>
+        <div id="workerLookupStatus" class="status-box">Enter your employee number to begin.</div>
 
         <div class="button-grid">
           <button class="primary-btn worker-action-btn" data-action="clock_in" type="button">Clock In</button>

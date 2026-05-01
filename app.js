@@ -12,6 +12,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   addDoc,
   updateDoc,
@@ -38,6 +39,7 @@ const state = {
   unsubscribers: [],
   selectedWeekStart: getMondayDate(new Date()),
   workerUnsub: null,
+  workerEmployee: null,      // looked-up employee record for public punch
   allPunchRows: [],
   selectedWeekPunchRows: [],
   selectedWeekTimesheetDocs: {},
@@ -45,6 +47,8 @@ const state = {
 };
 
 const els = {
+  workerEmpNumberInput: document.getElementById('workerEmpNumberInput'),
+  workerLookupStatus: document.getElementById('workerLookupStatus'),
   workerNameInput: document.getElementById('workerNameInput'),
   workerNameValue: document.getElementById('workerNameValue'),
   workerLastActionValue: document.getElementById('workerLastActionValue'),
@@ -124,8 +128,13 @@ init();
 async function init() {
   wireEvents();
 
+  // Restore saved employee number if available
+  const storedEmpNum = localStorage.getItem('workerEmpNumber') || '';
   const storedWorkerName = localStorage.getItem('workerPunchName') || '';
-  if (storedWorkerName) {
+  if (storedEmpNum && els.workerEmpNumberInput) {
+    els.workerEmpNumberInput.value = storedEmpNum;
+    handleWorkerEmpLookup(); // auto-lookup on page load
+  } else if (storedWorkerName) {
     const pretty = prettifyHumanName(storedWorkerName);
     if (els.workerNameInput) els.workerNameInput.value = pretty;
     if (els.workerNameValue) els.workerNameValue.textContent = pretty;
@@ -197,14 +206,12 @@ function wireEvents() {
     btn.addEventListener('click', () => handleWorkerPunch(btn.dataset.action));
   });
 
+  els.workerEmpNumberInput?.addEventListener('input', debounce(handleWorkerEmpLookup, 500));
+
+  // Legacy name input is now read-only — filled by employee lookup
   els.workerNameInput?.addEventListener('input', () => {
     const value = prettifyHumanName(els.workerNameInput.value.trim());
     if (els.workerNameValue) els.workerNameValue.textContent = value || '-';
-
-    if (value) {
-      localStorage.setItem('workerPunchName', value);
-      attachWorkerLiveView(value);
-    }
   });
 
   els.loginForm?.addEventListener('submit', handleLogin);
@@ -252,25 +259,76 @@ function wireEvents() {
   els.agencyWorkerSelect?.addEventListener('change', () => renderAgencyPreview());
 }
 
+async function handleWorkerEmpLookup() {
+  const empNum = String(els.workerEmpNumberInput?.value || '').trim().toUpperCase();
+
+  if (!empNum) {
+    state.workerEmployee = null;
+    if (els.workerNameInput) els.workerNameInput.value = '';
+    if (els.workerNameValue) els.workerNameValue.textContent = '-';
+    if (els.workerLookupStatus) els.workerLookupStatus.textContent = 'Enter your employee number to begin.';
+    return;
+  }
+
+  // Read companyId from URL param (QR codes will encode it)
+  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
+
+  try {
+    const constraints = [where('employeeNumber', '==', empNum)];
+    if (urlCompanyId) constraints.push(where('companyId', '==', urlCompanyId));
+    constraints.push(limit(1));
+
+    const q = query(collection(db, 'employees'), ...constraints);
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      state.workerEmployee = null;
+      if (els.workerNameInput) els.workerNameInput.value = '';
+      if (els.workerNameValue) els.workerNameValue.textContent = '-';
+      if (els.workerLookupStatus) els.workerLookupStatus.textContent = '⚠ Employee not found. Check your number.';
+      return;
+    }
+
+    const empDoc = snap.docs[0];
+    state.workerEmployee = { id: empDoc.id, ...empDoc.data() };
+    const name = state.workerEmployee.name || '';
+
+    if (els.workerNameInput) els.workerNameInput.value = name;
+    if (els.workerNameValue) els.workerNameValue.textContent = name;
+    if (els.workerLookupStatus) {
+      els.workerLookupStatus.textContent = `✓ Found: ${name}. Ready to punch.`;
+      els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+    }
+
+    localStorage.setItem('workerEmpNumber', empNum);
+    localStorage.setItem('workerPunchName', name);
+    attachWorkerLiveView(name);
+  } catch (error) {
+    console.error(error);
+    if (els.workerLookupStatus) els.workerLookupStatus.textContent = '⚠ Lookup failed. Try again.';
+  }
+}
+
 async function handleWorkerPunch(action) {
-  const rawName = els.workerNameInput?.value.trim();
-  if (!rawName) {
-    toast('Enter your name first.', true);
+  const emp = state.workerEmployee;
+
+  if (!emp) {
+    toast('Look up your employee number first.', true);
     return;
   }
 
-  const name = prettifyHumanName(rawName);
+  if (emp.status === 'inactive' || emp.status === 'terminated') {
+    toast('Your employee record is not active. Contact your manager.', true);
+    return;
+  }
+
+  const name = emp.name || '';
   const nameKey = normalizeName(name);
-
-  if (nameKey.length < 2) {
-    toast('Enter a valid name.', true);
-    return;
-  }
-
   const now = new Date();
   const nowMs = Date.now();
   const dateKey = formatDateKey(now);
   const weekKey = formatDateKey(getMondayDate(now));
+  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
 
   try {
     await addDoc(collection(db, 'punches'), {
@@ -283,11 +341,12 @@ async function handleWorkerPunch(action) {
       weekKey,
       source: 'public_qr',
       createdAt: serverTimestamp(),
+      employeeId: emp.employeeId || emp.id,
+      employeeNumber: emp.employeeNumber || '',
+      companyId: emp.companyId || urlCompanyId || '',
+      agencyId: emp.agencyId || '',
     });
 
-    localStorage.setItem('workerPunchName', name);
-    if (els.workerNameInput) els.workerNameInput.value = name;
-    if (els.workerNameValue) els.workerNameValue.textContent = name;
     if (els.workerLastActionValue) els.workerLastActionValue.textContent = prettyAction(action);
     if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = formatDateTime(nowMs);
     if (els.workerStatusValue) els.workerStatusValue.textContent = statusLabelForAction(action);
@@ -348,7 +407,10 @@ async function handleManualPunchSubmit(event) {
       weekKey,
       source: 'manual_manager',
       createdAt: serverTimestamp(),
-      createdBy: state.profile?.name || state.me?.email || 'Manager'
+      createdBy: state.profile?.name || state.me?.email || 'Manager',
+      companyId: state.companyId || '',
+      agencyId: '',
+      employeeId: '',
     });
 
     await addDoc(collection(db, 'punch_edits'), {
@@ -361,7 +423,8 @@ async function handleManualPunchSubmit(event) {
       weekKey,
       source: 'manual_manager',
       editedBy: state.profile?.name || state.me?.email || 'Manager',
-      editedAt: serverTimestamp()
+      editedAt: serverTimestamp(),
+      companyId: state.companyId || '',
     });
 
     els.manualPunchForm?.reset();
@@ -1736,4 +1799,12 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
 }
