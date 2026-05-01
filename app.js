@@ -608,6 +608,16 @@ function isAgencyUser() {
   return !!state.agencyId;
 }
 
+const AGENCY_NAMES = {
+  sterling_staffing: 'Sterling Staffing',
+  excel_staffing: 'Excel Staffing',
+};
+
+function agencyLabel(agencyId) {
+  if (!agencyId) return 'Direct';
+  return AGENCY_NAMES[agencyId] || agencyId;
+}
+
 function attachRoleViews() {
   const emp = isEmployee();
   const mgr = isManager();
@@ -1559,7 +1569,7 @@ function renderEmployeeList(employees) {
     <tr>
       <td>${escapeHtml(emp.employeeNumber || '-')}</td>
       <td>${escapeHtml(emp.name || '-')}</td>
-      <td>${escapeHtml(emp.agencyId || 'Direct')}</td>
+      <td>${escapeHtml(agencyLabel(emp.agencyId))}</td>
       <td>${escapeHtml(emp.assignedSiteId || '-')}</td>
       <td><span class="tiny-flag">${escapeHtml(emp.status || 'active')}</span></td>
       <td>
