@@ -99,6 +99,7 @@
         <button class="tab active" data-tab="managerTab" type="button" id="managerTabBtn">Manager Live</button>
         <button class="tab" data-tab="timesheetsTab" type="button" id="timesheetsTabBtn">Weekly Signoff</button>
         <button class="tab" data-tab="editPunchesTab" type="button" id="editPunchesTabBtn">Edit Punches</button>
+        <button class="tab" data-tab="employeesTab" type="button" id="employeesTabBtn">Employees</button>
         <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
         <button class="tab" data-tab="agencyTab" type="button" id="agencyTabBtn">Agency Export</button>
       </nav>
@@ -246,6 +247,83 @@
               </tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <section id="employeesTab" class="tab-panel hidden">
+        <div class="panel-grid two-up">
+          <article class="card">
+            <div class="card-head">
+              <h2>Add / Edit Employee</h2>
+              <p>Creates a record in the employees collection. No Firebase login needed for temps.</p>
+            </div>
+
+            <form id="employeeForm" class="grid-form">
+              <input id="employeeDocId" type="hidden" />
+              <label>
+                <span>Full name</span>
+                <input id="empNameInput" type="text" placeholder="John Doe" required />
+              </label>
+              <label>
+                <span>Employee number</span>
+                <input id="empNumberInput" type="text" placeholder="Auto-generated if blank" />
+              </label>
+              <label>
+                <span>Agency</span>
+                <select id="empAgencySelect">
+                  <option value="">Direct hire (no agency)</option>
+                </select>
+              </label>
+              <label>
+                <span>Assigned site</span>
+                <input id="empSiteInput" type="text" placeholder="e.g. Warehouse A" />
+              </label>
+              <label>
+                <span>Status</span>
+                <select id="empStatusSelect">
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="terminated">Terminated</option>
+                </select>
+              </label>
+              <div class="form-actions full-width">
+                <button class="primary-btn" type="submit">Save Employee</button>
+                <button id="empCancelEditBtn" class="ghost-btn hidden" type="button">Cancel Edit</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Employee Roster</h2>
+              <p>All employees for this company. Click a row to edit.</p>
+            </div>
+
+            <div class="stack gap16" style="margin-bottom:12px;">
+              <label>
+                <span>Filter</span>
+                <input id="empFilterInput" type="text" placeholder="Search by name or number…" />
+              </label>
+            </div>
+
+            <div class="mini-table-wrap tall">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Emp #</th>
+                    <th>Name</th>
+                    <th>Agency</th>
+                    <th>Site</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="employeeListBody">
+                  <tr><td colspan="6">No employees yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
         </div>
       </section>
 

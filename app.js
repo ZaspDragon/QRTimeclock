@@ -41,6 +41,7 @@ const state = {
   allPunchRows: [],
   selectedWeekPunchRows: [],
   selectedWeekTimesheetDocs: {},
+  allEmployees: [],
 };
 
 const els = {
@@ -89,6 +90,18 @@ const els = {
   userRoleInput: document.getElementById('userRoleInput'),
   userActiveInput: document.getElementById('userActiveInput'),
   userListBody: document.getElementById('userListBody'),
+
+  employeesTabBtn: document.getElementById('employeesTabBtn'),
+  employeeForm: document.getElementById('employeeForm'),
+  employeeDocId: document.getElementById('employeeDocId'),
+  empNameInput: document.getElementById('empNameInput'),
+  empNumberInput: document.getElementById('empNumberInput'),
+  empAgencySelect: document.getElementById('empAgencySelect'),
+  empSiteInput: document.getElementById('empSiteInput'),
+  empStatusSelect: document.getElementById('empStatusSelect'),
+  empCancelEditBtn: document.getElementById('empCancelEditBtn'),
+  empFilterInput: document.getElementById('empFilterInput'),
+  employeeListBody: document.getElementById('employeeListBody'),
 
   agencyWorkerSelect: document.getElementById('agencyWorkerSelect'),
   agencyPreviewBtn: document.getElementById('agencyPreviewBtn'),
@@ -214,6 +227,10 @@ function wireEvents() {
   });
 
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
+
+  els.employeeForm?.addEventListener('submit', handleSaveEmployee);
+  els.empCancelEditBtn?.addEventListener('click', cancelEmployeeEdit);
+  els.empFilterInput?.addEventListener('input', () => renderEmployeeList(state.allEmployees || []));
 
   els.agencyPreviewBtn?.addEventListener('click', () => renderAgencyPreview());
   els.agencyPrintBtn?.addEventListener('click', () => printAgencyPreview());
@@ -485,9 +502,12 @@ function attachRoleViews() {
   els.managerTabBtn?.classList.remove('hidden');
   els.timesheetsTabBtn?.classList.remove('hidden');
   els.editPunchesTabBtn?.classList.remove('hidden');
+  els.employeesTabBtn?.classList.toggle('hidden', !isManager());
   els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
   els.agencyTabBtn?.classList.remove('hidden');
   switchTab('managerTab');
+
+  if (isManager()) attachEmployeesView();
 }
 
 function switchTab(tabId) {
@@ -1038,6 +1058,155 @@ function buildWeekTotals(punches) {
     lastAction,
     lastPunchAtMs,
   };
+}
+
+/* ───────────────────────────────────────────────────
+   EMPLOYEES COLLECTION (employees/{employeeId})
+   ─────────────────────────────────────────────────── */
+
+function attachEmployeesView() {
+  const empConstraints = [];
+  if (state.companyId) empConstraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) empConstraints.push(where('agencyId', '==', state.agencyId));
+  empConstraints.push(orderBy('name', 'asc'));
+
+  const empQuery = query(collection(db, 'employees'), ...empConstraints);
+
+  state.unsubscribers.push(
+    onSnapshot(empQuery, (snap) => {
+      state.allEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderEmployeeList(state.allEmployees);
+    }, (error) => {
+      console.error(error);
+      toast(error.message || 'Could not load employees.', true);
+    })
+  );
+}
+
+function renderEmployeeList(employees) {
+  if (!els.employeeListBody) return;
+
+  const filter = String(els.empFilterInput?.value || '').trim().toLowerCase();
+  const filtered = employees.filter((e) => {
+    if (!filter) return true;
+    return (
+      String(e.name || '').toLowerCase().includes(filter) ||
+      String(e.employeeNumber || '').toLowerCase().includes(filter)
+    );
+  });
+
+  if (!filtered.length) {
+    els.employeeListBody.innerHTML = '<tr><td colspan="6">No employees found.</td></tr>';
+    return;
+  }
+
+  els.employeeListBody.innerHTML = filtered.map((emp) => `
+    <tr>
+      <td>${escapeHtml(emp.employeeNumber || '-')}</td>
+      <td>${escapeHtml(emp.name || '-')}</td>
+      <td>${escapeHtml(emp.agencyId || 'Direct')}</td>
+      <td>${escapeHtml(emp.assignedSiteId || '-')}</td>
+      <td><span class="tiny-flag">${escapeHtml(emp.status || 'active')}</span></td>
+      <td>
+        <button class="secondary-btn emp-edit-btn" data-id="${emp.id}" type="button">Edit</button>
+      </td>
+    </tr>
+  `).join('');
+
+  els.employeeListBody.querySelectorAll('.emp-edit-btn').forEach((btn) => {
+    btn.addEventListener('click', () => loadEmployeeForEdit(btn.dataset.id));
+  });
+}
+
+function loadEmployeeForEdit(empId) {
+  const emp = (state.allEmployees || []).find((e) => e.id === empId);
+  if (!emp) { toast('Employee not found.', true); return; }
+
+  if (els.employeeDocId) els.employeeDocId.value = empId;
+  if (els.empNameInput) els.empNameInput.value = emp.name || '';
+  if (els.empNumberInput) els.empNumberInput.value = emp.employeeNumber || '';
+  if (els.empAgencySelect) els.empAgencySelect.value = emp.agencyId || '';
+  if (els.empSiteInput) els.empSiteInput.value = emp.assignedSiteId || '';
+  if (els.empStatusSelect) els.empStatusSelect.value = emp.status || 'active';
+  els.empCancelEditBtn?.classList.remove('hidden');
+}
+
+function cancelEmployeeEdit() {
+  els.employeeForm?.reset();
+  if (els.employeeDocId) els.employeeDocId.value = '';
+  els.empCancelEditBtn?.classList.add('hidden');
+}
+
+async function handleSaveEmployee(event) {
+  event.preventDefault();
+
+  if (!isManager()) {
+    toast('Only managers and admins can manage employees.', true);
+    return;
+  }
+
+  const name = prettifyHumanName(els.empNameInput?.value.trim());
+  const nameKey = normalizeName(name);
+
+  if (!name || nameKey.length < 2) {
+    toast('Enter a valid employee name.', true);
+    return;
+  }
+
+  let employeeNumber = els.empNumberInput?.value.trim();
+  const agencyId = els.empAgencySelect?.value || '';
+  const assignedSiteId = els.empSiteInput?.value.trim() || '';
+  const status = els.empStatusSelect?.value || 'active';
+  const existingId = els.employeeDocId?.value || '';
+
+  // Auto-generate employee number if blank
+  if (!employeeNumber) {
+    employeeNumber = await generateNextEmployeeNumber();
+  }
+
+  const payload = {
+    name,
+    nameKey,
+    employeeNumber,
+    companyId: state.companyId || '',
+    agencyId,
+    assignedSiteId,
+    status,
+    updatedAt: serverTimestamp(),
+  };
+
+  try {
+    if (existingId) {
+      // Update existing employee
+      await updateDoc(doc(db, 'employees', existingId), payload);
+      toast('Employee updated.');
+    } else {
+      // Create new employee
+      payload.createdAt = serverTimestamp();
+      const newRef = await addDoc(collection(db, 'employees'), payload);
+      // Write employeeId field = doc ID
+      await updateDoc(newRef, { employeeId: newRef.id });
+      toast('Employee created: ' + employeeNumber);
+    }
+
+    cancelEmployeeEdit();
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not save employee.', true);
+  }
+}
+
+async function generateNextEmployeeNumber() {
+  // Find the highest existing employee number and increment
+  const prefix = 'EMP-';
+  const existing = (state.allEmployees || [])
+    .map((e) => e.employeeNumber || '')
+    .filter((n) => n.startsWith(prefix))
+    .map((n) => parseInt(n.replace(prefix, ''), 10))
+    .filter((n) => !isNaN(n));
+
+  const maxNum = existing.length ? Math.max(...existing) : 1000;
+  return prefix + String(maxNum + 1);
 }
 
 function attachUsersViewIfAdmin() {
