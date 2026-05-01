@@ -528,9 +528,10 @@ async function handleWorkerPunch(action) {
         els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
       }
     } catch (error) {
-      console.error('Auto-create employee failed:', error);
-      toast('Could not create employee. ' + (error.message || ''), true);
-      return;
+      console.warn('Auto-create employee skipped (rules may not be deployed yet):', error.message);
+      // Still allow the punch — employee record will be created by manager or once rules are deployed
+      emp = { name: emp.name, nameKey: normalizeName(emp.name), employeeId: '', employeeNumber: '' };
+      state.workerEmployee = emp;
     }
   }
 
