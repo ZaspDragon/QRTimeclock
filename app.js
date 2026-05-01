@@ -91,6 +91,14 @@ const els = {
   userActiveInput: document.getElementById('userActiveInput'),
   userListBody: document.getElementById('userListBody'),
 
+  myTimecardTabBtn: document.getElementById('myTimecardTabBtn'),
+  myTimecardWeekPicker: document.getElementById('myTimecardWeekPicker'),
+  myTcTotalHours: document.getElementById('myTcTotalHours'),
+  myTcDaysWorked: document.getElementById('myTcDaysWorked'),
+  myTcLastPunch: document.getElementById('myTcLastPunch'),
+  myTcStatus: document.getElementById('myTcStatus'),
+  myTimecardBody: document.getElementById('myTimecardBody'),
+
   employeesTabBtn: document.getElementById('employeesTabBtn'),
   employeeForm: document.getElementById('employeeForm'),
   employeeDocId: document.getElementById('employeeDocId'),
@@ -227,6 +235,13 @@ function wireEvents() {
   });
 
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
+
+  els.myTimecardWeekPicker?.addEventListener('change', () => {
+    if (state.me && isEmployee()) {
+      clearMyTimecardListener();
+      attachMyTimecardView();
+    }
+  });
 
   els.employeeForm?.addEventListener('submit', handleSaveEmployee);
   els.empCancelEditBtn?.addEventListener('click', cancelEmployeeEdit);
@@ -467,6 +482,9 @@ function showLoggedOut() {
   els.authCard?.classList.remove('hidden');
   els.appShell?.classList.add('hidden');
   els.sessionChip?.classList.add('hidden');
+  // Restore public worker card
+  const workerCard = document.getElementById('workerCard');
+  if (workerCard) workerCard.classList.remove('hidden');
   // Reset header
   const headerP = document.querySelector('.topbar p');
   if (headerP) headerP.textContent = 'Mobile punch tracking with live manager visibility and weekly signoff.';
@@ -476,6 +494,9 @@ function showLoggedIn() {
   els.authCard?.classList.add('hidden');
   els.appShell?.classList.remove('hidden');
   els.sessionChip?.classList.remove('hidden');
+  // Hide the public worker card for logged-in users
+  const workerCard = document.getElementById('workerCard');
+  if (workerCard) workerCard.classList.add('hidden');
   if (els.sessionName) els.sessionName.textContent = state.profile?.name || state.me?.email || 'Signed in';
   if (els.sessionRole) {
     const roleParts = [state.profile?.role || 'manager'];
@@ -499,15 +520,30 @@ function isAgencyUser() {
 }
 
 function attachRoleViews() {
-  els.managerTabBtn?.classList.remove('hidden');
-  els.timesheetsTabBtn?.classList.remove('hidden');
-  els.editPunchesTabBtn?.classList.remove('hidden');
-  els.employeesTabBtn?.classList.toggle('hidden', !isManager());
-  els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
-  els.agencyTabBtn?.classList.remove('hidden');
-  switchTab('managerTab');
+  const emp = isEmployee();
+  const mgr = isManager();
 
-  if (isManager()) attachEmployeesView();
+  // Employee-only tab
+  els.myTimecardTabBtn?.classList.toggle('hidden', !emp);
+
+  // Manager/admin tabs
+  els.managerTabBtn?.classList.toggle('hidden', emp);
+  els.timesheetsTabBtn?.classList.toggle('hidden', emp);
+  els.editPunchesTabBtn?.classList.toggle('hidden', emp);
+  els.employeesTabBtn?.classList.toggle('hidden', !mgr);
+  els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
+  els.agencyTabBtn?.classList.toggle('hidden', emp);
+
+  if (emp) {
+    if (els.myTimecardWeekPicker) {
+      els.myTimecardWeekPicker.value = formatDateInput(state.selectedWeekStart);
+    }
+    switchTab('myTimecardTab');
+    attachMyTimecardView();
+  } else {
+    switchTab('managerTab');
+    if (mgr) attachEmployeesView();
+  }
 }
 
 function switchTab(tabId) {
@@ -1058,6 +1094,91 @@ function buildWeekTotals(punches) {
     lastAction,
     lastPunchAtMs,
   };
+}
+
+function isEmployee() {
+  return state.profile?.role === 'employee';
+}
+
+/* ───────────────────────────────────────────────────
+   MY TIMECARD (employee self-service view)
+   ─────────────────────────────────────────────────── */
+
+function attachMyTimecardView() {
+  const weekStart = els.myTimecardWeekPicker?.value
+    ? new Date(`${els.myTimecardWeekPicker.value}T00:00:00`)
+    : state.selectedWeekStart;
+
+  const weekKey = formatDateKey(weekStart);
+  const employeeId = state.profile?.employeeId || null;
+  const nameKey = normalizeName(state.profile?.name || '');
+
+  if (!employeeId && !nameKey) {
+    toast('Your profile is missing employeeId. Ask your manager.', true);
+    return;
+  }
+
+  // Query punches by employeeId (preferred) or nameKey (legacy fallback)
+  const constraints = [where('weekKey', '==', weekKey)];
+  if (employeeId) {
+    constraints.push(where('employeeId', '==', employeeId));
+  } else {
+    constraints.push(where('nameKey', '==', nameKey));
+  }
+  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  constraints.push(orderBy('timestampMs', 'asc'));
+
+  const q = query(collection(db, 'punches'), ...constraints);
+
+  state._myTcUnsub = onSnapshot(q, (snap) => {
+    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderMyTimecard(rows);
+  }, (error) => {
+    console.error(error);
+    toast(error.message || 'Could not load your timecard.', true);
+  });
+
+  state.unsubscribers.push(state._myTcUnsub);
+}
+
+function clearMyTimecardListener() {
+  if (state._myTcUnsub) {
+    try { state._myTcUnsub(); } catch (_) {}
+    state._myTcUnsub = null;
+  }
+}
+
+function renderMyTimecard(punches) {
+  const totals = buildWeekTotals(punches);
+
+  if (els.myTcTotalHours) els.myTcTotalHours.textContent = Number(totals.weeklyHours || 0).toFixed(2);
+  if (els.myTcDaysWorked) els.myTcDaysWorked.textContent = String(totals.daysWorked || 0);
+  if (els.myTcLastPunch) els.myTcLastPunch.textContent = totals.lastPunchAtMs ? formatDateTime(totals.lastPunchAtMs) : '-';
+  if (els.myTcStatus) els.myTcStatus.textContent = totals.lastAction ? statusLabelForAction(totals.lastAction) : '-';
+
+  if (!els.myTimecardBody) return;
+
+  const daily = totals.dailyTotals;
+  const keys = Object.keys(daily).sort();
+
+  if (!keys.length) {
+    els.myTimecardBody.innerHTML = '<tr><td colspan="6">No punches this week.</td></tr>';
+    return;
+  }
+
+  els.myTimecardBody.innerHTML = keys.map((dateKey) => {
+    const d = daily[dateKey];
+    return `
+      <tr>
+        <td>${escapeHtml(dateKey)}</td>
+        <td>${escapeHtml(d.clock_in || '-')}</td>
+        <td>${escapeHtml(d.start_lunch || '-')}</td>
+        <td>${escapeHtml(d.end_lunch || '-')}</td>
+        <td>${escapeHtml(d.clock_out || '-')}</td>
+        <td>${Number(d.hours || 0).toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
 }
 
 /* ───────────────────────────────────────────────────
