@@ -36,9 +36,15 @@
 
       <div class="stack gap16">
         <label>
-          <span>Your name</span>
-          <input id="workerNameInput" type="text" placeholder="First and last name" />
+          <span>Employee number</span>
+          <input id="workerEmpNumberInput" type="text" placeholder="e.g. EMP-1001" />
         </label>
+        <label>
+          <span>Your name</span>
+          <input id="workerNameInput" type="text" placeholder="First and last name" readonly
+            style="opacity:0.6;cursor:not-allowed;" />
+        </label>
+        <div id="workerLookupStatus" class="status-box">Enter your employee number to begin.</div>
 
         <div class="button-grid">
           <button class="primary-btn worker-action-btn" data-action="clock_in" type="button">Clock In</button>
@@ -96,12 +102,119 @@
 
     <section id="appShell" class="hidden">
       <nav class="tabs" id="tabBar">
+        <button class="tab hidden" data-tab="myTimecardTab" type="button" id="myTimecardTabBtn">My Timecard</button>
+        <button class="tab hidden" data-tab="missedPunchTab" type="button" id="missedPunchTabBtn">Request Punch</button>
         <button class="tab active" data-tab="managerTab" type="button" id="managerTabBtn">Manager Live</button>
         <button class="tab" data-tab="timesheetsTab" type="button" id="timesheetsTabBtn">Weekly Signoff</button>
         <button class="tab" data-tab="editPunchesTab" type="button" id="editPunchesTabBtn">Edit Punches</button>
+        <button class="tab" data-tab="approvalsTab" type="button" id="approvalsTabBtn">Approvals</button>
+        <button class="tab" data-tab="employeesTab" type="button" id="employeesTabBtn">Employees</button>
         <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
         <button class="tab" data-tab="agencyTab" type="button" id="agencyTabBtn">Agency Export</button>
       </nav>
+
+      <section id="myTimecardTab" class="tab-panel hidden">
+        <div class="card mobile-priority">
+          <div class="card-head split-head">
+            <div>
+              <h2>My Timecard</h2>
+              <p>Your punch history and weekly hours. Read-only.</p>
+            </div>
+            <div class="inline-field slim-field">
+              <label for="myTimecardWeekPicker">Week start</label>
+              <input id="myTimecardWeekPicker" type="date" />
+            </div>
+          </div>
+
+          <div class="stats-grid" style="margin-bottom:18px;">
+            <div class="stat-card"><span>Total hours this week</span><strong id="myTcTotalHours">0.00</strong></div>
+            <div class="stat-card"><span>Days worked</span><strong id="myTcDaysWorked">0</strong></div>
+            <div class="stat-card"><span>Last punch</span><strong id="myTcLastPunch">-</strong></div>
+            <div class="stat-card"><span>Status</span><strong id="myTcStatus">-</strong></div>
+          </div>
+
+          <div class="mini-table-wrap tall">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Clock In</th>
+                  <th>Lunch Out</th>
+                  <th>Lunch In</th>
+                  <th>Clock Out</th>
+                  <th>Hours</th>
+                </tr>
+              </thead>
+              <tbody id="myTimecardBody">
+                <tr><td colspan="6">No punches this week.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="missedPunchTab" class="tab-panel hidden">
+        <div class="panel-grid two-up">
+          <article class="card">
+            <div class="card-head">
+              <h2>Request a Missed Punch</h2>
+              <p>Forgot to clock in or out? Submit a request for your manager to approve.</p>
+            </div>
+
+            <form id="missedPunchForm" class="grid-form">
+              <label>
+                <span>Action</span>
+                <select id="mpActionInput">
+                  <option value="clock_in">Clock In</option>
+                  <option value="start_lunch">Start Lunch</option>
+                  <option value="end_lunch">End Lunch</option>
+                  <option value="clock_out">Clock Out</option>
+                </select>
+              </label>
+              <label>
+                <span>Date</span>
+                <input id="mpDateInput" type="date" required />
+              </label>
+              <label>
+                <span>Time</span>
+                <input id="mpTimeInput" type="time" required />
+              </label>
+              <label class="full-width">
+                <span>Reason</span>
+                <input id="mpReasonInput" type="text" placeholder="e.g. Forgot to clock in" required />
+              </label>
+              <div class="form-actions full-width">
+                <button class="primary-btn" type="submit">Submit Request</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>My Requests</h2>
+              <p>Track the status of your submitted requests.</p>
+            </div>
+
+            <div class="mini-table-wrap tall">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Action</th>
+                    <th>Reason</th>
+                    <th>Status</th>
+                    <th>Reviewed By</th>
+                  </tr>
+                </thead>
+                <tbody id="myMissedPunchBody">
+                  <tr><td colspan="6">No requests yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
 
       <section id="managerTab" class="tab-panel">
         <div class="panel-grid two-up">
@@ -246,6 +359,120 @@
               </tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <section id="approvalsTab" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>Missed Punch Approvals</h2>
+            <p>Review and approve or deny employee missed-punch requests. Approved requests auto-create a punch.</p>
+          </div>
+
+          <div class="stack gap16" style="margin-bottom:12px;">
+            <div class="form-actions">
+              <button id="approvalFilterAll" class="secondary-btn" type="button">All</button>
+              <button id="approvalFilterPending" class="primary-btn" type="button">Pending</button>
+              <button id="approvalFilterApproved" class="ghost-btn" type="button">Approved</button>
+              <button id="approvalFilterDenied" class="ghost-btn" type="button">Denied</button>
+            </div>
+          </div>
+
+          <div class="mini-table-wrap tall">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Requested Date</th>
+                  <th>Time</th>
+                  <th>Action</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="approvalListBody">
+                <tr><td colspan="7">No requests found.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="employeesTab" class="tab-panel hidden">
+        <div class="panel-grid two-up">
+          <article class="card">
+            <div class="card-head">
+              <h2>Add / Edit Employee</h2>
+              <p>Creates a record in the employees collection. No Firebase login needed for temps.</p>
+            </div>
+
+            <form id="employeeForm" class="grid-form">
+              <input id="employeeDocId" type="hidden" />
+              <label>
+                <span>Full name</span>
+                <input id="empNameInput" type="text" placeholder="John Doe" required />
+              </label>
+              <label>
+                <span>Employee number</span>
+                <input id="empNumberInput" type="text" placeholder="Auto-generated if blank" />
+              </label>
+              <label>
+                <span>Agency</span>
+                <select id="empAgencySelect">
+                  <option value="">Direct hire (no agency)</option>
+                </select>
+              </label>
+              <label>
+                <span>Assigned site</span>
+                <input id="empSiteInput" type="text" placeholder="e.g. Warehouse A" />
+              </label>
+              <label>
+                <span>Status</span>
+                <select id="empStatusSelect">
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="terminated">Terminated</option>
+                </select>
+              </label>
+              <div class="form-actions full-width">
+                <button class="primary-btn" type="submit">Save Employee</button>
+                <button id="empCancelEditBtn" class="ghost-btn hidden" type="button">Cancel Edit</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Employee Roster</h2>
+              <p>All employees for this company. Click a row to edit.</p>
+            </div>
+
+            <div class="stack gap16" style="margin-bottom:12px;">
+              <label>
+                <span>Filter</span>
+                <input id="empFilterInput" type="text" placeholder="Search by name or number…" />
+              </label>
+            </div>
+
+            <div class="mini-table-wrap tall">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Emp #</th>
+                    <th>Name</th>
+                    <th>Agency</th>
+                    <th>Site</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="employeeListBody">
+                  <tr><td colspan="6">No employees yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
         </div>
       </section>
 

@@ -12,6 +12,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   addDoc,
   updateDoc,
@@ -32,15 +33,24 @@ const db = getFirestore(app);
 const state = {
   me: null,
   profile: null,
+  companyId: null,        // from user profile
+  agencyId: null,         // from user profile (null = direct company user)
+  companyDoc: null,       // loaded from companies/{companyId}
   unsubscribers: [],
   selectedWeekStart: getMondayDate(new Date()),
   workerUnsub: null,
+  workerEmployee: null,      // looked-up employee record for public punch
   allPunchRows: [],
   selectedWeekPunchRows: [],
   selectedWeekTimesheetDocs: {},
+  allEmployees: [],
+  allMissedRequests: [],
+  approvalFilter: 'pending',
 };
 
 const els = {
+  workerEmpNumberInput: document.getElementById('workerEmpNumberInput'),
+  workerLookupStatus: document.getElementById('workerLookupStatus'),
   workerNameInput: document.getElementById('workerNameInput'),
   workerNameValue: document.getElementById('workerNameValue'),
   workerLastActionValue: document.getElementById('workerLastActionValue'),
@@ -87,6 +97,40 @@ const els = {
   userActiveInput: document.getElementById('userActiveInput'),
   userListBody: document.getElementById('userListBody'),
 
+  myTimecardTabBtn: document.getElementById('myTimecardTabBtn'),
+  missedPunchTabBtn: document.getElementById('missedPunchTabBtn'),
+  missedPunchForm: document.getElementById('missedPunchForm'),
+  mpActionInput: document.getElementById('mpActionInput'),
+  mpDateInput: document.getElementById('mpDateInput'),
+  mpTimeInput: document.getElementById('mpTimeInput'),
+  mpReasonInput: document.getElementById('mpReasonInput'),
+  myMissedPunchBody: document.getElementById('myMissedPunchBody'),
+  myTimecardWeekPicker: document.getElementById('myTimecardWeekPicker'),
+  myTcTotalHours: document.getElementById('myTcTotalHours'),
+  myTcDaysWorked: document.getElementById('myTcDaysWorked'),
+  myTcLastPunch: document.getElementById('myTcLastPunch'),
+  myTcStatus: document.getElementById('myTcStatus'),
+  myTimecardBody: document.getElementById('myTimecardBody'),
+
+  approvalsTabBtn: document.getElementById('approvalsTabBtn'),
+  approvalFilterAll: document.getElementById('approvalFilterAll'),
+  approvalFilterPending: document.getElementById('approvalFilterPending'),
+  approvalFilterApproved: document.getElementById('approvalFilterApproved'),
+  approvalFilterDenied: document.getElementById('approvalFilterDenied'),
+  approvalListBody: document.getElementById('approvalListBody'),
+
+  employeesTabBtn: document.getElementById('employeesTabBtn'),
+  employeeForm: document.getElementById('employeeForm'),
+  employeeDocId: document.getElementById('employeeDocId'),
+  empNameInput: document.getElementById('empNameInput'),
+  empNumberInput: document.getElementById('empNumberInput'),
+  empAgencySelect: document.getElementById('empAgencySelect'),
+  empSiteInput: document.getElementById('empSiteInput'),
+  empStatusSelect: document.getElementById('empStatusSelect'),
+  empCancelEditBtn: document.getElementById('empCancelEditBtn'),
+  empFilterInput: document.getElementById('empFilterInput'),
+  employeeListBody: document.getElementById('employeeListBody'),
+
   agencyWorkerSelect: document.getElementById('agencyWorkerSelect'),
   agencyPreviewBtn: document.getElementById('agencyPreviewBtn'),
   agencyPrintBtn: document.getElementById('agencyPrintBtn'),
@@ -100,8 +144,13 @@ init();
 async function init() {
   wireEvents();
 
+  // Restore saved employee number if available
+  const storedEmpNum = localStorage.getItem('workerEmpNumber') || '';
   const storedWorkerName = localStorage.getItem('workerPunchName') || '';
-  if (storedWorkerName) {
+  if (storedEmpNum && els.workerEmpNumberInput) {
+    els.workerEmpNumberInput.value = storedEmpNum;
+    handleWorkerEmpLookup(); // auto-lookup on page load
+  } else if (storedWorkerName) {
     const pretty = prettifyHumanName(storedWorkerName);
     if (els.workerNameInput) els.workerNameInput.value = pretty;
     if (els.workerNameValue) els.workerNameValue.textContent = pretty;
@@ -141,6 +190,19 @@ async function init() {
       }
 
       state.profile = profileSnap.data();
+      state.companyId = state.profile.companyId || null;
+      state.agencyId = state.profile.agencyId || null;
+
+      // Load company doc if companyId exists
+      if (state.companyId) {
+        try {
+          const compSnap = await getDoc(doc(db, 'companies', state.companyId));
+          state.companyDoc = compSnap.exists() ? compSnap.data() : null;
+        } catch (_) {
+          state.companyDoc = null;
+        }
+      }
+
       showLoggedIn();
       attachRoleViews();
       attachManagerLiveViews();
@@ -160,14 +222,12 @@ function wireEvents() {
     btn.addEventListener('click', () => handleWorkerPunch(btn.dataset.action));
   });
 
+  els.workerEmpNumberInput?.addEventListener('input', debounce(handleWorkerEmpLookup, 500));
+
+  // Legacy name input is now read-only — filled by employee lookup
   els.workerNameInput?.addEventListener('input', () => {
     const value = prettifyHumanName(els.workerNameInput.value.trim());
     if (els.workerNameValue) els.workerNameValue.textContent = value || '-';
-
-    if (value) {
-      localStorage.setItem('workerPunchName', value);
-      attachWorkerLiveView(value);
-    }
   });
 
   els.loginForm?.addEventListener('submit', handleLogin);
@@ -199,30 +259,102 @@ function wireEvents() {
 
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
 
+  els.missedPunchForm?.addEventListener('submit', handleMissedPunchSubmit);
+
+  els.myTimecardWeekPicker?.addEventListener('change', () => {
+    if (state.me && isEmployee()) {
+      clearMyTimecardListener();
+      attachMyTimecardView();
+    }
+  });
+
+  [['approvalFilterAll', 'all'], ['approvalFilterPending', 'pending'],
+   ['approvalFilterApproved', 'approved'], ['approvalFilterDenied', 'denied']].forEach(([id, val]) => {
+    els[id]?.addEventListener('click', () => {
+      state.approvalFilter = val;
+      renderApprovalList(state.allMissedRequests);
+    });
+  });
+
+  els.employeeForm?.addEventListener('submit', handleSaveEmployee);
+  els.empCancelEditBtn?.addEventListener('click', cancelEmployeeEdit);
+  els.empFilterInput?.addEventListener('input', () => renderEmployeeList(state.allEmployees || []));
+
   els.agencyPreviewBtn?.addEventListener('click', () => renderAgencyPreview());
   els.agencyPrintBtn?.addEventListener('click', () => printAgencyPreview());
   els.agencyWorkerSelect?.addEventListener('change', () => renderAgencyPreview());
 }
 
+async function handleWorkerEmpLookup() {
+  const empNum = String(els.workerEmpNumberInput?.value || '').trim().toUpperCase();
+
+  if (!empNum) {
+    state.workerEmployee = null;
+    if (els.workerNameInput) els.workerNameInput.value = '';
+    if (els.workerNameValue) els.workerNameValue.textContent = '-';
+    if (els.workerLookupStatus) els.workerLookupStatus.textContent = 'Enter your employee number to begin.';
+    return;
+  }
+
+  // Read companyId from URL param (QR codes will encode it)
+  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
+
+  try {
+    const constraints = [where('employeeNumber', '==', empNum)];
+    if (urlCompanyId) constraints.push(where('companyId', '==', urlCompanyId));
+    constraints.push(limit(1));
+
+    const q = query(collection(db, 'employees'), ...constraints);
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      state.workerEmployee = null;
+      if (els.workerNameInput) els.workerNameInput.value = '';
+      if (els.workerNameValue) els.workerNameValue.textContent = '-';
+      if (els.workerLookupStatus) els.workerLookupStatus.textContent = '⚠ Employee not found. Check your number.';
+      return;
+    }
+
+    const empDoc = snap.docs[0];
+    state.workerEmployee = { id: empDoc.id, ...empDoc.data() };
+    const name = state.workerEmployee.name || '';
+
+    if (els.workerNameInput) els.workerNameInput.value = name;
+    if (els.workerNameValue) els.workerNameValue.textContent = name;
+    if (els.workerLookupStatus) {
+      els.workerLookupStatus.textContent = `✓ Found: ${name}. Ready to punch.`;
+      els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+    }
+
+    localStorage.setItem('workerEmpNumber', empNum);
+    localStorage.setItem('workerPunchName', name);
+    attachWorkerLiveView(name);
+  } catch (error) {
+    console.error(error);
+    if (els.workerLookupStatus) els.workerLookupStatus.textContent = '⚠ Lookup failed. Try again.';
+  }
+}
+
 async function handleWorkerPunch(action) {
-  const rawName = els.workerNameInput?.value.trim();
-  if (!rawName) {
-    toast('Enter your name first.', true);
+  const emp = state.workerEmployee;
+
+  if (!emp) {
+    toast('Look up your employee number first.', true);
     return;
   }
 
-  const name = prettifyHumanName(rawName);
+  if (emp.status === 'inactive' || emp.status === 'terminated') {
+    toast('Your employee record is not active. Contact your manager.', true);
+    return;
+  }
+
+  const name = emp.name || '';
   const nameKey = normalizeName(name);
-
-  if (nameKey.length < 2) {
-    toast('Enter a valid name.', true);
-    return;
-  }
-
   const now = new Date();
   const nowMs = Date.now();
   const dateKey = formatDateKey(now);
   const weekKey = formatDateKey(getMondayDate(now));
+  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
 
   try {
     await addDoc(collection(db, 'punches'), {
@@ -235,11 +367,12 @@ async function handleWorkerPunch(action) {
       weekKey,
       source: 'public_qr',
       createdAt: serverTimestamp(),
+      employeeId: emp.employeeId || emp.id,
+      employeeNumber: emp.employeeNumber || '',
+      companyId: emp.companyId || urlCompanyId || '',
+      agencyId: emp.agencyId || '',
     });
 
-    localStorage.setItem('workerPunchName', name);
-    if (els.workerNameInput) els.workerNameInput.value = name;
-    if (els.workerNameValue) els.workerNameValue.textContent = name;
     if (els.workerLastActionValue) els.workerLastActionValue.textContent = prettyAction(action);
     if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = formatDateTime(nowMs);
     if (els.workerStatusValue) els.workerStatusValue.textContent = statusLabelForAction(action);
@@ -300,7 +433,10 @@ async function handleManualPunchSubmit(event) {
       weekKey,
       source: 'manual_manager',
       createdAt: serverTimestamp(),
-      createdBy: state.profile?.name || state.me?.email || 'Manager'
+      createdBy: state.profile?.name || state.me?.email || 'Manager',
+      companyId: state.companyId || '',
+      agencyId: '',
+      employeeId: '',
     });
 
     await addDoc(collection(db, 'punch_edits'), {
@@ -313,7 +449,8 @@ async function handleManualPunchSubmit(event) {
       weekKey,
       source: 'manual_manager',
       editedBy: state.profile?.name || state.me?.email || 'Manager',
-      editedAt: serverTimestamp()
+      editedAt: serverTimestamp(),
+      companyId: state.companyId || '',
     });
 
     els.manualPunchForm?.reset();
@@ -428,26 +565,81 @@ async function handlePasswordReset() {
 }
 
 function showLoggedOut() {
+  state.companyId = null;
+  state.agencyId = null;
+  state.companyDoc = null;
   els.authCard?.classList.remove('hidden');
   els.appShell?.classList.add('hidden');
   els.sessionChip?.classList.add('hidden');
+  // Restore public worker card
+  const workerCard = document.getElementById('workerCard');
+  if (workerCard) workerCard.classList.remove('hidden');
+  // Reset header
+  const headerP = document.querySelector('.topbar p');
+  if (headerP) headerP.textContent = 'Mobile punch tracking with live manager visibility and weekly signoff.';
 }
 
 function showLoggedIn() {
   els.authCard?.classList.add('hidden');
   els.appShell?.classList.remove('hidden');
   els.sessionChip?.classList.remove('hidden');
+  // Hide the public worker card for logged-in users
+  const workerCard = document.getElementById('workerCard');
+  if (workerCard) workerCard.classList.add('hidden');
   if (els.sessionName) els.sessionName.textContent = state.profile?.name || state.me?.email || 'Signed in';
-  if (els.sessionRole) els.sessionRole.textContent = state.profile?.role || 'manager';
+  if (els.sessionRole) {
+    const roleParts = [state.profile?.role || 'manager'];
+    if (state.agencyId) roleParts.push('agency');
+    els.sessionRole.textContent = roleParts.join(' · ');
+  }
+
+  // Show company name in header
+  const companyDisplayName = state.companyDoc?.name || (state.companyId ? state.companyId : appSettings.companyName);
+  const headerP = document.querySelector('.topbar p');
+  if (headerP) headerP.textContent = companyDisplayName + ' — TimeClock Pro';
+}
+
+function getCompanyName() {
+  return state.companyDoc?.name || state.companyId || appSettings.companyName;
+}
+
+/** Returns true if current user is scoped to an agency */
+function isAgencyUser() {
+  return !!state.agencyId;
 }
 
 function attachRoleViews() {
-  els.managerTabBtn?.classList.remove('hidden');
-  els.timesheetsTabBtn?.classList.remove('hidden');
-  els.editPunchesTabBtn?.classList.remove('hidden');
+  const emp = isEmployee();
+  const mgr = isManager();
+
+  // Employee-only tabs
+  els.myTimecardTabBtn?.classList.toggle('hidden', !emp);
+  els.missedPunchTabBtn?.classList.toggle('hidden', !emp);
+
+  // Manager/admin tabs
+  els.managerTabBtn?.classList.toggle('hidden', emp);
+  els.timesheetsTabBtn?.classList.toggle('hidden', emp);
+  els.editPunchesTabBtn?.classList.toggle('hidden', emp);
+  els.approvalsTabBtn?.classList.toggle('hidden', !mgr);
+  els.employeesTabBtn?.classList.toggle('hidden', !mgr);
   els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
-  els.agencyTabBtn?.classList.remove('hidden');
-  switchTab('managerTab');
+  els.agencyTabBtn?.classList.toggle('hidden', emp);
+
+  if (emp) {
+    if (els.myTimecardWeekPicker) {
+      els.myTimecardWeekPicker.value = formatDateInput(state.selectedWeekStart);
+    }
+    if (els.mpDateInput) els.mpDateInput.value = formatDateInput(new Date());
+    switchTab('myTimecardTab');
+    attachMyTimecardView();
+    attachMyMissedPunchView();
+  } else {
+    switchTab('managerTab');
+    if (mgr) {
+      attachEmployeesView();
+      attachApprovalView();
+    }
+  }
 }
 
 function switchTab(tabId) {
@@ -461,10 +653,15 @@ function switchTab(tabId) {
 }
 
 function attachManagerLiveViews() {
+  const constraints = [];
+  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
+  constraints.push(orderBy('timestampMs', 'desc'));
+  constraints.push(limit(250));
+
   const liveQuery = query(
     collection(db, 'punches'),
-    orderBy('timestampMs', 'desc'),
-    limit(250)
+    ...constraints
   );
 
   state.unsubscribers.push(
@@ -716,16 +913,18 @@ async function deletePunchRecord(punchId) {
 function attachTimesheetView() {
   const weekKey = formatDateKey(state.selectedWeekStart);
 
-  const punchesQuery = query(
-    collection(db, 'punches'),
-    where('weekKey', '==', weekKey),
-    orderBy('timestampMs', 'asc')
-  );
+  const punchConstraints = [where('weekKey', '==', weekKey)];
+  if (state.companyId) punchConstraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) punchConstraints.push(where('agencyId', '==', state.agencyId));
+  punchConstraints.push(orderBy('timestampMs', 'asc'));
 
-  const timesheetsQuery = query(
-    collection(db, 'timesheets'),
-    where('weekKey', '==', weekKey)
-  );
+  const punchesQuery = query(collection(db, 'punches'), ...punchConstraints);
+
+  const tsConstraints = [where('weekKey', '==', weekKey)];
+  if (state.companyId) tsConstraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) tsConstraints.push(where('agencyId', '==', state.agencyId));
+
+  const timesheetsQuery = query(collection(db, 'timesheets'), ...tsConstraints);
 
   state.unsubscribers.push(
     onSnapshot(
@@ -993,13 +1192,489 @@ function buildWeekTotals(punches) {
   };
 }
 
+function isEmployee() {
+  return state.profile?.role === 'employee';
+}
+
+/* ───────────────────────────────────────────────────
+   MY TIMECARD (employee self-service view)
+   ─────────────────────────────────────────────────── */
+
+function attachMyTimecardView() {
+  const weekStart = els.myTimecardWeekPicker?.value
+    ? new Date(`${els.myTimecardWeekPicker.value}T00:00:00`)
+    : state.selectedWeekStart;
+
+  const weekKey = formatDateKey(weekStart);
+  const employeeId = state.profile?.employeeId || null;
+  const nameKey = normalizeName(state.profile?.name || '');
+
+  if (!employeeId && !nameKey) {
+    toast('Your profile is missing employeeId. Ask your manager.', true);
+    return;
+  }
+
+  // Query punches by employeeId (preferred) or nameKey (legacy fallback)
+  const constraints = [where('weekKey', '==', weekKey)];
+  if (employeeId) {
+    constraints.push(where('employeeId', '==', employeeId));
+  } else {
+    constraints.push(where('nameKey', '==', nameKey));
+  }
+  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  constraints.push(orderBy('timestampMs', 'asc'));
+
+  const q = query(collection(db, 'punches'), ...constraints);
+
+  state._myTcUnsub = onSnapshot(q, (snap) => {
+    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderMyTimecard(rows);
+  }, (error) => {
+    console.error(error);
+    toast(error.message || 'Could not load your timecard.', true);
+  });
+
+  state.unsubscribers.push(state._myTcUnsub);
+}
+
+function clearMyTimecardListener() {
+  if (state._myTcUnsub) {
+    try { state._myTcUnsub(); } catch (_) {}
+    state._myTcUnsub = null;
+  }
+}
+
+function renderMyTimecard(punches) {
+  const totals = buildWeekTotals(punches);
+
+  if (els.myTcTotalHours) els.myTcTotalHours.textContent = Number(totals.weeklyHours || 0).toFixed(2);
+  if (els.myTcDaysWorked) els.myTcDaysWorked.textContent = String(totals.daysWorked || 0);
+  if (els.myTcLastPunch) els.myTcLastPunch.textContent = totals.lastPunchAtMs ? formatDateTime(totals.lastPunchAtMs) : '-';
+  if (els.myTcStatus) els.myTcStatus.textContent = totals.lastAction ? statusLabelForAction(totals.lastAction) : '-';
+
+  if (!els.myTimecardBody) return;
+
+  const daily = totals.dailyTotals;
+  const keys = Object.keys(daily).sort();
+
+  if (!keys.length) {
+    els.myTimecardBody.innerHTML = '<tr><td colspan="6">No punches this week.</td></tr>';
+    return;
+  }
+
+  els.myTimecardBody.innerHTML = keys.map((dateKey) => {
+    const d = daily[dateKey];
+    return `
+      <tr>
+        <td>${escapeHtml(dateKey)}</td>
+        <td>${escapeHtml(d.clock_in || '-')}</td>
+        <td>${escapeHtml(d.start_lunch || '-')}</td>
+        <td>${escapeHtml(d.end_lunch || '-')}</td>
+        <td>${escapeHtml(d.clock_out || '-')}</td>
+        <td>${Number(d.hours || 0).toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+/* ───────────────────────────────────────────────────
+   MISSED PUNCH REQUESTS
+   ─────────────────────────────────────────────────── */
+
+async function handleMissedPunchSubmit(event) {
+  event.preventDefault();
+
+  if (!state.me || !state.profile) {
+    toast('You must be signed in.', true);
+    return;
+  }
+
+  const action = els.mpActionInput?.value;
+  const dateValue = els.mpDateInput?.value;
+  const timeValue = els.mpTimeInput?.value;
+  const reason = els.mpReasonInput?.value.trim();
+
+  if (!action || !dateValue || !timeValue || !reason) {
+    toast('Fill out all fields.', true);
+    return;
+  }
+
+  const requestedTimestampMs = parseLocalDateAndTime(dateValue, timeValue);
+  if (!requestedTimestampMs) {
+    toast('Invalid date or time.', true);
+    return;
+  }
+
+  try {
+    await addDoc(collection(db, 'missedPunchRequests'), {
+      uid: state.me.uid,
+      employeeId: state.profile.employeeId || '',
+      companyId: state.companyId || '',
+      agencyId: state.agencyId || '',
+      name: state.profile.name || '',
+      requestedAction: action,
+      requestedDate: dateValue,
+      requestedTime: timeValue,
+      requestedTimestampMs,
+      reason,
+      status: 'pending',
+      reviewedBy: '',
+      reviewedAt: null,
+      approvedBy: '',
+      approvedAt: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    els.missedPunchForm?.reset();
+    if (els.mpDateInput) els.mpDateInput.value = formatDateInput(new Date());
+    toast('Missed punch request submitted.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not submit request.', true);
+  }
+}
+
+function attachMyMissedPunchView() {
+  if (!state.me) return;
+
+  const constraints = [where('uid', '==', state.me.uid)];
+  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+
+  const q = query(collection(db, 'missedPunchRequests'), ...constraints);
+
+  state.unsubscribers.push(
+    onSnapshot(q, (snap) => {
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      rows.sort((a, b) => (b.requestedTimestampMs || 0) - (a.requestedTimestampMs || 0));
+      renderMyMissedPunches(rows);
+    }, (error) => {
+      console.error(error);
+    })
+  );
+}
+
+function renderMyMissedPunches(rows) {
+  if (!els.myMissedPunchBody) return;
+
+  if (!rows.length) {
+    els.myMissedPunchBody.innerHTML = '<tr><td colspan="6">No requests yet.</td></tr>';
+    return;
+  }
+
+  els.myMissedPunchBody.innerHTML = rows.map((r) => {
+    const statusClass = r.status === 'approved' ? 'color:var(--good)' :
+                        r.status === 'denied' ? 'color:var(--danger)' : 'color:var(--warn)';
+    return `
+      <tr>
+        <td>${escapeHtml(r.requestedDate || '-')}</td>
+        <td>${escapeHtml(r.requestedTime || '-')}</td>
+        <td>${prettyAction(r.requestedAction)}</td>
+        <td>${escapeHtml(r.reason || '-')}</td>
+        <td><span style="${statusClass};font-weight:700;text-transform:capitalize;">${escapeHtml(r.status || 'pending')}</span></td>
+        <td>${escapeHtml(r.reviewedBy || '-')}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+/* ───────────────────────────────────────────────────
+   MANAGER APPROVAL DASHBOARD
+   ─────────────────────────────────────────────────── */
+
+function attachApprovalView() {
+  const constraints = [];
+  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
+
+  const q = query(collection(db, 'missedPunchRequests'), ...constraints);
+
+  state.unsubscribers.push(
+    onSnapshot(q, (snap) => {
+      state.allMissedRequests = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      state.allMissedRequests.sort((a, b) => (b.requestedTimestampMs || 0) - (a.requestedTimestampMs || 0));
+      renderApprovalList(state.allMissedRequests);
+    }, (error) => {
+      console.error(error);
+      toast(error.message || 'Could not load approval requests.', true);
+    })
+  );
+}
+
+function renderApprovalList(requests) {
+  if (!els.approvalListBody) return;
+
+  const filtered = state.approvalFilter === 'all'
+    ? requests
+    : requests.filter((r) => r.status === state.approvalFilter);
+
+  if (!filtered.length) {
+    els.approvalListBody.innerHTML = `<tr><td colspan="7">No ${state.approvalFilter} requests.</td></tr>`;
+    return;
+  }
+
+  els.approvalListBody.innerHTML = filtered.map((r) => {
+    const statusClass = r.status === 'approved' ? 'color:var(--good)' :
+                        r.status === 'denied' ? 'color:var(--danger)' : 'color:var(--warn)';
+    const actions = r.status === 'pending'
+      ? `<button class="primary-btn approve-req-btn" data-id="${r.id}" type="button" style="margin-right:6px;">Approve</button>
+         <button class="danger-btn deny-req-btn" data-id="${r.id}" type="button">Deny</button>`
+      : `<span class="tiny">${escapeHtml(r.reviewedBy || '-')}</span>`;
+
+    return `
+      <tr>
+        <td>${escapeHtml(r.name || '-')}</td>
+        <td>${escapeHtml(r.requestedDate || '-')}</td>
+        <td>${escapeHtml(r.requestedTime || '-')}</td>
+        <td>${prettyAction(r.requestedAction)}</td>
+        <td>${escapeHtml(r.reason || '-')}</td>
+        <td><span style="${statusClass};font-weight:700;text-transform:capitalize;">${escapeHtml(r.status)}</span></td>
+        <td>${actions}</td>
+      </tr>
+    `;
+  }).join('');
+
+  els.approvalListBody.querySelectorAll('.approve-req-btn').forEach((btn) => {
+    btn.addEventListener('click', () => approveRequest(btn.dataset.id));
+  });
+
+  els.approvalListBody.querySelectorAll('.deny-req-btn').forEach((btn) => {
+    btn.addEventListener('click', () => denyRequest(btn.dataset.id));
+  });
+}
+
+async function approveRequest(requestId) {
+  if (!isManager()) { toast('Only managers can approve.', true); return; }
+
+  const req = state.allMissedRequests.find((r) => r.id === requestId);
+  if (!req) { toast('Request not found.', true); return; }
+
+  const managerName = state.profile?.name || state.me?.email || 'Manager';
+  const now = Timestamp.fromDate(new Date());
+
+  try {
+    // 1. Update the request status
+    await updateDoc(doc(db, 'missedPunchRequests', requestId), {
+      status: 'approved',
+      reviewedBy: managerName,
+      reviewedAt: now,
+      approvedBy: managerName,
+      approvedAt: now,
+      updatedAt: serverTimestamp(),
+    });
+
+    // 2. Auto-create the actual punch
+    const punchDate = new Date(req.requestedTimestampMs);
+    const dateKey = formatDateKey(punchDate);
+    const weekKey = formatDateKey(getMondayDate(punchDate));
+
+    await addDoc(collection(db, 'punches'), {
+      name: req.name || '',
+      nameKey: normalizeName(req.name || ''),
+      action: req.requestedAction,
+      timestamp: serverTimestamp(),
+      timestampMs: req.requestedTimestampMs,
+      dateKey,
+      weekKey,
+      source: 'missed_punch_approved',
+      createdAt: serverTimestamp(),
+      createdBy: managerName,
+      approvedBy: managerName,
+      approvedAt: now,
+      companyId: req.companyId || '',
+      agencyId: req.agencyId || '',
+      employeeId: req.employeeId || '',
+    });
+
+    toast('Request approved — punch created.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not approve request.', true);
+  }
+}
+
+async function denyRequest(requestId) {
+  if (!isManager()) { toast('Only managers can deny.', true); return; }
+
+  const reason = prompt('Denial reason (optional):') || '';
+  const managerName = state.profile?.name || state.me?.email || 'Manager';
+
+  try {
+    await updateDoc(doc(db, 'missedPunchRequests', requestId), {
+      status: 'denied',
+      reviewedBy: managerName,
+      reviewedAt: Timestamp.fromDate(new Date()),
+      editReason: reason,
+      updatedAt: serverTimestamp(),
+    });
+
+    toast('Request denied.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not deny request.', true);
+  }
+}
+
+/* ───────────────────────────────────────────────────
+   EMPLOYEES COLLECTION (employees/{employeeId})
+   ─────────────────────────────────────────────────── */
+
+function attachEmployeesView() {
+  const empConstraints = [];
+  if (state.companyId) empConstraints.push(where('companyId', '==', state.companyId));
+  if (isAgencyUser()) empConstraints.push(where('agencyId', '==', state.agencyId));
+  empConstraints.push(orderBy('name', 'asc'));
+
+  const empQuery = query(collection(db, 'employees'), ...empConstraints);
+
+  state.unsubscribers.push(
+    onSnapshot(empQuery, (snap) => {
+      state.allEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderEmployeeList(state.allEmployees);
+    }, (error) => {
+      console.error(error);
+      toast(error.message || 'Could not load employees.', true);
+    })
+  );
+}
+
+function renderEmployeeList(employees) {
+  if (!els.employeeListBody) return;
+
+  const filter = String(els.empFilterInput?.value || '').trim().toLowerCase();
+  const filtered = employees.filter((e) => {
+    if (!filter) return true;
+    return (
+      String(e.name || '').toLowerCase().includes(filter) ||
+      String(e.employeeNumber || '').toLowerCase().includes(filter)
+    );
+  });
+
+  if (!filtered.length) {
+    els.employeeListBody.innerHTML = '<tr><td colspan="6">No employees found.</td></tr>';
+    return;
+  }
+
+  els.employeeListBody.innerHTML = filtered.map((emp) => `
+    <tr>
+      <td>${escapeHtml(emp.employeeNumber || '-')}</td>
+      <td>${escapeHtml(emp.name || '-')}</td>
+      <td>${escapeHtml(emp.agencyId || 'Direct')}</td>
+      <td>${escapeHtml(emp.assignedSiteId || '-')}</td>
+      <td><span class="tiny-flag">${escapeHtml(emp.status || 'active')}</span></td>
+      <td>
+        <button class="secondary-btn emp-edit-btn" data-id="${emp.id}" type="button">Edit</button>
+      </td>
+    </tr>
+  `).join('');
+
+  els.employeeListBody.querySelectorAll('.emp-edit-btn').forEach((btn) => {
+    btn.addEventListener('click', () => loadEmployeeForEdit(btn.dataset.id));
+  });
+}
+
+function loadEmployeeForEdit(empId) {
+  const emp = (state.allEmployees || []).find((e) => e.id === empId);
+  if (!emp) { toast('Employee not found.', true); return; }
+
+  if (els.employeeDocId) els.employeeDocId.value = empId;
+  if (els.empNameInput) els.empNameInput.value = emp.name || '';
+  if (els.empNumberInput) els.empNumberInput.value = emp.employeeNumber || '';
+  if (els.empAgencySelect) els.empAgencySelect.value = emp.agencyId || '';
+  if (els.empSiteInput) els.empSiteInput.value = emp.assignedSiteId || '';
+  if (els.empStatusSelect) els.empStatusSelect.value = emp.status || 'active';
+  els.empCancelEditBtn?.classList.remove('hidden');
+}
+
+function cancelEmployeeEdit() {
+  els.employeeForm?.reset();
+  if (els.employeeDocId) els.employeeDocId.value = '';
+  els.empCancelEditBtn?.classList.add('hidden');
+}
+
+async function handleSaveEmployee(event) {
+  event.preventDefault();
+
+  if (!isManager()) {
+    toast('Only managers and admins can manage employees.', true);
+    return;
+  }
+
+  const name = prettifyHumanName(els.empNameInput?.value.trim());
+  const nameKey = normalizeName(name);
+
+  if (!name || nameKey.length < 2) {
+    toast('Enter a valid employee name.', true);
+    return;
+  }
+
+  let employeeNumber = els.empNumberInput?.value.trim();
+  const agencyId = els.empAgencySelect?.value || '';
+  const assignedSiteId = els.empSiteInput?.value.trim() || '';
+  const status = els.empStatusSelect?.value || 'active';
+  const existingId = els.employeeDocId?.value || '';
+
+  // Auto-generate employee number if blank
+  if (!employeeNumber) {
+    employeeNumber = await generateNextEmployeeNumber();
+  }
+
+  const payload = {
+    name,
+    nameKey,
+    employeeNumber,
+    companyId: state.companyId || '',
+    agencyId,
+    assignedSiteId,
+    status,
+    updatedAt: serverTimestamp(),
+  };
+
+  try {
+    if (existingId) {
+      // Update existing employee
+      await updateDoc(doc(db, 'employees', existingId), payload);
+      toast('Employee updated.');
+    } else {
+      // Create new employee
+      payload.createdAt = serverTimestamp();
+      const newRef = await addDoc(collection(db, 'employees'), payload);
+      // Write employeeId field = doc ID
+      await updateDoc(newRef, { employeeId: newRef.id });
+      toast('Employee created: ' + employeeNumber);
+    }
+
+    cancelEmployeeEdit();
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not save employee.', true);
+  }
+}
+
+async function generateNextEmployeeNumber() {
+  // Find the highest existing employee number and increment
+  const prefix = 'EMP-';
+  const existing = (state.allEmployees || [])
+    .map((e) => e.employeeNumber || '')
+    .filter((n) => n.startsWith(prefix))
+    .map((n) => parseInt(n.replace(prefix, ''), 10))
+    .filter((n) => !isNaN(n));
+
+  const maxNum = existing.length ? Math.max(...existing) : 1000;
+  return prefix + String(maxNum + 1);
+}
+
 function attachUsersViewIfAdmin() {
   if (!isAdmin()) return;
   attachUsersView();
 }
 
 function attachUsersView() {
-  const usersQuery = query(collection(db, 'users'), orderBy('name', 'asc'));
+  const userConstraints = [];
+  if (state.companyId) userConstraints.push(where('companyId', '==', state.companyId));
+  userConstraints.push(orderBy('name', 'asc'));
+
+  const usersQuery = query(collection(db, 'users'), ...userConstraints);
 
   state.unsubscribers.push(
     onSnapshot(
@@ -1036,13 +1711,17 @@ async function handleSaveProfile(event) {
 
   try {
     const uid = els.userUidInput?.value.trim();
-    await setDoc(doc(db, 'users', uid), {
+    const profilePayload = {
       name: prettifyHumanName(els.userNameInput?.value.trim()),
       email: els.userEmailInput?.value.trim().toLowerCase(),
       role: els.userRoleInput?.value,
       active: els.userActiveInput?.value === 'true',
       updatedAt: serverTimestamp(),
-    }, { merge: true });
+    };
+    // Auto-assign current user's companyId to new profiles
+    if (state.companyId) profilePayload.companyId = state.companyId;
+
+    await setDoc(doc(db, 'users', uid), profilePayload, { merge: true });
 
     toast('User profile saved.');
     els.userProfileForm?.reset();
@@ -1101,7 +1780,7 @@ function renderAgencyPreview() {
           </div>
         </div>
         <div style="font-size:14px;line-height:1.7;text-align:right;">
-          <div><strong>Company:</strong> ${escapeHtml(appSettings.companyName || 'Company')}</div>
+          <div><strong>Company:</strong> ${escapeHtml(getCompanyName())}</div>
           <div><strong>Generated:</strong> ${escapeHtml(formatDateTime(Date.now()))}</div>
         </div>
       </div>
@@ -1391,4 +2070,12 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
 }

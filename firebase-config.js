@@ -8,6 +8,6 @@ export const firebaseConfig = {
 };
 
 export const appSettings = {
-  companyName: "Chadwell",
+  companyName: "Chadwell",              // fallback if company doc not loaded
   defaultAppUrl: "https://qrtimeclock-42764.web.app"
 };
