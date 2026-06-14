@@ -65,6 +65,11 @@
 
         <div id="workerStatusMessage" class="status-box">Enter your name and punch.</div>
 
+        <div class="form-actions worker-self-service-actions">
+          <button id="workerViewTimeBtn" class="ghost-btn" type="button">My Time This Week</button>
+          <button id="workerRequestFixBtn" class="ghost-btn" type="button">Request Time Fix</button>
+        </div>
+
         <div class="mini-table-wrap">
           <table>
             <thead>
@@ -78,6 +83,50 @@
             </tbody>
           </table>
         </div>
+
+        <section id="workerMyTimePanel" class="worker-self-service hidden">
+          <div class="card-head">
+            <h3>My Time This Week</h3>
+            <p>Shows punches saved on this device. Your manager's records remain the official timecard.</p>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-card"><span>Hours this week</span><strong id="workerWeekHoursValue">0.00</strong></div>
+            <div class="stat-card"><span>Days worked</span><strong id="workerDaysWorkedValue">0</strong></div>
+          </div>
+          <div class="mini-table-wrap">
+            <table>
+              <thead><tr><th>Date</th><th>Clock In</th><th>Lunch Out</th><th>Lunch In</th><th>Clock Out</th><th>Hours</th></tr></thead>
+              <tbody id="workerMyTimeBody"><tr><td colspan="6">Select your name, then tap My Time This Week.</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="workerFixPanel" class="worker-self-service hidden">
+          <div class="card-head">
+            <h3>Request Time Fix</h3>
+            <p>Submit a missing or incorrect punch for manager review. This does not alter punches automatically.</p>
+          </div>
+          <form id="workerFixForm" class="grid-form">
+            <label>
+              <span>Punch type</span>
+              <select id="workerFixActionInput">
+                <option value="clock_in">Clock In</option>
+                <option value="start_lunch">Lunch Out</option>
+                <option value="end_lunch">Lunch In</option>
+                <option value="clock_out">Clock Out</option>
+              </select>
+            </label>
+            <label><span>Date</span><input id="workerFixDateInput" type="date" required /></label>
+            <label><span>Requested time</span><input id="workerFixTimeInput" type="time" required /></label>
+            <label class="full-width">
+              <span>Reason</span>
+              <input id="workerFixReasonInput" type="text" maxlength="300" placeholder="Explain what needs to be corrected" required />
+            </label>
+            <div class="form-actions full-width">
+              <button class="primary-btn" type="submit">Submit Time Fix Request</button>
+            </div>
+          </form>
+        </section>
       </div>
     </section>
 

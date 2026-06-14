@@ -219,6 +219,15 @@ button {
   background: rgba(255,255,255,0.05);
 }
 .status-box { padding: 14px; margin: 10px 0 16px; }
+.worker-self-service {
+  padding: 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.035);
+}
+.worker-self-service-actions {
+  flex-wrap: wrap;
+}
 .empty-state { padding: 16px; color: var(--muted); }
 .person-row {
   padding: 14px;

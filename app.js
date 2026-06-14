@@ -60,6 +60,18 @@ const els = {
   workerStatusValue: document.getElementById('workerStatusValue'),
   workerStatusMessage: document.getElementById('workerStatusMessage'),
   workerHistoryBody: document.getElementById('workerHistoryBody'),
+  workerViewTimeBtn: document.getElementById('workerViewTimeBtn'),
+  workerRequestFixBtn: document.getElementById('workerRequestFixBtn'),
+  workerMyTimePanel: document.getElementById('workerMyTimePanel'),
+  workerFixPanel: document.getElementById('workerFixPanel'),
+  workerWeekHoursValue: document.getElementById('workerWeekHoursValue'),
+  workerDaysWorkedValue: document.getElementById('workerDaysWorkedValue'),
+  workerMyTimeBody: document.getElementById('workerMyTimeBody'),
+  workerFixForm: document.getElementById('workerFixForm'),
+  workerFixActionInput: document.getElementById('workerFixActionInput'),
+  workerFixDateInput: document.getElementById('workerFixDateInput'),
+  workerFixTimeInput: document.getElementById('workerFixTimeInput'),
+  workerFixReasonInput: document.getElementById('workerFixReasonInput'),
   workerPinField: document.getElementById('workerPinField'),
   workerPinInput: document.getElementById('workerPinInput'),
 
@@ -177,6 +189,14 @@ async function init() {
     els.manualPunchTimeInput.value = formatTimeForInput(Date.now());
   }
 
+  if (els.workerFixDateInput) {
+    els.workerFixDateInput.value = formatDateInput(new Date());
+  }
+
+  if (els.workerFixTimeInput) {
+    els.workerFixTimeInput.value = formatTimeForInput(Date.now());
+  }
+
   onAuthStateChanged(auth, async (user) => {
     clearLiveListeners();
 
@@ -234,6 +254,9 @@ function wireEvents() {
   els.workerNameInput?.addEventListener('input', debounce(handleWorkerNameAutocomplete, 250));
   els.workerNameInput?.addEventListener('focus', () => handleWorkerNameAutocomplete());
   els.workerNameInput?.addEventListener('keydown', handleAutocompleteKeydown);
+  els.workerViewTimeBtn?.addEventListener('click', showWorkerTimeThisWeek);
+  els.workerRequestFixBtn?.addEventListener('click', () => toggleWorkerSelfService('fix'));
+  els.workerFixForm?.addEventListener('submit', handlePublicTimeFixSubmit);
 
   // Close autocomplete on outside click
   document.addEventListener('click', (e) => {
@@ -609,6 +632,16 @@ async function handleWorkerPunch(action) {
       agencyId: emp.agencyId || '',
     });
 
+    cacheWorkerPunch(emp, {
+      name,
+      nameKey,
+      action,
+      timestampMs: nowMs,
+      dateKey,
+      weekKey,
+      employeeId: emp.employeeId || emp.id || '',
+    });
+
     if (els.workerLastActionValue) els.workerLastActionValue.textContent = prettyAction(action);
     if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = formatDateTime(nowMs);
     if (els.workerStatusValue) els.workerStatusValue.textContent = statusLabelForAction(action);
@@ -652,6 +685,148 @@ async function hashWorkerPin(pin, employeeId) {
   const bytes = new TextEncoder().encode(`${employeeId}:${String(pin).trim()}`);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function getWorkerCacheKey(employee) {
+  const identity = employee?.employeeId || employee?.id || normalizeName(employee?.name || '');
+  return `qrTimeclockWorkerPunches:${identity}`;
+}
+
+function getCachedWorkerPunches(employee) {
+  if (!employee?.name) return [];
+  try {
+    const rows = JSON.parse(localStorage.getItem(getWorkerCacheKey(employee)) || '[]');
+    return Array.isArray(rows) ? rows : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function cacheWorkerPunch(employee, punch) {
+  const rows = getCachedWorkerPunches(employee);
+  rows.push(punch);
+  rows.sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
+  localStorage.setItem(getWorkerCacheKey(employee), JSON.stringify(rows.slice(-250)));
+}
+
+function getSelectedWorkerByName() {
+  const typedName = prettifyHumanName(els.workerNameInput?.value.trim() || '');
+  if (
+    state.workerEmployee?.name &&
+    !state.workerEmployee._isNew &&
+    normalizeName(state.workerEmployee.name) === normalizeName(typedName)
+  ) {
+    return state.workerEmployee;
+  }
+  const exactMatches = state.publicEmployees.filter(
+    (employee) => normalizeName(employee.name) === normalizeName(typedName)
+  );
+  if (exactMatches.length === 1) {
+    state.workerEmployee = exactMatches[0];
+    return exactMatches[0];
+  }
+  if (exactMatches.length > 1) {
+    renderAutocomplete(exactMatches, typedName, true);
+    toast('Select the correct employee number first.', true);
+  } else {
+    toast('Select your existing worker name first.', true);
+  }
+  return null;
+}
+
+function toggleWorkerSelfService(panel) {
+  els.workerMyTimePanel?.classList.toggle('hidden', panel !== 'time');
+  els.workerFixPanel?.classList.toggle('hidden', panel !== 'fix');
+}
+
+function showWorkerTimeThisWeek() {
+  const employee = getSelectedWorkerByName();
+  if (!employee) return;
+
+  const currentWeekKey = formatDateKey(getMondayDate(new Date()));
+  const punches = getCachedWorkerPunches(employee)
+    .filter((punch) => punch.weekKey === currentWeekKey);
+  const totals = buildWeekTotals(punches);
+
+  if (els.workerWeekHoursValue) {
+    els.workerWeekHoursValue.textContent = Number(totals.weeklyHours || 0).toFixed(2);
+  }
+  if (els.workerDaysWorkedValue) {
+    els.workerDaysWorkedValue.textContent = String(totals.daysWorked || 0);
+  }
+
+  const dates = Object.keys(totals.dailyTotals || {}).sort();
+  if (els.workerMyTimeBody) {
+    els.workerMyTimeBody.innerHTML = dates.length
+      ? dates.map((dateKey) => {
+        const day = totals.dailyTotals[dateKey];
+        return `<tr>
+          <td>${escapeHtml(dateKey)}</td>
+          <td>${escapeHtml(day.clock_in || '-')}</td>
+          <td>${escapeHtml(day.start_lunch || '-')}</td>
+          <td>${escapeHtml(day.end_lunch || '-')}</td>
+          <td>${escapeHtml(day.clock_out || '-')}</td>
+          <td>${Number(day.hours || 0).toFixed(2)}</td>
+        </tr>`;
+      }).join('')
+      : '<tr><td colspan="6">No punches from this device were found for this week.</td></tr>';
+  }
+
+  toggleWorkerSelfService('time');
+}
+
+async function handlePublicTimeFixSubmit(event) {
+  event.preventDefault();
+  const employee = getSelectedWorkerByName();
+  if (!employee) return;
+
+  const requestedAction = els.workerFixActionInput?.value || '';
+  const requestedDate = els.workerFixDateInput?.value || '';
+  const requestedTime = els.workerFixTimeInput?.value || '';
+  const reason = String(els.workerFixReasonInput?.value || '').trim();
+  const requestedTimestampMs = parseLocalDateAndTime(requestedDate, requestedTime);
+
+  if (!requestedAction || !requestedDate || !requestedTime || !reason || !requestedTimestampMs) {
+    toast('Fill out every time fix field.', true);
+    return;
+  }
+
+  try {
+    await addDoc(collection(db, 'missedPunchRequests'), {
+      uid: '',
+      employeeId: employee.employeeId || employee.id,
+      employeeNumber: employee.employeeNumber || '',
+      companyId: employee.companyId || new URLSearchParams(window.location.search).get('company') || '',
+      agencyId: employee.agencyId || '',
+      name: employee.name,
+      nameKey: normalizeName(employee.name),
+      requestedAction,
+      requestedDate,
+      requestedTime,
+      requestedTimestampMs,
+      reason,
+      status: 'pending',
+      source: 'public_worker',
+      reviewedBy: '',
+      reviewedAt: null,
+      approvedBy: '',
+      approvedAt: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    els.workerFixForm?.reset();
+    if (els.workerFixDateInput) els.workerFixDateInput.value = formatDateInput(new Date());
+    if (els.workerFixTimeInput) els.workerFixTimeInput.value = formatTimeForInput(Date.now());
+    toggleWorkerSelfService(null);
+    if (els.workerStatusMessage) {
+      els.workerStatusMessage.textContent = `Time fix request submitted for ${employee.name}. A manager will review it.`;
+    }
+    toast('Time fix request submitted.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not submit the time fix request.', true);
+  }
 }
 
 async function generateNextPublicEmployeeNumber() {

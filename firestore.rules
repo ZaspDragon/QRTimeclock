@@ -135,11 +135,30 @@ service cloud.firestore {
 
     // ─── missedPunchRequests ─────────────────────────────
     match /missedPunchRequests/{requestId} {
-      // Employees create requests for themselves
-      allow create: if signedIn() &&
+      // Signed-in employees create requests for themselves. Public workers may
+      // submit a pending request only for an existing active employee selected
+      // by name; the request cannot edit or create a punch by itself.
+      allow create: if (
+        signedIn() &&
         request.resource.data.uid == request.auth.uid &&
         request.resource.data.companyId == myCompanyId() &&
-        request.resource.data.status == 'pending';
+        request.resource.data.status == 'pending'
+      ) || (
+        !signedIn() &&
+        request.resource.data.source == 'public_worker' &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.employeeId is string &&
+        request.resource.data.employeeId.size() > 0 &&
+        exists(/databases/$(database)/documents/employees/$(request.resource.data.employeeId)) &&
+        get(/databases/$(database)/documents/employees/$(request.resource.data.employeeId)).data.status == 'active' &&
+        request.resource.data.name == get(/databases/$(database)/documents/employees/$(request.resource.data.employeeId)).data.name &&
+        request.resource.data.companyId == get(/databases/$(database)/documents/employees/$(request.resource.data.employeeId)).data.companyId &&
+        request.resource.data.requestedAction in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out'] &&
+        request.resource.data.requestedTimestampMs is number &&
+        request.resource.data.reason is string &&
+        request.resource.data.reason.size() >= 2 &&
+        request.resource.data.reason.size() <= 300
+      );
 
       // Employees read their own requests
       allow read: if signedIn() && resource.data.uid == request.auth.uid;
