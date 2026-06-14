@@ -78,6 +78,16 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    // Optional multi-location settings. Public reads support QR site context;
+    // location enforcement remains disabled by the app.
+    match /sites/{siteId} {
+      allow read: if true;
+      allow create, update: if isAdmin() &&
+        request.resource.data.siteId == siteId &&
+        request.resource.data.enforceLocation == false;
+      allow delete: if false;
+    }
+
     // ─── users (login accounts) ──────────────────────────
     match /users/{userId} {
       allow read: if signedIn() && (

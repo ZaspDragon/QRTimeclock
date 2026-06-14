@@ -53,6 +53,8 @@ const state = {
   employeeStatusFilter: 'active',
   duplicateGroups: [],
   managerTimeLookup: null,
+  workerLocation: { locationStatus: 'not_requested' },
+  siteContext: buildLegacySiteContext(),
 };
 
 const els = {
@@ -87,6 +89,8 @@ const els = {
   workerFixReasonInput: document.getElementById('workerFixReasonInput'),
   workerPinField: document.getElementById('workerPinField'),
   workerPinInput: document.getElementById('workerPinInput'),
+  workerLocationBtn: document.getElementById('workerLocationBtn'),
+  workerLocationStatus: document.getElementById('workerLocationStatus'),
 
   authCard: document.getElementById('authCard'),
   appShell: document.getElementById('appShell'),
@@ -101,6 +105,10 @@ const els = {
 
   livePunchBody: document.getElementById('livePunchBody'),
   activeNowList: document.getElementById('activeNowList'),
+  gpsVerifiedCount: document.getElementById('gpsVerifiedCount'),
+  gpsDeniedCount: document.getElementById('gpsDeniedCount'),
+  gpsOutsideCount: document.getElementById('gpsOutsideCount'),
+  gpsLowAccuracyCount: document.getElementById('gpsLowAccuracyCount'),
   timesheetBody: document.getElementById('timesheetBody'),
   weekPicker: document.getElementById('weekPicker'),
   managerTabBtn: document.getElementById('managerTabBtn'),
@@ -166,6 +174,14 @@ const els = {
   refreshDuplicatesBtn: document.getElementById('refreshDuplicatesBtn'),
   duplicateWorkersList: document.getElementById('duplicateWorkersList'),
   permissionDebugPanel: document.getElementById('permissionDebugPanel'),
+  siteSettingsForm: document.getElementById('siteSettingsForm'),
+  siteSettingsId: document.getElementById('siteSettingsId'),
+  siteSettingsQrSlug: document.getElementById('siteSettingsQrSlug'),
+  siteSettingsLatitude: document.getElementById('siteSettingsLatitude'),
+  siteSettingsLongitude: document.getElementById('siteSettingsLongitude'),
+  siteSettingsRadius: document.getElementById('siteSettingsRadius'),
+  siteSettingsAccuracy: document.getElementById('siteSettingsAccuracy'),
+  siteSettingsEnforce: document.getElementById('siteSettingsEnforce'),
   managerTimeWorkerSelect: document.getElementById('managerTimeWorkerSelect'),
   managerTimeFromInput: document.getElementById('managerTimeFromInput'),
   managerTimeToInput: document.getElementById('managerTimeToInput'),
@@ -190,6 +206,7 @@ init();
 
 async function init() {
   wireEvents();
+  loadSiteContext();
 
   // Load employees for public QR autocomplete
   loadPublicEmployees();
@@ -264,6 +281,7 @@ async function init() {
       showLoggedIn();
       attachRoleViews();
       renderPermissionDebug();
+      renderSiteSettingsForm();
       if (canEditPunches()) {
         attachManagerLiveViews();
         attachTimesheetView();
@@ -297,6 +315,7 @@ function wireEvents() {
     });
   });
   els.workerRequestFixBtn?.addEventListener('click', () => toggleWorkerSelfService('fix'));
+  els.workerLocationBtn?.addEventListener('click', requestOptionalWorkerLocation);
   els.workerFixForm?.addEventListener('submit', handlePublicTimeFixSubmit);
 
   // Close autocomplete on outside click
@@ -334,6 +353,7 @@ function wireEvents() {
   });
 
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
+  els.siteSettingsForm?.addEventListener('submit', handleSaveSiteSettings);
 
   els.missedPunchForm?.addEventListener('submit', handleMissedPunchSubmit);
 
@@ -662,6 +682,181 @@ function escapeHTML(str) {
   return div.innerHTML;
 }
 
+function buildLegacySiteContext() {
+  const params = new URLSearchParams(window.location.search);
+  const companyId = params.get('company') || params.get('companyId') || '';
+  const siteId = params.get('site') || params.get('siteId') || '';
+  const qrSlug = params.get('qr') || params.get('qrSlug') || '';
+  return {
+    companyId,
+    siteId,
+    qrSlug,
+    legacyMode: !companyId && !siteId && !qrSlug,
+    siteLatitude: null,
+    siteLongitude: null,
+    allowedRadiusMeters: 300,
+    maxGpsAccuracyMeters: 100,
+    enforceLocation: false,
+  };
+}
+
+async function loadSiteContext() {
+  const siteId = state.siteContext.siteId;
+  if (!siteId) return;
+  try {
+    const snapshot = await getDoc(doc(db, 'sites', siteId));
+    if (!snapshot.exists()) return;
+    const site = snapshot.data();
+    state.siteContext = {
+      ...state.siteContext,
+      companyId: state.siteContext.companyId || site.companyId || '',
+      qrSlug: state.siteContext.qrSlug || site.qrSlug || '',
+      siteLatitude: finiteNumberOrNull(site.siteLatitude),
+      siteLongitude: finiteNumberOrNull(site.siteLongitude),
+      allowedRadiusMeters: positiveNumberOrDefault(site.allowedRadiusMeters, 300),
+      maxGpsAccuracyMeters: positiveNumberOrDefault(site.maxGpsAccuracyMeters, 100),
+      // Safe mode: location enforcement is deliberately disabled.
+      enforceLocation: false,
+    };
+    renderSiteSettingsForm();
+  } catch (error) {
+    console.warn('Optional site settings could not be loaded:', error.message);
+  }
+}
+
+function requestOptionalWorkerLocation() {
+  if (!navigator.geolocation) {
+    state.workerLocation = {
+      locationStatus: 'unavailable',
+      locationCapturedAtMs: Date.now(),
+    };
+    updateWorkerLocationStatus('GPS is unavailable. You can still punch normally.');
+    return Promise.resolve(state.workerLocation);
+  }
+
+  if (els.workerLocationBtn) els.workerLocationBtn.disabled = true;
+  updateWorkerLocationStatus('Requesting optional GPS location...');
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        state.workerLocation = buildVerifiedLocation(position.coords);
+        updateWorkerLocationStatus(formatWorkerLocationMessage(state.workerLocation));
+        if (els.workerLocationBtn) els.workerLocationBtn.textContent = 'Refresh GPS (Optional)';
+        if (els.workerLocationBtn) els.workerLocationBtn.disabled = false;
+        resolve(state.workerLocation);
+      },
+      (error) => {
+        state.workerLocation = {
+          locationStatus: error?.code === 1 ? 'denied' : 'unavailable',
+          locationCapturedAtMs: Date.now(),
+        };
+        updateWorkerLocationStatus(
+          error?.code === 1
+            ? 'Location denied. Your punch will still save.'
+            : 'Location could not be captured. Your punch will still save.'
+        );
+        if (els.workerLocationBtn) els.workerLocationBtn.disabled = false;
+        resolve(state.workerLocation);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 7000,
+        maximumAge: 60000,
+      }
+    );
+  });
+}
+
+function buildVerifiedLocation(coords) {
+  const latitude = finiteNumberOrNull(coords?.latitude);
+  const longitude = finiteNumberOrNull(coords?.longitude);
+  const gpsAccuracyMeters = finiteNumberOrNull(coords?.accuracy);
+  const hasSiteCoordinates = Number.isFinite(state.siteContext.siteLatitude) &&
+    Number.isFinite(state.siteContext.siteLongitude);
+  const distanceFromSiteMeters = hasSiteCoordinates && latitude !== null && longitude !== null
+    ? haversineDistanceMeters(
+      latitude,
+      longitude,
+      state.siteContext.siteLatitude,
+      state.siteContext.siteLongitude
+    )
+    : null;
+  return {
+    latitude,
+    longitude,
+    gpsAccuracyMeters,
+    locationStatus: 'verified',
+    locationCapturedAtMs: Date.now(),
+    distanceFromSiteMeters,
+    withinAllowedRadius: distanceFromSiteMeters === null
+      ? null
+      : distanceFromSiteMeters <= state.siteContext.allowedRadiusMeters,
+  };
+}
+
+function buildPunchLocationPayload(employee) {
+  const location = state.workerLocation || { locationStatus: 'not_requested' };
+  const siteId = state.siteContext.siteId || employee?.assignedSiteId || employee?.siteId || '';
+  const capturedAtMs = Number(location.locationCapturedAtMs || 0);
+  return {
+    latitude: finiteNumberOrNull(location.latitude),
+    longitude: finiteNumberOrNull(location.longitude),
+    accuracy: finiteNumberOrNull(location.gpsAccuracyMeters),
+    gpsAccuracyMeters: finiteNumberOrNull(location.gpsAccuracyMeters),
+    locationStatus: location.locationStatus || 'not_requested',
+    locationCapturedAt: capturedAtMs ? Timestamp.fromMillis(capturedAtMs) : null,
+    siteId,
+    siteIds: Array.isArray(employee?.siteIds)
+      ? employee.siteIds
+      : (siteId ? [siteId] : []),
+    distanceFromSiteMeters: finiteNumberOrNull(location.distanceFromSiteMeters),
+    withinAllowedRadius: typeof location.withinAllowedRadius === 'boolean'
+      ? location.withinAllowedRadius
+      : null,
+    allowedRadiusMeters: state.siteContext.allowedRadiusMeters,
+    maxGpsAccuracyMeters: state.siteContext.maxGpsAccuracyMeters,
+    enforceLocation: false,
+  };
+}
+
+function formatWorkerLocationMessage(location) {
+  const parts = ['GPS verified'];
+  if (Number.isFinite(location.gpsAccuracyMeters)) {
+    parts.push(`accuracy ${Math.round(location.gpsAccuracyMeters)}m`);
+  }
+  if (Number.isFinite(location.distanceFromSiteMeters)) {
+    parts.push(`${Math.round(location.distanceFromSiteMeters)}m from site`);
+  }
+  parts.push('Punching remains available.');
+  return parts.join(' · ');
+}
+
+function updateWorkerLocationStatus(message) {
+  if (els.workerLocationStatus) els.workerLocationStatus.textContent = message;
+}
+
+function haversineDistanceMeters(latitudeA, longitudeA, latitudeB, longitudeB) {
+  const radians = (degrees) => degrees * Math.PI / 180;
+  const earthRadiusMeters = 6371000;
+  const deltaLatitude = radians(latitudeB - latitudeA);
+  const deltaLongitude = radians(longitudeB - longitudeA);
+  const a = Math.sin(deltaLatitude / 2) ** 2 +
+    Math.cos(radians(latitudeA)) * Math.cos(radians(latitudeB)) *
+    Math.sin(deltaLongitude / 2) ** 2;
+  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function finiteNumberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function positiveNumberOrDefault(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
 async function handleWorkerPunch(action) {
   if (state.workerPunchSaving) return;
   let emp = state.workerEmployee;
@@ -692,7 +887,8 @@ async function handleWorkerPunch(action) {
     }
   }
 
-  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
+  const urlCompanyId = state.siteContext.companyId || '';
+  const urlSiteId = state.siteContext.siteId || '';
 
   // Auto-create employee if new
   if (emp._isNew) {
@@ -723,7 +919,10 @@ async function handleWorkerPunch(action) {
           employeeNumber: empNumber,
           companyId: urlCompanyId || '',
           agencyId: '',
-          assignedSiteId: '',
+          assignedSiteId: urlSiteId,
+          siteId: urlSiteId,
+          siteIds: urlSiteId ? [urlSiteId] : [],
+          qrSlug: state.siteContext.qrSlug || '',
           status: 'active',
           source: 'auto_created',
           createdAt: serverTimestamp(),
@@ -778,6 +977,9 @@ async function handleWorkerPunch(action) {
       employeeNumber: emp.employeeNumber || '',
       companyId: emp.companyId || urlCompanyId || '',
       agencyId: emp.agencyId || '',
+      assignedSiteId: emp.assignedSiteId || '',
+      qrSlug: state.siteContext.qrSlug || '',
+      ...buildPunchLocationPayload(emp),
     });
 
     cacheWorkerPunch(emp, {
@@ -949,7 +1151,7 @@ async function lookupPublicWorkerTimeRange(selectedEmployee = null) {
       daysElement: els.workerDaysWorkedValue,
       statusElement: els.workerTimeRangeStatus,
       resultsElement: els.workerTimeRangeResults,
-      emptyMessage: 'No punches were found for this date range.',
+      emptyMessage: 'No punches found for selected range.',
     });
   } catch (error) {
     console.warn('Official worker time lookup unavailable:', error.message);
@@ -964,7 +1166,7 @@ async function lookupPublicWorkerTimeRange(selectedEmployee = null) {
       daysElement: els.workerDaysWorkedValue,
       statusElement: els.workerTimeRangeStatus,
       resultsElement: els.workerTimeRangeResults,
-      emptyMessage: 'Official history could not load. No saved punches from this device were found for the range.',
+      emptyMessage: 'No punches found for selected range.',
       statusPrefix: 'Official history is temporarily unavailable. Showing device history only. ',
     });
   }
@@ -1662,6 +1864,7 @@ function attachManagerLiveViews() {
         renderLivePunches(rows);
         renderActiveNow(rows);
         renderEditPunchesTable(rows);
+        renderGpsSummary(rows);
       },
       (error) => {
         console.error(error);
@@ -1675,7 +1878,7 @@ function renderLivePunches(rows) {
   if (!els.livePunchBody) return;
 
   if (!rows.length) {
-    els.livePunchBody.innerHTML = '<tr><td colspan="4">No live data yet.</td></tr>';
+    els.livePunchBody.innerHTML = '<tr><td colspan="5">No live data yet.</td></tr>';
     return;
   }
 
@@ -1686,9 +1889,44 @@ function renderLivePunches(rows) {
         <td>${escapeHtml(row.name || '-')}</td>
         <td>${prettyAction(row.action)}</td>
         <td>${escapeHtml(row.source || '-')}</td>
+        <td>${renderGpsBadge(row)}</td>
       </tr>
     `)
     .join('');
+}
+
+function renderGpsSummary(rows) {
+  const summary = rows.reduce((counts, row) => {
+    const status = String(row.locationStatus || 'not_requested').toLowerCase();
+    if (status === 'verified') counts.verified += 1;
+    if (status === 'denied') counts.denied += 1;
+    if (row.withinAllowedRadius === false) counts.outside += 1;
+    if (isGpsAccuracyTooLow(row)) counts.lowAccuracy += 1;
+    return counts;
+  }, { verified: 0, denied: 0, outside: 0, lowAccuracy: 0 });
+  if (els.gpsVerifiedCount) els.gpsVerifiedCount.textContent = String(summary.verified);
+  if (els.gpsDeniedCount) els.gpsDeniedCount.textContent = String(summary.denied);
+  if (els.gpsOutsideCount) els.gpsOutsideCount.textContent = String(summary.outside);
+  if (els.gpsLowAccuracyCount) els.gpsLowAccuracyCount.textContent = String(summary.lowAccuracy);
+}
+
+function renderGpsBadge(row) {
+  if (row.withinAllowedRadius === false) {
+    return '<span class="gps-badge warning">Outside Radius</span>';
+  }
+  if (isGpsAccuracyTooLow(row)) {
+    return '<span class="gps-badge warning">Accuracy Too Low</span>';
+  }
+  const status = String(row.locationStatus || 'not_requested').toLowerCase();
+  if (status === 'verified') return '<span class="gps-badge verified">GPS Verified</span>';
+  if (status === 'denied') return '<span class="gps-badge denied">GPS Denied</span>';
+  return `<span class="gps-badge">${escapeHtml(prettyAction(status))}</span>`;
+}
+
+function isGpsAccuracyTooLow(row) {
+  const accuracy = finiteNumberOrNull(row.gpsAccuracyMeters);
+  const threshold = positiveNumberOrDefault(row.maxGpsAccuracyMeters, 100);
+  return accuracy !== null && accuracy > threshold;
 }
 
 function renderActiveNow(rows) {
@@ -1730,7 +1968,7 @@ function renderActiveNow(rows) {
 function renderEditPunchesTable(rows) {
   if (!els.editPunchesBody) return;
   if (!canEditPunches()) {
-    els.editPunchesBody.innerHTML = '<tr><td colspan="8">Your role cannot edit punches.</td></tr>';
+    els.editPunchesBody.innerHTML = '<tr><td colspan="9">Your role cannot edit punches.</td></tr>';
     return;
   }
 
@@ -1741,7 +1979,7 @@ function renderEditPunchesTable(rows) {
   });
 
   if (!filtered.length) {
-    els.editPunchesBody.innerHTML = '<tr><td colspan="8">No punches found.</td></tr>';
+    els.editPunchesBody.innerHTML = '<tr><td colspan="9">No punches found.</td></tr>';
     return;
   }
 
@@ -1761,6 +1999,7 @@ function renderEditPunchesTable(rows) {
         <td>${escapeHtml(row.source || '-')}</td>
         <td>${escapeHtml(row.editedBy || '-')}</td>
         <td>${escapeHtml(editedAtText)}</td>
+        <td>${renderGpsBadge(row)}</td>
         <td>
           <button class="secondary-btn manager-edit-punch-btn" data-id="${row.id}" type="button">Edit</button>
           ${canDeletePunches()
@@ -2812,6 +3051,9 @@ async function handleSaveEmployee(event) {
     companyId: state.companyId || '',
     agencyId,
     assignedSiteId,
+    siteId: assignedSiteId,
+    siteIds: assignedSiteId ? [assignedSiteId] : [],
+    qrSlug: existingEmployee?.qrSlug || state.siteContext.qrSlug || '',
     status,
     updatedAt: serverTimestamp(),
   };
@@ -3146,7 +3388,7 @@ async function logAudit(action, entityType, entityId, oldValue, newValue) {
 async function exportBackup() {
   if (!isManager()) return;
   try {
-    const collections = ['employees', 'punches', 'missedPunchRequests', 'agencies', 'users'];
+    const collections = ['employees', 'punches', 'missedPunchRequests', 'agencies', 'sites', 'users'];
     const backup = {
       exportedAt: new Date().toISOString(),
       companyId: state.companyId || '',
@@ -3500,6 +3742,58 @@ function renderPermissionDebug() {
       <strong>${escapeHtml(value)}</strong>
     </div>
   `).join('');
+}
+
+function renderSiteSettingsForm() {
+  if (!isAdmin() || !els.siteSettingsForm) return;
+  if (els.siteSettingsId) els.siteSettingsId.value = state.siteContext.siteId || '';
+  if (els.siteSettingsQrSlug) els.siteSettingsQrSlug.value = state.siteContext.qrSlug || '';
+  if (els.siteSettingsLatitude) els.siteSettingsLatitude.value = state.siteContext.siteLatitude ?? '';
+  if (els.siteSettingsLongitude) els.siteSettingsLongitude.value = state.siteContext.siteLongitude ?? '';
+  if (els.siteSettingsRadius) els.siteSettingsRadius.value = String(state.siteContext.allowedRadiusMeters || 300);
+  if (els.siteSettingsAccuracy) els.siteSettingsAccuracy.value = String(state.siteContext.maxGpsAccuracyMeters || 100);
+  if (els.siteSettingsEnforce) els.siteSettingsEnforce.value = 'false';
+}
+
+async function handleSaveSiteSettings(event) {
+  event.preventDefault();
+  if (!isAdmin()) {
+    toast('Only admins can save site settings.', true);
+    return;
+  }
+  const siteId = String(els.siteSettingsId?.value || '').trim();
+  if (!siteId) {
+    toast('Enter a Site ID.', true);
+    return;
+  }
+  const siteLatitude = finiteNumberOrNull(els.siteSettingsLatitude?.value);
+  const siteLongitude = finiteNumberOrNull(els.siteSettingsLongitude?.value);
+  if ((siteLatitude === null) !== (siteLongitude === null)) {
+    toast('Enter both site latitude and longitude, or leave both blank.', true);
+    return;
+  }
+  const payload = {
+    companyId: state.companyId || '',
+    siteId,
+    qrSlug: String(els.siteSettingsQrSlug?.value || '').trim(),
+    siteLatitude,
+    siteLongitude,
+    allowedRadiusMeters: positiveNumberOrDefault(els.siteSettingsRadius?.value, 300),
+    maxGpsAccuracyMeters: positiveNumberOrDefault(els.siteSettingsAccuracy?.value, 100),
+    enforceLocation: false,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.me?.uid || '',
+  };
+  try {
+    await setDoc(doc(db, 'sites', siteId), payload, { merge: true });
+    if (state.siteContext.siteId === siteId) {
+      state.siteContext = { ...state.siteContext, ...payload, enforceLocation: false };
+    }
+    toast('Site settings saved. Location remains optional.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not save site settings.', true);
+  }
 }
 
 function prettyAction(action) {

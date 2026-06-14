@@ -4,6 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>QR TimeClock Pro</title>
+  <script>
+    (function enforceHttps() {
+      var localHosts = ['localhost', '127.0.0.1', '[::1]'];
+      if (window.location.protocol === 'http:' && !localHosts.includes(window.location.hostname)) {
+        var secureUrl = new URL(window.location.href);
+        secureUrl.protocol = 'https:';
+        window.location.replace(secureUrl.href);
+      }
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -48,6 +58,13 @@
           <input id="workerPinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="Enter PIN" />
         </label>
         <div id="workerLookupStatus" class="status-box">Type your name to begin.</div>
+        <div class="optional-location-box">
+          <button id="workerLocationBtn" class="ghost-btn" type="button">Enable GPS (Optional)</button>
+          <div>
+            <strong>Location verification is optional</strong>
+            <span id="workerLocationStatus">Not requested. You can still punch normally.</span>
+          </div>
+        </div>
 
         <div class="button-grid">
           <button class="primary-btn worker-action-btn" data-action="clock_in" type="button">Clock In</button>
@@ -287,6 +304,12 @@
               <h2>Live punch feed</h2>
               <p>This updates automatically as workers punch from their phones.</p>
             </div>
+            <div class="stats-grid gps-summary-grid">
+              <div class="stat-card"><span>GPS Verified</span><strong id="gpsVerifiedCount">0</strong></div>
+              <div class="stat-card"><span>GPS Denied</span><strong id="gpsDeniedCount">0</strong></div>
+              <div class="stat-card"><span>Outside Radius</span><strong id="gpsOutsideCount">0</strong></div>
+              <div class="stat-card"><span>Accuracy Too Low</span><strong id="gpsLowAccuracyCount">0</strong></div>
+            </div>
             <div class="mini-table-wrap tall">
               <table>
                 <thead>
@@ -295,10 +318,11 @@
                     <th>Name</th>
                     <th>Action</th>
                     <th>Source</th>
+                    <th>GPS</th>
                   </tr>
                 </thead>
                 <tbody id="livePunchBody">
-                  <tr><td colspan="4">No live data yet.</td></tr>
+                  <tr><td colspan="5">No live data yet.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -415,11 +439,12 @@
                   <th>Source</th>
                   <th>Edited By</th>
                   <th>Edited At</th>
+                  <th>GPS</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="editPunchesBody">
-                <tr><td colspan="8">No punches yet.</td></tr>
+                <tr><td colspan="9">No punches yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -615,6 +640,30 @@
             <p>Current normalized role and effective dashboard permissions.</p>
           </div>
           <div id="permissionDebugPanel" class="permission-debug-grid hidden"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Site Location Settings</h2>
+            <p>Optional GPS reference point. Location enforcement remains off.</p>
+          </div>
+          <form id="siteSettingsForm" class="grid-form">
+            <label><span>Site ID</span><input id="siteSettingsId" type="text" placeholder="e.g. chadwell" required /></label>
+            <label><span>QR Slug</span><input id="siteSettingsQrSlug" type="text" placeholder="Optional QR label" /></label>
+            <label><span>Site Latitude</span><input id="siteSettingsLatitude" type="number" step="any" placeholder="Optional" /></label>
+            <label><span>Site Longitude</span><input id="siteSettingsLongitude" type="number" step="any" placeholder="Optional" /></label>
+            <label><span>Allowed Radius (meters)</span><input id="siteSettingsRadius" type="number" min="1" value="300" /></label>
+            <label><span>Maximum GPS Accuracy (meters)</span><input id="siteSettingsAccuracy" type="number" min="1" value="100" /></label>
+            <label>
+              <span>Enforce Location</span>
+              <select id="siteSettingsEnforce" disabled>
+                <option value="false">False (Safe Mode)</option>
+              </select>
+            </label>
+            <div class="form-actions full-width">
+              <button class="primary-btn" type="submit">Save Site Settings</button>
+            </div>
+          </form>
         </div>
 
         <div class="panel-grid two-up">

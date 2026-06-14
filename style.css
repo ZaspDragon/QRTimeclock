@@ -229,6 +229,44 @@ button {
   flex-wrap: wrap;
 }
 
+.optional-location-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(102, 184, 255, 0.22);
+  background: rgba(102, 184, 255, 0.06);
+}
+
+.optional-location-box strong,
+.optional-location-box span {
+  display: block;
+}
+
+.optional-location-box span {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+
+.gps-summary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.gps-badge {
+  display: inline-block;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  background: rgba(255,255,255,0.08);
+}
+
+.gps-badge.verified { color: #b9ffd2; border: 1px solid rgba(43,213,118,0.35); }
+.gps-badge.denied { color: #ffd8d8; border: 1px solid rgba(255,107,107,0.35); }
+.gps-badge.warning { color: #ffe3a3; border: 1px solid rgba(255,202,87,0.35); }
+
 .time-range-controls {
   display: grid;
   gap: 12px;
@@ -560,6 +598,15 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   .manager-time-controls select {
     min-height: 52px;
     font-size: 1rem;
+  }
+
+  .optional-location-box {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .optional-location-box button {
+    min-height: 52px;
   }
 
   .giant-btn {
