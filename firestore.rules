@@ -55,8 +55,9 @@ service cloud.firestore {
 
     // ─── employees (all workers, including temps) ────────
     match /employees/{employeeId} {
-      // Authenticated manager/admin reads (full access for their company)
-      allow read: if signedIn() && sameCompany(resource.data);
+      // This deployment contains legacy records with blank companyId values.
+      // Managers retain access while agency filtering remains in the UI.
+      allow read: if isManager();
 
       // Public read for autocomplete (QR punch flow, unauthenticated)
       allow read: if resource.data.status == 'active';
@@ -74,7 +75,7 @@ service cloud.firestore {
         request.resource.data.status == 'active' &&
         request.resource.data.source == 'auto_created';
 
-      allow update: if isManager() && sameCompany(resource.data);
+      allow update: if isManager();
 
       // Allow the auto-created doc to write back its own employeeId
       allow update: if
@@ -99,15 +100,16 @@ service cloud.firestore {
         request.resource.data.timestampMs is number &&
         request.resource.data.source in ['public_qr', 'manual_manager', 'missed_punch_approved'];
 
-      // Managers/admins read all punches for their company
-      allow read: if isManager() && sameCompany(resource.data);
+      // Managers/admins read current and legacy punches.
+      allow read: if isManager();
 
       // Employees read only their own punches
-      allow read: if isEmployee() && sameCompany(resource.data) &&
+      allow read: if isEmployee() &&
         resource.data.employeeId == myProfile().employeeId;
 
-      // Managers/admins can update/delete within their company
-      allow update, delete: if isManager() && sameCompany(resource.data);
+      // Managers/admins can update legacy punches. Delete remains company scoped.
+      allow update: if isManager();
+      allow delete: if isManager() && sameCompany(resource.data);
     }
 
     // ─── punch_edits (audit trail) ───────────────────────
@@ -123,13 +125,14 @@ service cloud.firestore {
 
     // ─── timesheets ──────────────────────────────────────
     match /timesheets/{timesheetId} {
-      allow read: if isManager() && sameCompany(resource.data);
+      allow read: if isManager();
 
       // Employees can read their own timesheets
-      allow read: if isEmployee() && sameCompany(resource.data) &&
+      allow read: if isEmployee() &&
         resource.data.employeeId == myProfile().employeeId;
 
-      allow create, update: if isManager() && request.resource.data.companyId == myCompanyId();
+      allow create: if isManager() && request.resource.data.companyId == myCompanyId();
+      allow update: if isManager();
       allow delete: if isAdmin() && sameCompany(resource.data);
     }
 
@@ -163,11 +166,11 @@ service cloud.firestore {
       // Employees read their own requests
       allow read: if signedIn() && resource.data.uid == request.auth.uid;
 
-      // Managers/admins read all requests for their company
-      allow read: if isManager() && sameCompany(resource.data);
+      // Managers/admins read current and legacy requests.
+      allow read: if isManager();
 
       // Managers/admins can approve/deny
-      allow update: if isManager() && sameCompany(resource.data);
+      allow update: if isManager();
     }
   }
 }

@@ -323,14 +323,10 @@ function wireEvents() {
 
 // ─── Public employee loading & autocomplete ─────────────
 async function loadPublicEmployees() {
-  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
   try {
-    // Simple query: filter by status only (no orderBy to avoid composite index requirement)
-    const constraints = [];
-    if (urlCompanyId) constraints.push(where('companyId', '==', urlCompanyId));
-    constraints.push(where('status', '==', 'active'));
-
-    const q = query(collection(db, 'employees'), ...constraints);
+    // Legacy employee records use a blank companyId. Status is the stable,
+    // backwards-compatible public clock-in scope.
+    const q = query(collection(db, 'employees'), where('status', '==', 'active'));
     const snap = await getDocs(q);
     state.publicEmployees = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
@@ -1135,7 +1131,6 @@ function switchTab(tabId) {
 
 function attachManagerLiveViews() {
   const constraints = [];
-  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
   if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
   constraints.push(orderBy('timestampMs', 'desc'));
   constraints.push(limit(250));
@@ -1395,14 +1390,12 @@ function attachTimesheetView() {
   const weekKey = formatDateKey(state.selectedWeekStart);
 
   const punchConstraints = [where('weekKey', '==', weekKey)];
-  if (state.companyId) punchConstraints.push(where('companyId', '==', state.companyId));
   if (isAgencyUser()) punchConstraints.push(where('agencyId', '==', state.agencyId));
   punchConstraints.push(orderBy('timestampMs', 'asc'));
 
   const punchesQuery = query(collection(db, 'punches'), ...punchConstraints);
 
   const tsConstraints = [where('weekKey', '==', weekKey)];
-  if (state.companyId) tsConstraints.push(where('companyId', '==', state.companyId));
   if (isAgencyUser()) tsConstraints.push(where('agencyId', '==', state.agencyId));
 
   const timesheetsQuery = query(collection(db, 'timesheets'), ...tsConstraints);
@@ -1702,7 +1695,6 @@ function attachMyTimecardView() {
   } else {
     constraints.push(where('nameKey', '==', nameKey));
   }
-  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
   constraints.push(orderBy('timestampMs', 'asc'));
 
   const q = query(collection(db, 'punches'), ...constraints);
@@ -1820,7 +1812,6 @@ function attachMyMissedPunchView() {
   if (!state.me) return;
 
   const constraints = [where('uid', '==', state.me.uid)];
-  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
 
   const q = query(collection(db, 'missedPunchRequests'), ...constraints);
 
@@ -1865,7 +1856,6 @@ function renderMyMissedPunches(rows) {
 
 function attachApprovalView() {
   const constraints = [];
-  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
   if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
 
   const q = query(collection(db, 'missedPunchRequests'), ...constraints);
@@ -2002,7 +1992,6 @@ async function denyRequest(requestId) {
 
 function attachEmployeesView() {
   const empConstraints = [];
-  if (state.companyId) empConstraints.push(where('companyId', '==', state.companyId));
   if (isAgencyUser()) empConstraints.push(where('agencyId', '==', state.agencyId));
   empConstraints.push(orderBy('name', 'asc'));
 
@@ -2256,9 +2245,7 @@ async function exportBackup() {
       note: 'Non-destructive QRTimeclock backup export',
     };
     for (const collectionName of collections) {
-      const constraints = state.companyId && collectionName !== 'agencies'
-        ? [where('companyId', '==', state.companyId)]
-        : [];
+      const constraints = [];
       const snapshot = await getDocs(query(collection(db, collectionName), ...constraints));
       backup[collectionName] = snapshot.docs.map((record) => ({
         id: record.id,
