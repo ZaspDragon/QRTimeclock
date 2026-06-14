@@ -42,6 +42,7 @@ const state = {
   workerUnsub: null,
   workerEmployee: null,      // looked-up employee record for public punch
   publicEmployees: [],       // cached employee list for public QR autocomplete
+  publicEmployeeRecords: [], // full active list retained for historical ID lookup
   allPunchRows: [],
   selectedWeekPunchRows: [],
   selectedWeekTimesheetDocs: {},
@@ -51,6 +52,7 @@ const state = {
   workerPunchSaving: false,
   employeeStatusFilter: 'active',
   duplicateGroups: [],
+  managerTimeLookup: null,
 };
 
 const els = {
@@ -64,12 +66,20 @@ const els = {
   workerStatusMessage: document.getElementById('workerStatusMessage'),
   workerHistoryBody: document.getElementById('workerHistoryBody'),
   workerViewTimeBtn: document.getElementById('workerViewTimeBtn'),
+  workerViewMoreTimeBtn: document.getElementById('workerViewMoreTimeBtn'),
   workerRequestFixBtn: document.getElementById('workerRequestFixBtn'),
   workerMyTimePanel: document.getElementById('workerMyTimePanel'),
   workerFixPanel: document.getElementById('workerFixPanel'),
+  workerTimeRangeControls: document.getElementById('workerTimeRangeControls'),
+  workerTimeFromInput: document.getElementById('workerTimeFromInput'),
+  workerTimeToInput: document.getElementById('workerTimeToInput'),
+  workerTimeLookupBtn: document.getElementById('workerTimeLookupBtn'),
+  workerTimeRangeStatus: document.getElementById('workerTimeRangeStatus'),
+  workerTimeRangeResults: document.getElementById('workerTimeRangeResults'),
   workerWeekHoursValue: document.getElementById('workerWeekHoursValue'),
+  workerRegularHoursValue: document.getElementById('workerRegularHoursValue'),
+  workerOvertimeHoursValue: document.getElementById('workerOvertimeHoursValue'),
   workerDaysWorkedValue: document.getElementById('workerDaysWorkedValue'),
-  workerMyTimeBody: document.getElementById('workerMyTimeBody'),
   workerFixForm: document.getElementById('workerFixForm'),
   workerFixActionInput: document.getElementById('workerFixActionInput'),
   workerFixDateInput: document.getElementById('workerFixDateInput'),
@@ -155,6 +165,17 @@ const els = {
   exportBackupBtn: document.getElementById('exportBackupBtn'),
   refreshDuplicatesBtn: document.getElementById('refreshDuplicatesBtn'),
   duplicateWorkersList: document.getElementById('duplicateWorkersList'),
+  managerTimeWorkerSelect: document.getElementById('managerTimeWorkerSelect'),
+  managerTimeFromInput: document.getElementById('managerTimeFromInput'),
+  managerTimeToInput: document.getElementById('managerTimeToInput'),
+  managerTimeLookupBtn: document.getElementById('managerTimeLookupBtn'),
+  managerTimeExportBtn: document.getElementById('managerTimeExportBtn'),
+  managerTimeTotalValue: document.getElementById('managerTimeTotalValue'),
+  managerTimeRegularValue: document.getElementById('managerTimeRegularValue'),
+  managerTimeOvertimeValue: document.getElementById('managerTimeOvertimeValue'),
+  managerTimeDaysValue: document.getElementById('managerTimeDaysValue'),
+  managerTimeRangeStatus: document.getElementById('managerTimeRangeStatus'),
+  managerTimeRangeResults: document.getElementById('managerTimeRangeResults'),
 
   agencyWorkerSelect: document.getElementById('agencyWorkerSelect'),
   agencyPreviewBtn: document.getElementById('agencyPreviewBtn'),
@@ -202,6 +223,8 @@ async function init() {
   if (els.workerFixTimeInput) {
     els.workerFixTimeInput.value = formatTimeForInput(Date.now());
   }
+  applyQuickDateRange('this_week', els.workerTimeFromInput, els.workerTimeToInput);
+  applyQuickDateRange('this_week', els.managerTimeFromInput, els.managerTimeToInput);
 
   onAuthStateChanged(auth, async (user) => {
     clearLiveListeners();
@@ -261,6 +284,14 @@ function wireEvents() {
   els.workerNameInput?.addEventListener('focus', () => handleWorkerNameAutocomplete());
   els.workerNameInput?.addEventListener('keydown', handleAutocompleteKeydown);
   els.workerViewTimeBtn?.addEventListener('click', showWorkerTimeThisWeek);
+  els.workerViewMoreTimeBtn?.addEventListener('click', showWorkerMoreTime);
+  els.workerTimeLookupBtn?.addEventListener('click', lookupPublicWorkerTimeRange);
+  document.querySelectorAll('.worker-range-quick').forEach((button) => {
+    button.addEventListener('click', () => {
+      applyQuickDateRange(button.dataset.range, els.workerTimeFromInput, els.workerTimeToInput);
+      lookupPublicWorkerTimeRange();
+    });
+  });
   els.workerRequestFixBtn?.addEventListener('click', () => toggleWorkerSelfService('fix'));
   els.workerFixForm?.addEventListener('submit', handlePublicTimeFixSubmit);
 
@@ -326,6 +357,14 @@ function wireEvents() {
   });
   els.exportBackupBtn?.addEventListener('click', exportBackup);
   els.refreshDuplicatesBtn?.addEventListener('click', () => renderDuplicateWorkers(true));
+  els.managerTimeLookupBtn?.addEventListener('click', lookupManagerTimeRange);
+  els.managerTimeExportBtn?.addEventListener('click', exportManagerTimeRangeCsv);
+  document.querySelectorAll('.manager-range-quick').forEach((button) => {
+    button.addEventListener('click', () => {
+      applyQuickDateRange(button.dataset.range, els.managerTimeFromInput, els.managerTimeToInput);
+      if (els.managerTimeWorkerSelect?.value) lookupManagerTimeRange();
+    });
+  });
 
   els.agencyPreviewBtn?.addEventListener('click', () => renderAgencyPreview());
   els.agencyPrintBtn?.addEventListener('click', () => printAgencyPreview());
@@ -342,9 +381,11 @@ async function loadPublicEmployees() {
     const activeEmployees = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    state.publicEmployeeRecords = activeEmployees;
     state.publicEmployees = collapseDuplicateEmployees(activeEmployees);
   } catch (error) {
     console.warn('Could not load employees for autocomplete:', error.message);
+    state.publicEmployeeRecords = [];
     state.publicEmployees = [];
   }
 }
@@ -860,40 +901,359 @@ function toggleWorkerSelfService(panel) {
   els.workerFixPanel?.classList.toggle('hidden', panel !== 'fix');
 }
 
-function showWorkerTimeThisWeek() {
+async function showWorkerTimeThisWeek() {
   const employee = getSelectedWorkerByName();
   if (!employee) return;
 
-  const currentWeekKey = formatDateKey(getMondayDate(new Date()));
-  const punches = getCachedWorkerPunches(employee)
-    .filter((punch) => punch.weekKey === currentWeekKey);
-  const totals = buildWeekTotals(punches);
+  toggleWorkerSelfService('time');
+  els.workerTimeRangeControls?.classList.add('hidden');
+  applyQuickDateRange('this_week', els.workerTimeFromInput, els.workerTimeToInput);
+  await lookupPublicWorkerTimeRange(employee);
+}
 
-  if (els.workerWeekHoursValue) {
-    els.workerWeekHoursValue.textContent = Number(totals.weeklyHours || 0).toFixed(2);
+async function showWorkerMoreTime() {
+  const employee = getSelectedWorkerByName();
+  if (!employee) return;
+  toggleWorkerSelfService('time');
+  els.workerTimeRangeControls?.classList.remove('hidden');
+  if (!els.workerTimeFromInput?.value || !els.workerTimeToInput?.value) {
+    applyQuickDateRange('last_2_weeks', els.workerTimeFromInput, els.workerTimeToInput);
   }
-  if (els.workerDaysWorkedValue) {
-    els.workerDaysWorkedValue.textContent = String(totals.daysWorked || 0);
-  }
+  await lookupPublicWorkerTimeRange(employee);
+}
 
-  const dates = Object.keys(totals.dailyTotals || {}).sort();
-  if (els.workerMyTimeBody) {
-    els.workerMyTimeBody.innerHTML = dates.length
-      ? dates.map((dateKey) => {
-        const day = totals.dailyTotals[dateKey];
-        return `<tr>
-          <td>${escapeHtml(dateKey)}</td>
-          <td>${escapeHtml(day.clock_in || '-')}</td>
-          <td>${escapeHtml(day.start_lunch || '-')}</td>
-          <td>${escapeHtml(day.end_lunch || '-')}</td>
-          <td>${escapeHtml(day.clock_out || '-')}</td>
-          <td>${Number(day.hours || 0).toFixed(2)}</td>
-        </tr>`;
-      }).join('')
-      : '<tr><td colspan="6">No punches from this device were found for this week.</td></tr>';
-  }
+async function lookupPublicWorkerTimeRange(selectedEmployee = null) {
+  const employee = selectedEmployee || getSelectedWorkerByName();
+  if (!employee) return;
+  const range = readDateRange(els.workerTimeFromInput, els.workerTimeToInput);
+  if (!range) return;
 
   toggleWorkerSelfService('time');
+  setTimeRangeStatus(els.workerTimeRangeStatus, `Loading time for ${employee.name}...`);
+  try {
+    const officialPunches = await loadPunchesForEmployeeRange(employee, range.fromMs, range.toMs, {
+      allowLegacyNameFallback: true,
+    });
+    const cachedPunches = getCachedWorkerPunches(employee)
+      .filter((punch) => Number(punch.timestampMs || 0) >= range.fromMs && Number(punch.timestampMs || 0) <= range.toMs);
+    const totals = buildTimeRangeTotals(dedupePunches([...officialPunches, ...cachedPunches]));
+    renderTimeRangeSummary({
+      totals,
+      totalElement: els.workerWeekHoursValue,
+      regularElement: els.workerRegularHoursValue,
+      overtimeElement: els.workerOvertimeHoursValue,
+      daysElement: els.workerDaysWorkedValue,
+      statusElement: els.workerTimeRangeStatus,
+      resultsElement: els.workerTimeRangeResults,
+      emptyMessage: 'No punches were found for this date range.',
+    });
+  } catch (error) {
+    console.warn('Official worker time lookup unavailable:', error.message);
+    const cachedPunches = getCachedWorkerPunches(employee)
+      .filter((punch) => Number(punch.timestampMs || 0) >= range.fromMs && Number(punch.timestampMs || 0) <= range.toMs);
+    const totals = buildTimeRangeTotals(cachedPunches);
+    renderTimeRangeSummary({
+      totals,
+      totalElement: els.workerWeekHoursValue,
+      regularElement: els.workerRegularHoursValue,
+      overtimeElement: els.workerOvertimeHoursValue,
+      daysElement: els.workerDaysWorkedValue,
+      statusElement: els.workerTimeRangeStatus,
+      resultsElement: els.workerTimeRangeResults,
+      emptyMessage: 'Official history could not load. No saved punches from this device were found for the range.',
+      statusPrefix: 'Official history is temporarily unavailable. Showing device history only. ',
+    });
+  }
+}
+
+function applyQuickDateRange(rangeName, fromInput, toInput) {
+  if (!fromInput || !toInput) return;
+  const today = startOfLocalDay(new Date());
+  let fromDate = new Date(today);
+  let toDate = new Date(today);
+
+  if (rangeName === 'this_week') {
+    fromDate = getMondayDate(today);
+    toDate = addLocalDays(fromDate, 6);
+  } else if (rangeName === 'last_week') {
+    fromDate = addLocalDays(getMondayDate(today), -7);
+    toDate = addLocalDays(fromDate, 6);
+  } else if (rangeName === 'last_2_weeks') {
+    fromDate = addLocalDays(today, -13);
+  } else if (rangeName === 'this_month') {
+    fromDate = new Date(today.getFullYear(), today.getMonth(), 1);
+  }
+
+  fromInput.value = formatDateInput(fromDate);
+  toInput.value = formatDateInput(toDate);
+}
+
+function startOfLocalDay(date) {
+  const result = new Date(date);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function addLocalDays(date, days) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function readDateRange(fromInput, toInput) {
+  const fromValue = fromInput?.value || '';
+  const toValue = toInput?.value || '';
+  if (!fromValue || !toValue) {
+    toast('Choose both From Date and To Date.', true);
+    return null;
+  }
+  const fromDate = new Date(`${fromValue}T00:00:00`);
+  const toDate = new Date(`${toValue}T23:59:59.999`);
+  if (!Number.isFinite(fromDate.getTime()) || !Number.isFinite(toDate.getTime()) || fromDate > toDate) {
+    toast('Choose a valid date range. From Date must be before To Date.', true);
+    return null;
+  }
+  return {
+    fromValue,
+    toValue,
+    fromMs: fromDate.getTime(),
+    toMs: toDate.getTime(),
+  };
+}
+
+async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {}) {
+  const primaryId = employee.id || employee.employeeId || '';
+  const workerIds = new Set([primaryId, employee.employeeId].filter(Boolean));
+  getCompatibleWorkerRecords(employee).forEach((record) => {
+    if (record.id) workerIds.add(record.id);
+    if (record.employeeId) workerIds.add(record.employeeId);
+  });
+  if (primaryId) {
+    const mergedConstraints = state.me && isManager()
+      ? [where('mergedInto', '==', primaryId)]
+      : [where('status', '==', 'merged'), where('mergedInto', '==', primaryId)];
+    const mergedSnapshot = await getDocs(query(collection(db, 'employees'), ...mergedConstraints));
+    mergedSnapshot.docs.forEach((record) => workerIds.add(record.id));
+  }
+
+  const rows = [];
+  const workerIdList = [...workerIds];
+  for (let index = 0; index < workerIdList.length; index += 30) {
+    const idChunk = workerIdList.slice(index, index + 30);
+    rows.push(...await fetchPunchesWithRange(
+      [where('employeeId', idChunk.length === 1 ? '==' : 'in', idChunk.length === 1 ? idChunk[0] : idChunk)],
+      fromMs,
+      toMs
+    ));
+  }
+
+  if (options.allowLegacyNameFallback && employee.name) {
+    const legacyConstraints = state.me && isManager()
+      ? []
+      : [where('employeeId', '==', '')];
+    const legacyRows = await fetchPunchesWithRange(
+      legacyConstraints,
+      fromMs,
+      toMs
+    );
+    const normalizedName = normalizeName(employee.name);
+    rows.push(...legacyRows.filter((punch) =>
+      normalizeName(punch.name || punch.employeeName || '') === normalizedName ||
+      String(punch.nameKey || '').trim().toLowerCase() === normalizedName
+    ));
+  }
+
+  return dedupePunches(rows);
+}
+
+function getCompatibleWorkerRecords(employee) {
+  if (!isActiveEmployee(employee)) return [employee];
+  const sourceMap = new Map();
+  const sourceRecords = state.me && isManager()
+    ? [...state.publicEmployeeRecords, ...state.allEmployees]
+    : state.publicEmployeeRecords;
+  sourceRecords.forEach((record) => sourceMap.set(record.id, record));
+  const source = [...sourceMap.values()];
+  const normalizedName = normalizeIdentityPart(employee.name || employee.nameKey);
+  const sameName = source.filter((record) =>
+    isActiveEmployee(record) &&
+    normalizeIdentityPart(record.name || record.nameKey) === normalizedName
+  );
+  const nonBlankScopes = new Set(
+    sameName.map((record) => {
+      const agency = normalizeIdentityPart(record.agencyId);
+      const site = normalizeIdentityPart(record.assignedSiteId || record.siteId);
+      return agency || site ? `${agency}|${site}` : '';
+    }).filter(Boolean)
+  );
+  if (nonBlankScopes.size <= 1) return sameName;
+  const targetAgency = normalizeIdentityPart(employee.agencyId);
+  const targetSite = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+  return sameName.filter((record) =>
+    normalizeIdentityPart(record.agencyId) === targetAgency &&
+    normalizeIdentityPart(record.assignedSiteId || record.siteId) === targetSite
+  );
+}
+
+async function fetchPunchesWithRange(baseConstraints, fromMs, toMs) {
+  try {
+    const rangedQuery = query(
+      collection(db, 'punches'),
+      ...baseConstraints,
+      where('timestampMs', '>=', fromMs),
+      where('timestampMs', '<=', toMs)
+    );
+    const snapshot = await getDocs(rangedQuery);
+    return snapshot.docs.map((record) => ({ id: record.id, ...record.data() }));
+  } catch (error) {
+    if (!['failed-precondition', 'permission-denied'].includes(error.code)) throw error;
+    const snapshot = await getDocs(query(collection(db, 'punches'), ...baseConstraints));
+    return snapshot.docs
+      .map((record) => ({ id: record.id, ...record.data() }))
+      .filter((punch) => Number(punch.timestampMs || 0) >= fromMs && Number(punch.timestampMs || 0) <= toMs);
+  }
+}
+
+function dedupePunches(punches) {
+  const unique = new Map();
+  punches.forEach((punch) => {
+    const key = punch.id || [
+      punch.employeeId || '',
+      punch.timestampMs || 0,
+      punch.action || '',
+      normalizeName(punch.name || punch.employeeName || ''),
+    ].join('|');
+    unique.set(key, punch);
+  });
+  return [...unique.values()].sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
+}
+
+function buildTimeRangeTotals(punches) {
+  const grouped = new Map();
+  dedupePunches(punches).forEach((punch) => {
+    const timestampMs = Number(punch.timestampMs || 0);
+    if (!timestampMs) return;
+    const dateKey = punch.dateKey || formatDateKey(new Date(timestampMs));
+    if (!grouped.has(dateKey)) grouped.set(dateKey, []);
+    grouped.get(dateKey).push({ ...punch, timestampMs });
+  });
+
+  const daily = {};
+  const weeklyMinutes = new Map();
+  let totalMinutes = 0;
+
+  [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right)).forEach(([dateKey, dayPunches]) => {
+    const sorted = [...dayPunches].sort((left, right) => left.timestampMs - right.timestampMs);
+    const actionTimes = {
+      clock_in: [],
+      start_lunch: [],
+      end_lunch: [],
+      clock_out: [],
+    };
+    let activeStart = null;
+    let minutes = 0;
+
+    sorted.forEach((punch) => {
+      if (actionTimes[punch.action]) actionTimes[punch.action].push(punch.timestampMs);
+      if (punch.action === 'clock_in') activeStart = punch.timestampMs;
+      if (punch.action === 'start_lunch') {
+        if (activeStart) minutes += Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
+        activeStart = null;
+      }
+      if (punch.action === 'end_lunch') activeStart = punch.timestampMs;
+      if (punch.action === 'clock_out') {
+        if (activeStart) minutes += Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
+        activeStart = null;
+      }
+    });
+
+    const warnings = [];
+    if (actionTimes.clock_in.length && !actionTimes.clock_out.length) warnings.push('Missing Clock Out');
+    if (actionTimes.clock_out.length && !actionTimes.clock_in.length) warnings.push('Missing Clock In');
+    if (actionTimes.start_lunch.length && !actionTimes.end_lunch.length) warnings.push('Missing Lunch In');
+    if (actionTimes.end_lunch.length && !actionTimes.start_lunch.length) warnings.push('Missing Lunch Out');
+
+    const weekKey = formatDateKey(getMondayDate(new Date(`${dateKey}T12:00:00`)));
+    weeklyMinutes.set(weekKey, (weeklyMinutes.get(weekKey) || 0) + minutes);
+    totalMinutes += minutes;
+    daily[dateKey] = {
+      actionTimes,
+      minutes,
+      hours: Number((minutes / 60).toFixed(2)),
+      warnings,
+    };
+  });
+
+  let regularMinutes = 0;
+  let overtimeMinutes = 0;
+  weeklyMinutes.forEach((minutes) => {
+    regularMinutes += Math.min(minutes, 40 * 60);
+    overtimeMinutes += Math.max(0, minutes - (40 * 60));
+  });
+
+  return {
+    daily,
+    punches: dedupePunches(punches),
+    daysWorked: Object.keys(daily).length,
+    totalHours: Number((totalMinutes / 60).toFixed(2)),
+    regularHours: Number((regularMinutes / 60).toFixed(2)),
+    overtimeHours: Number((overtimeMinutes / 60).toFixed(2)),
+  };
+}
+
+function renderTimeRangeSummary({
+  totals,
+  totalElement,
+  regularElement,
+  overtimeElement,
+  daysElement,
+  statusElement,
+  resultsElement,
+  emptyMessage,
+  statusPrefix = '',
+}) {
+  if (totalElement) totalElement.textContent = Number(totals.totalHours || 0).toFixed(2);
+  if (regularElement) regularElement.textContent = Number(totals.regularHours || 0).toFixed(2);
+  if (overtimeElement) overtimeElement.textContent = Number(totals.overtimeHours || 0).toFixed(2);
+  if (daysElement) daysElement.textContent = String(totals.daysWorked || 0);
+
+  const dateKeys = Object.keys(totals.daily || {}).sort().reverse();
+  setTimeRangeStatus(
+    statusElement,
+    `${statusPrefix}Total Hours: ${Number(totals.totalHours || 0).toFixed(2)}`
+  );
+  if (!resultsElement) return;
+  resultsElement.innerHTML = dateKeys.length
+    ? dateKeys.map((dateKey) => renderTimeResultCard(dateKey, totals.daily[dateKey])).join('')
+    : `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
+}
+
+function renderTimeResultCard(dateKey, day) {
+  const actionLabel = (action) => {
+    const times = day.actionTimes[action] || [];
+    return times.length ? times.map(formatTime).join(', ') : '-';
+  };
+  return `
+    <article class="time-result-card">
+      <div class="time-result-card-head">
+        <strong>${escapeHtml(formatDateOnly(new Date(`${dateKey}T12:00:00`).getTime()))}</strong>
+        <span class="pill">${Number(day.hours || 0).toFixed(2)} hours</span>
+      </div>
+      <div class="time-punch-grid">
+        <div class="time-punch-item"><span>Clock In</span><strong>${escapeHtml(actionLabel('clock_in'))}</strong></div>
+        <div class="time-punch-item"><span>Lunch Out</span><strong>${escapeHtml(actionLabel('start_lunch'))}</strong></div>
+        <div class="time-punch-item"><span>Lunch In</span><strong>${escapeHtml(actionLabel('end_lunch'))}</strong></div>
+        <div class="time-punch-item"><span>Clock Out</span><strong>${escapeHtml(actionLabel('clock_out'))}</strong></div>
+      </div>
+      ${day.warnings.length
+        ? `<div class="time-warning">${day.warnings.map(escapeHtml).join(' · ')}</div>`
+        : ''}
+    </article>
+  `;
+}
+
+function setTimeRangeStatus(element, message) {
+  if (element) element.textContent = message;
 }
 
 async function handlePublicTimeFixSubmit(event) {
@@ -2114,6 +2474,7 @@ function attachEmployeesView() {
     onSnapshot(empQuery, (snap) => {
       state.allEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       renderEmployeeList(state.allEmployees);
+      renderManagerTimeWorkerOptions();
       if (isAdmin()) renderDuplicateWorkers(false);
     }, (error) => {
       console.error(error);
@@ -2182,6 +2543,142 @@ function renderEmployeeList(employees) {
   els.employeeListBody.querySelectorAll('.emp-edit-btn').forEach((btn) => {
     btn.addEventListener('click', () => loadEmployeeForEdit(btn.dataset.id));
   });
+}
+
+function renderManagerTimeWorkerOptions() {
+  if (!els.managerTimeWorkerSelect || !isManager()) return;
+  const selectedId = els.managerTimeWorkerSelect.value;
+  const activeEmployees = collapseDuplicateEmployees(state.allEmployees.filter(isActiveEmployee));
+  const historicalEmployees = state.allEmployees.filter((employee) =>
+    !isActiveEmployee(employee) && String(employee.status || '').toLowerCase() !== 'merged'
+  );
+  const employees = [...activeEmployees, ...historicalEmployees]
+    .sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
+
+  els.managerTimeWorkerSelect.innerHTML = [
+    '<option value="">Select a worker</option>',
+    ...employees.map((employee) => `
+      <option value="${escapeHtml(employee.id)}">
+        ${escapeHtml(employee.name || '-')} · ${escapeHtml(employee.employeeNumber || '-')} · ${escapeHtml(agencyLabel(employee.agencyId))}
+      </option>
+    `),
+  ].join('');
+  if (employees.some((employee) => employee.id === selectedId)) {
+    els.managerTimeWorkerSelect.value = selectedId;
+  }
+}
+
+async function lookupManagerTimeRange() {
+  if (!isManager()) return;
+  const employeeId = els.managerTimeWorkerSelect?.value || '';
+  const employee = state.allEmployees.find((row) => row.id === employeeId);
+  if (!employee) {
+    toast('Choose a worker first.', true);
+    return;
+  }
+  if (isAgencyUser() && employee.agencyId !== state.agencyId) {
+    toast('That worker is outside your agency.', true);
+    return;
+  }
+  const range = readDateRange(els.managerTimeFromInput, els.managerTimeToInput);
+  if (!range) return;
+
+  setTimeRangeStatus(els.managerTimeRangeStatus, `Loading time for ${employee.name}...`);
+  if (els.managerTimeExportBtn) els.managerTimeExportBtn.disabled = true;
+  try {
+    const punches = await loadPunchesForEmployeeRange(employee, range.fromMs, range.toMs, {
+      allowLegacyNameFallback: true,
+    });
+    const totals = buildTimeRangeTotals(punches);
+    state.managerTimeLookup = { employee, range, totals };
+    renderTimeRangeSummary({
+      totals,
+      totalElement: els.managerTimeTotalValue,
+      regularElement: els.managerTimeRegularValue,
+      overtimeElement: els.managerTimeOvertimeValue,
+      daysElement: els.managerTimeDaysValue,
+      statusElement: els.managerTimeRangeStatus,
+      resultsElement: els.managerTimeRangeResults,
+      emptyMessage: 'No punches were found for this worker and date range.',
+      statusPrefix: `${employee.name} · `,
+    });
+    if (els.managerTimeExportBtn) els.managerTimeExportBtn.disabled = !totals.daysWorked;
+  } catch (error) {
+    console.error(error);
+    state.managerTimeLookup = null;
+    setTimeRangeStatus(els.managerTimeRangeStatus, error.message || 'Could not load worker time.');
+    if (els.managerTimeRangeResults) {
+      els.managerTimeRangeResults.innerHTML = '<div class="empty-state">The lookup failed without changing any punch data.</div>';
+    }
+    toast(error.message || 'Could not load worker time.', true);
+  }
+}
+
+function exportManagerTimeRangeCsv() {
+  if (!isManager() || !state.managerTimeLookup) return;
+  const { employee, range, totals } = state.managerTimeLookup;
+  if (isAgencyUser() && employee.agencyId !== state.agencyId) return;
+
+  const headers = [
+    'Worker Name',
+    'Employee Number',
+    'Date',
+    'Clock In',
+    'Lunch Out',
+    'Lunch In',
+    'Clock Out',
+    'Total Hours',
+    'Warnings',
+    'Agency',
+    'Site',
+  ];
+  const rows = Object.keys(totals.daily).sort().map((dateKey) => {
+    const day = totals.daily[dateKey];
+    const times = (action) => (day.actionTimes[action] || []).map(formatTime).join(' | ');
+    return [
+      employee.name || '',
+      employee.employeeNumber || '',
+      dateKey,
+      times('clock_in'),
+      times('start_lunch'),
+      times('end_lunch'),
+      times('clock_out'),
+      Number(day.hours || 0).toFixed(2),
+      day.warnings.join(' | '),
+      agencyLabel(employee.agencyId),
+      employee.assignedSiteId || employee.siteId || '',
+    ];
+  });
+  rows.push([
+    employee.name || '',
+    employee.employeeNumber || '',
+    `${range.fromValue} to ${range.toValue}`,
+    '',
+    '',
+    '',
+    '',
+    Number(totals.totalHours || 0).toFixed(2),
+    `Regular: ${Number(totals.regularHours || 0).toFixed(2)} | Overtime: ${Number(totals.overtimeHours || 0).toFixed(2)}`,
+    agencyLabel(employee.agencyId),
+    employee.assignedSiteId || employee.siteId || '',
+  ]);
+
+  downloadCsv(
+    `worker-time-${normalizeName(employee.name)}-${range.fromValue}-to-${range.toValue}.csv`,
+    [headers, ...rows]
+  );
+}
+
+function downloadCsv(filename, rows) {
+  const csv = rows
+    .map((row) => row.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(','))
+    .join('\r\n');
+  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 function isActiveEmployee(employee) {

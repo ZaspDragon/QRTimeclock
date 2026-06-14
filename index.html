@@ -67,6 +67,7 @@
 
         <div class="form-actions worker-self-service-actions">
           <button id="workerViewTimeBtn" class="ghost-btn" type="button">My Time This Week</button>
+          <button id="workerViewMoreTimeBtn" class="ghost-btn" type="button">View More Time</button>
           <button id="workerRequestFixBtn" class="ghost-btn" type="button">Request Time Fix</button>
         </div>
 
@@ -86,19 +87,30 @@
 
         <section id="workerMyTimePanel" class="worker-self-service hidden">
           <div class="card-head">
-            <h3>My Time This Week</h3>
-            <p>Shows punches saved on this device. Your manager's records remain the official timecard.</p>
+            <h3>My Time This Week + Past Time</h3>
+            <p>Read-only lookup using your existing punch history. Looking up time never creates or changes a punch.</p>
+          </div>
+          <div id="workerTimeRangeControls" class="time-range-controls hidden">
+            <div class="time-range-fields">
+              <label><span>From Date</span><input id="workerTimeFromInput" type="date" /></label>
+              <label><span>To Date</span><input id="workerTimeToInput" type="date" /></label>
+            </div>
+            <div class="quick-range-actions">
+              <button class="ghost-btn worker-range-quick" data-range="this_week" type="button">This Week</button>
+              <button class="ghost-btn worker-range-quick" data-range="last_week" type="button">Last Week</button>
+              <button class="ghost-btn worker-range-quick" data-range="last_2_weeks" type="button">Last 2 Weeks</button>
+              <button class="ghost-btn worker-range-quick" data-range="this_month" type="button">This Month</button>
+              <button id="workerTimeLookupBtn" class="primary-btn" type="button">Look Up Past Time</button>
+            </div>
           </div>
           <div class="stats-grid">
-            <div class="stat-card"><span>Hours this week</span><strong id="workerWeekHoursValue">0.00</strong></div>
+            <div class="stat-card"><span>Total Hours</span><strong id="workerWeekHoursValue">0.00</strong></div>
+            <div class="stat-card"><span>Regular Hours</span><strong id="workerRegularHoursValue">0.00</strong></div>
+            <div class="stat-card"><span>Overtime Hours</span><strong id="workerOvertimeHoursValue">0.00</strong></div>
             <div class="stat-card"><span>Days worked</span><strong id="workerDaysWorkedValue">0</strong></div>
           </div>
-          <div class="mini-table-wrap">
-            <table>
-              <thead><tr><th>Date</th><th>Clock In</th><th>Lunch Out</th><th>Lunch In</th><th>Clock Out</th><th>Hours</th></tr></thead>
-              <tbody id="workerMyTimeBody"><tr><td colspan="6">Select your name, then tap My Time This Week.</td></tr></tbody>
-            </table>
-          </div>
+          <div id="workerTimeRangeStatus" class="status-box">Select your name, then view this week or choose a date range.</div>
+          <div id="workerTimeRangeResults" class="time-result-cards"></div>
         </section>
 
         <section id="workerFixPanel" class="worker-self-service hidden">
@@ -558,6 +570,41 @@
               <tbody id="inactiveWorkerListBody"><tr><td colspan="7">No removed or inactive workers.</td></tr></tbody>
             </table>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Worker Time Lookup</h2>
+              <p>Read-only date-range lookup. Agency users only see workers assigned to their agency.</p>
+            </div>
+            <button id="managerTimeExportBtn" class="secondary-btn" type="button" disabled>Export CSV</button>
+          </div>
+          <div class="manager-time-controls">
+            <label>
+              <span>Worker</span>
+              <select id="managerTimeWorkerSelect">
+                <option value="">Select a worker</option>
+              </select>
+            </label>
+            <label><span>From Date</span><input id="managerTimeFromInput" type="date" /></label>
+            <label><span>To Date</span><input id="managerTimeToInput" type="date" /></label>
+          </div>
+          <div class="quick-range-actions">
+            <button class="ghost-btn manager-range-quick" data-range="this_week" type="button">This Week</button>
+            <button class="ghost-btn manager-range-quick" data-range="last_week" type="button">Last Week</button>
+            <button class="ghost-btn manager-range-quick" data-range="last_2_weeks" type="button">Last 2 Weeks</button>
+            <button class="ghost-btn manager-range-quick" data-range="this_month" type="button">This Month</button>
+            <button id="managerTimeLookupBtn" class="primary-btn" type="button">Look Up Time</button>
+          </div>
+          <div class="stats-grid time-range-summary">
+            <div class="stat-card"><span>Total Hours</span><strong id="managerTimeTotalValue">0.00</strong></div>
+            <div class="stat-card"><span>Regular Hours</span><strong id="managerTimeRegularValue">0.00</strong></div>
+            <div class="stat-card"><span>Overtime Hours</span><strong id="managerTimeOvertimeValue">0.00</strong></div>
+            <div class="stat-card"><span>Days worked</span><strong id="managerTimeDaysValue">0</strong></div>
+          </div>
+          <div id="managerTimeRangeStatus" class="status-box">Choose a worker and date range.</div>
+          <div id="managerTimeRangeResults" class="time-result-cards"></div>
         </div>
       </section>
 

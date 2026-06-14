@@ -229,6 +229,93 @@ button {
   flex-wrap: wrap;
 }
 
+.time-range-controls {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.time-range-fields,
+.manager-time-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.manager-time-controls {
+  grid-template-columns: 1.4fr 1fr 1fr;
+  margin-bottom: 12px;
+}
+
+.quick-range-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.time-range-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.time-result-cards {
+  display: grid;
+  gap: 12px;
+}
+
+.time-result-card {
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.045);
+}
+
+.time-result-card-head,
+.time-punch-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.time-result-card-head {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.time-result-card-head strong {
+  font-size: 1rem;
+}
+
+.time-punch-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.time-punch-item {
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+}
+
+.time-punch-item span,
+.time-punch-item strong {
+  display: block;
+}
+
+.time-punch-item span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-bottom: 5px;
+}
+
+.time-warning {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  color: #ffe3a3;
+  background: rgba(255, 202, 87, 0.1);
+  border: 1px solid rgba(255, 202, 87, 0.28);
+}
+
 .duplicate-group {
   display: grid;
   gap: 14px;
@@ -324,6 +411,10 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   .two-up, .grid-form { grid-template-columns: 1fr; }
   .stats-grid, .button-grid { grid-template-columns: 1fr; }
   .split-head { flex-direction: column; align-items: flex-start; }
+  .manager-time-controls,
+  .time-range-summary {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 .view.hidden,
 .hidden {
@@ -429,6 +520,20 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   .button-grid,
   .big-action-grid {
     grid-template-columns: 1fr !important;
+  }
+
+  .time-range-fields,
+  .manager-time-controls,
+  .time-range-summary,
+  .time-punch-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .time-range-fields input,
+  .manager-time-controls input,
+  .manager-time-controls select {
+    min-height: 52px;
+    font-size: 1rem;
   }
 
   .giant-btn {

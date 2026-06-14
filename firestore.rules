@@ -31,6 +31,29 @@ service cloud.firestore {
       return signedIn() && resourceData.companyId == myCompanyId();
     }
 
+    function isPublicTimeEmployee(employeeId) {
+      return employeeId is string &&
+        employeeId.size() > 0 &&
+        exists(/databases/$(database)/documents/employees/$(employeeId)) &&
+        (
+          get(/databases/$(database)/documents/employees/$(employeeId)).data.status == 'active' ||
+          (
+            get(/databases/$(database)/documents/employees/$(employeeId)).data.status == 'merged' &&
+            get(/databases/$(database)/documents/employees/$(employeeId)).data.mergedInto is string &&
+            exists(
+              /databases/$(database)/documents/employees/$(
+                get(/databases/$(database)/documents/employees/$(employeeId)).data.mergedInto
+              )
+            ) &&
+            get(
+              /databases/$(database)/documents/employees/$(
+                get(/databases/$(database)/documents/employees/$(employeeId)).data.mergedInto
+              )
+            ).data.status == 'active'
+          )
+        );
+    }
+
     // ─── companies ───────────────────────────────────────
     match /companies/{companyId} {
       allow read: if signedIn() && myCompanyId() == companyId;
@@ -61,6 +84,13 @@ service cloud.firestore {
 
       // Public read for autocomplete (QR punch flow, unauthenticated)
       allow read: if resource.data.status == 'active';
+
+      // Public time lookup may resolve retained duplicate IDs to an active primary.
+      allow read: if
+        resource.data.status == 'merged' &&
+        resource.data.mergedInto is string &&
+        exists(/databases/$(database)/documents/employees/$(resource.data.mergedInto)) &&
+        get(/databases/$(database)/documents/employees/$(resource.data.mergedInto)).data.status == 'active';
 
       // Manager creates
       allow create: if isManager() && request.resource.data.companyId == myCompanyId();
@@ -104,6 +134,12 @@ service cloud.firestore {
 
       // Managers/admins read current and legacy punches.
       allow read: if isManager();
+
+      // No-login worker history is read-only and remains tied to an active
+      // employee ID. Blank IDs support legacy punches, filtered by name in UI.
+      allow read: if
+        isPublicTimeEmployee(resource.data.get('employeeId', '')) ||
+        resource.data.get('employeeId', '') == '';
 
       // Employees read only their own punches
       allow read: if isEmployee() &&
