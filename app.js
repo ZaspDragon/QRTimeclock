@@ -1024,6 +1024,7 @@ function readDateRange(fromInput, toInput) {
 async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {}) {
   const primaryId = employee.id || employee.employeeId || '';
   const workerIds = new Set([primaryId, employee.employeeId].filter(Boolean));
+  const directWorkerIds = new Set([primaryId, employee.employeeId].filter(Boolean));
   getCompatibleWorkerRecords(employee).forEach((record) => {
     if (record.id) workerIds.add(record.id);
     if (record.employeeId) workerIds.add(record.employeeId);
@@ -1033,19 +1034,36 @@ async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {})
       ? [where('mergedInto', '==', primaryId)]
       : [where('status', '==', 'merged'), where('mergedInto', '==', primaryId)];
     const mergedSnapshot = await getDocs(query(collection(db, 'employees'), ...mergedConstraints));
-    mergedSnapshot.docs.forEach((record) => workerIds.add(record.id));
+    mergedSnapshot.docs.forEach((record) => {
+      workerIds.add(record.id);
+      directWorkerIds.add(record.id);
+    });
   }
 
   const rows = [];
-  const workerIdList = [...workerIds];
-  for (let index = 0; index < workerIdList.length; index += 30) {
-    const idChunk = workerIdList.slice(index, index + 30);
-    rows.push(...await fetchPunchesWithRange(
-      [where('employeeId', idChunk.length === 1 ? '==' : 'in', idChunk.length === 1 ? idChunk[0] : idChunk)],
-      fromMs,
-      toMs
-    ));
+  let nameQuerySucceeded = false;
+  if (employee.name) {
+    try {
+      const nameRows = await fetchPunchesWithRange(
+        [where('nameKey', '==', normalizeName(employee.name))],
+        fromMs,
+        toMs
+      );
+      rows.push(...nameRows.filter((punch) => {
+        const punchEmployeeId = String(punch.employeeId || '');
+        return !punchEmployeeId || workerIds.has(punchEmployeeId);
+      }));
+      nameQuerySucceeded = true;
+    } catch (error) {
+      console.warn('Normalized-name history lookup unavailable:', error.message);
+    }
   }
+
+  const idsToQuery = nameQuerySucceeded ? [...directWorkerIds] : [...workerIds];
+  const idRows = await Promise.all(idsToQuery.map((workerId) =>
+    fetchPunchesWithRange([where('employeeId', '==', workerId)], fromMs, toMs)
+  ));
+  idRows.forEach((workerRows) => rows.push(...workerRows));
 
   if (options.allowLegacyNameFallback && employee.name) {
     const legacyConstraints = state.me && isManager()
