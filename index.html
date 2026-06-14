@@ -43,6 +43,10 @@
             <ul id="workerAutocompleteList" class="autocomplete-list" hidden></ul>
           </div>
         </label>
+        <label id="workerPinField" class="hidden">
+          <span>Worker PIN <small>(only if one is already configured)</small></span>
+          <input id="workerPinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="Enter PIN" />
+        </label>
         <div id="workerLookupStatus" class="status-box">Type your name to begin.</div>
 
         <div class="button-grid">
@@ -436,6 +440,11 @@
                   <option value="terminated">Terminated</option>
                 </select>
               </label>
+              <label>
+                <span>Worker PIN <small>(optional)</small></span>
+                <input id="empPinInput" type="password" inputmode="numeric" autocomplete="new-password"
+                  placeholder="Leave blank to keep current PIN" />
+              </label>
               <div class="form-actions full-width">
                 <button class="primary-btn" type="submit">Save Employee</button>
                 <button id="empCancelEditBtn" class="ghost-btn hidden" type="button">Cancel Edit</button>
@@ -474,6 +483,22 @@
               </table>
             </div>
           </article>
+        </div>
+
+        <div class="card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Removed / Inactive Workers</h2>
+              <p>Records and punch history are retained. Reactivation updates the same employee.</p>
+            </div>
+            <button id="exportBackupBtn" class="secondary-btn" type="button">Export Backup</button>
+          </div>
+          <div class="mini-table-wrap tall">
+            <table>
+              <thead><tr><th>Emp #</th><th>Name</th><th>Status</th><th>Removed</th><th>Removed By</th><th>Reason</th><th>Action</th></tr></thead>
+              <tbody id="inactiveWorkerListBody"><tr><td colspan="7">No removed or inactive workers.</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </section>
 

@@ -47,6 +47,7 @@ const state = {
   allEmployees: [],
   allMissedRequests: [],
   approvalFilter: 'pending',
+  workerPunchSaving: false,
 };
 
 const els = {
@@ -59,6 +60,8 @@ const els = {
   workerStatusValue: document.getElementById('workerStatusValue'),
   workerStatusMessage: document.getElementById('workerStatusMessage'),
   workerHistoryBody: document.getElementById('workerHistoryBody'),
+  workerPinField: document.getElementById('workerPinField'),
+  workerPinInput: document.getElementById('workerPinInput'),
 
   authCard: document.getElementById('authCard'),
   appShell: document.getElementById('appShell'),
@@ -128,9 +131,12 @@ const els = {
   empAgencySelect: document.getElementById('empAgencySelect'),
   empSiteInput: document.getElementById('empSiteInput'),
   empStatusSelect: document.getElementById('empStatusSelect'),
+  empPinInput: document.getElementById('empPinInput'),
   empCancelEditBtn: document.getElementById('empCancelEditBtn'),
   empFilterInput: document.getElementById('empFilterInput'),
   employeeListBody: document.getElementById('employeeListBody'),
+  inactiveWorkerListBody: document.getElementById('inactiveWorkerListBody'),
+  exportBackupBtn: document.getElementById('exportBackupBtn'),
 
   agencyWorkerSelect: document.getElementById('agencyWorkerSelect'),
   agencyPreviewBtn: document.getElementById('agencyPreviewBtn'),
@@ -285,6 +291,7 @@ function wireEvents() {
   els.employeeForm?.addEventListener('submit', handleSaveEmployee);
   els.empCancelEditBtn?.addEventListener('click', cancelEmployeeEdit);
   els.empFilterInput?.addEventListener('input', () => renderEmployeeList(state.allEmployees || []));
+  els.exportBackupBtn?.addEventListener('click', exportBackup);
 
   els.agencyPreviewBtn?.addEventListener('click', () => renderAgencyPreview());
   els.agencyPrintBtn?.addEventListener('click', () => printAgencyPreview());
@@ -313,9 +320,11 @@ async function loadPublicEmployees() {
 
 function restoreWorkerFromName(name) {
   const nameKey = normalizeName(name);
-  const match = state.publicEmployees.find((e) => normalizeName(e.name) === nameKey);
-  if (match) {
+  const matches = state.publicEmployees.filter((e) => normalizeName(e.name) === nameKey);
+  if (matches.length === 1) {
+    const match = matches[0];
     state.workerEmployee = match;
+    updateWorkerPinField(match);
     if (els.workerLookupStatus) {
       els.workerLookupStatus.textContent = `✓ Welcome back, ${match.name}. Ready to punch.`;
       els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
@@ -332,6 +341,7 @@ function handleWorkerNameAutocomplete() {
 
   if (typed.length < 2) {
     state.workerEmployee = null;
+    updateWorkerPinField(null);
     hideAutocomplete();
     if (els.workerLookupStatus) {
       els.workerLookupStatus.textContent = 'Type your name to begin.';
@@ -346,12 +356,14 @@ function handleWorkerNameAutocomplete() {
   ).slice(0, 8);
 
   // Check for exact match
-  const exactMatch = state.publicEmployees.find(
+  const exactMatches = state.publicEmployees.filter(
     (e) => normalizeName(e.name) === normalizeName(typed)
   );
 
-  if (exactMatch) {
+  if (exactMatches.length === 1) {
+    const exactMatch = exactMatches[0];
     state.workerEmployee = exactMatch;
+    updateWorkerPinField(exactMatch);
     if (els.workerLookupStatus) {
       els.workerLookupStatus.textContent = `✓ Found: ${exactMatch.name} (${exactMatch.employeeNumber || 'new'}). Ready to punch.`;
       els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
@@ -359,6 +371,16 @@ function handleWorkerNameAutocomplete() {
     hideAutocomplete();
     localStorage.setItem('workerPunchName', exactMatch.name);
     attachWorkerLiveView(exactMatch.name);
+    return;
+  }
+
+  if (exactMatches.length > 1) {
+    state.workerEmployee = null;
+    updateWorkerPinField(null);
+    if (els.workerLookupStatus) {
+      els.workerLookupStatus.textContent = 'Multiple active workers have that name. Select the correct employee number.';
+    }
+    renderAutocomplete(exactMatches, typed, true);
     return;
   }
 
@@ -374,7 +396,7 @@ function handleWorkerNameAutocomplete() {
   renderAutocomplete(matches, typed);
 }
 
-function renderAutocomplete(matches, typed) {
+function renderAutocomplete(matches, typed, selectionRequired = false) {
   const list = els.workerAutocompleteList;
   if (!list) return;
 
@@ -388,7 +410,7 @@ function renderAutocomplete(matches, typed) {
   });
 
   // Always show "new worker" option at the bottom if typed name doesn't match
-  if (typed.length >= 2) {
+  if (typed.length >= 2 && !selectionRequired && matches.length === 0) {
     html += `<li class="new-worker" data-index="${matches.length}" data-new="true">
       + Create new: "${escapeHTML(typed)}"
     </li>`;
@@ -439,6 +461,7 @@ function updateActiveItem(items) {
 
 function selectAutocompleteEmployee(emp) {
   state.workerEmployee = emp;
+  updateWorkerPinField(emp);
   if (els.workerNameInput) els.workerNameInput.value = emp.name;
   if (els.workerNameValue) els.workerNameValue.textContent = emp.name;
   if (els.workerLookupStatus) {
@@ -454,6 +477,7 @@ function selectNewWorker(typed) {
   const pretty = prettifyHumanName(typed);
   // Set a placeholder worker employee — will be auto-created on punch
   state.workerEmployee = { _isNew: true, name: pretty, nameKey: normalizeName(pretty) };
+  updateWorkerPinField(null);
   if (els.workerNameInput) els.workerNameInput.value = pretty;
   if (els.workerNameValue) els.workerNameValue.textContent = pretty;
   if (els.workerLookupStatus) {
@@ -479,6 +503,7 @@ function escapeHTML(str) {
 }
 
 async function handleWorkerPunch(action) {
+  if (state.workerPunchSaving) return;
   let emp = state.workerEmployee;
   const typedName = prettifyHumanName(els.workerNameInput?.value.trim() || '');
 
@@ -493,15 +518,31 @@ async function handleWorkerPunch(action) {
     return;
   }
 
-  if (emp.status === 'inactive' || emp.status === 'terminated') {
+  if (['inactive', 'terminated', 'removed'].includes(String(emp.status || '').toLowerCase())) {
     toast('Your employee record is not active. Contact your manager.', true);
     return;
+  }
+
+  const enteredPin = String(els.workerPinInput?.value || '').trim();
+  if (enteredPin && emp.pinHash) {
+    const enteredHash = await hashWorkerPin(enteredPin, emp.id || emp.employeeId || '');
+    if (enteredHash !== emp.pinHash) {
+      toast('PIN incorrect. You can clear it and continue with the normal name-based flow.', true);
+      return;
+    }
   }
 
   const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
 
   // Auto-create employee if new
   if (emp._isNew) {
+    const similar = state.publicEmployees.filter((candidate) => namesAreSimilar(candidate.name, emp.name));
+    if (similar.length) {
+      state.workerEmployee = null;
+      renderAutocomplete(similar, emp.name, true);
+      toast('A similar active worker already exists. Select the correct person.', true);
+      return;
+    }
     try {
       const empNumber = await generateNextPublicEmployeeNumber();
       const newPayload = {
@@ -544,7 +585,14 @@ async function handleWorkerPunch(action) {
   const dateKey = formatDateKey(now);
   const weekKey = formatDateKey(getMondayDate(now));
 
+  state.workerPunchSaving = true;
+  setWorkerPunchBusy(true);
   try {
+    const duplicateKey = `lastPunch:${emp.employeeId || emp.id || nameKey}:${action}`;
+    const previousPunchMs = Number(localStorage.getItem(duplicateKey) || 0);
+    if (previousPunchMs && nowMs - previousPunchMs < 10000) {
+      throw new Error('That punch was already saved. Please wait a few seconds.');
+    }
     await addDoc(collection(db, 'punches'), {
       name,
       nameKey,
@@ -570,11 +618,40 @@ async function handleWorkerPunch(action) {
 
     attachWorkerLiveView(name);
     localStorage.setItem('workerPunchName', name);
+    localStorage.setItem(duplicateKey, String(nowMs));
     toast(`${prettyAction(action)} saved.`);
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not save punch.', true);
+  } finally {
+    state.workerPunchSaving = false;
+    setWorkerPunchBusy(false);
   }
+}
+
+function setWorkerPunchBusy(busy) {
+  document.querySelectorAll('.worker-action-btn').forEach((button) => {
+    button.disabled = busy;
+    button.setAttribute('aria-busy', busy ? 'true' : 'false');
+  });
+}
+
+function updateWorkerPinField(employee) {
+  const available = Boolean(employee?.pinHash);
+  els.workerPinField?.classList.toggle('hidden', !available);
+  if (!available && els.workerPinInput) els.workerPinInput.value = '';
+}
+
+function namesAreSimilar(left, right) {
+  const a = normalizeName(left);
+  const b = normalizeName(right);
+  return a === b || (a.length >= 4 && b.length >= 4 && (a.includes(b) || b.includes(a)));
+}
+
+async function hashWorkerPin(pin, employeeId) {
+  const bytes = new TextEncoder().encode(`${employeeId}:${String(pin).trim()}`);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 async function generateNextPublicEmployeeNumber() {
@@ -1756,7 +1833,7 @@ function attachEmployeesView() {
 }
 
 function renderEmployeeList(employees) {
-  if (!els.employeeListBody) return;
+  if (!els.employeeListBody || !els.inactiveWorkerListBody) return;
 
   const filter = String(els.empFilterInput?.value || '').trim().toLowerCase();
   const filtered = employees.filter((e) => {
@@ -1766,13 +1843,33 @@ function renderEmployeeList(employees) {
       String(e.employeeNumber || '').toLowerCase().includes(filter)
     );
   });
+  const activeEmployees = filtered.filter(isActiveEmployee);
+  const inactiveEmployees = filtered.filter((employee) => !isActiveEmployee(employee));
 
-  if (!filtered.length) {
+  els.inactiveWorkerListBody.innerHTML = inactiveEmployees.length
+    ? inactiveEmployees.map((employee) => `
+      <tr>
+        <td>${escapeHtml(employee.employeeNumber || '-')}</td>
+        <td>${escapeHtml(employee.name || '-')}</td>
+        <td>${escapeHtml(employee.status || 'inactive')}</td>
+        <td>${escapeHtml(formatRemovedAt(employee))}</td>
+        <td>${escapeHtml(employee.removedBy || '-')}</td>
+        <td>${escapeHtml(employee.removalReason || '-')}</td>
+        <td><button class="primary-btn emp-reactivate-btn" data-id="${employee.id}" type="button">Reactivate</button></td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="7">No removed or inactive workers.</td></tr>';
+
+  els.inactiveWorkerListBody.querySelectorAll('.emp-reactivate-btn').forEach((button) => {
+    button.addEventListener('click', () => reactivateEmployee(button.dataset.id));
+  });
+
+  if (!activeEmployees.length) {
     els.employeeListBody.innerHTML = '<tr><td colspan="6">No employees found.</td></tr>';
     return;
   }
 
-  els.employeeListBody.innerHTML = filtered.map((emp) => `
+  els.employeeListBody.innerHTML = activeEmployees.map((emp) => `
     <tr>
       <td>${escapeHtml(emp.employeeNumber || '-')}</td>
       <td>${escapeHtml(emp.name || '-')}</td>
@@ -1790,6 +1887,16 @@ function renderEmployeeList(employees) {
   });
 }
 
+function isActiveEmployee(employee) {
+  return !['inactive', 'terminated', 'removed'].includes(String(employee?.status || 'active').toLowerCase());
+}
+
+function formatRemovedAt(employee) {
+  const milliseconds = Number(employee?.removedAtMs || 0)
+    || Number(employee?.removedAt?.seconds || 0) * 1000;
+  return milliseconds ? formatDateTime(milliseconds) : '-';
+}
+
 function loadEmployeeForEdit(empId) {
   const emp = (state.allEmployees || []).find((e) => e.id === empId);
   if (!emp) { toast('Employee not found.', true); return; }
@@ -1800,6 +1907,7 @@ function loadEmployeeForEdit(empId) {
   if (els.empAgencySelect) els.empAgencySelect.value = emp.agencyId || '';
   if (els.empSiteInput) els.empSiteInput.value = emp.assignedSiteId || '';
   if (els.empStatusSelect) els.empStatusSelect.value = emp.status || 'active';
+  if (els.empPinInput) els.empPinInput.value = '';
   els.empCancelEditBtn?.classList.remove('hidden');
 }
 
@@ -1830,6 +1938,17 @@ async function handleSaveEmployee(event) {
   const assignedSiteId = els.empSiteInput?.value.trim() || '';
   const status = els.empStatusSelect?.value || 'active';
   const existingId = els.employeeDocId?.value || '';
+  const existingEmployee = state.allEmployees.find((employee) => employee.id === existingId);
+
+  if (!existingId) {
+    const similarActive = state.allEmployees.filter(
+      (employee) => isActiveEmployee(employee) && namesAreSimilar(employee.name, name)
+    );
+    if (similarActive.length) {
+      toast('A similar active employee already exists. Edit that record instead.', true);
+      return;
+    }
+  }
 
   // Auto-generate employee number if blank
   if (!employeeNumber) {
@@ -1847,17 +1966,47 @@ async function handleSaveEmployee(event) {
     updatedAt: serverTimestamp(),
   };
 
+  if (existingId && status !== 'active' && isActiveEmployee(existingEmployee)) {
+    const removalReason = String(prompt(`Reason for marking ${name} ${status}:`) || '').trim();
+    if (!removalReason) {
+      toast('A removal reason is required.', true);
+      return;
+    }
+    payload.removedAt = serverTimestamp();
+    payload.removedAtMs = Date.now();
+    payload.removedBy = state.profile?.name || state.me?.email || 'Manager';
+    payload.removedById = state.me?.uid || '';
+    payload.removalReason = removalReason;
+  }
+
+  const pin = String(els.empPinInput?.value || '').trim();
+  if (pin && !/^\d{4,12}$/.test(pin)) {
+    toast('Optional PIN must be 4 to 12 digits.', true);
+    return;
+  }
+
   try {
     if (existingId) {
       // Update existing employee
+      if (pin) {
+        payload.pinHash = await hashWorkerPin(pin, existingId);
+        payload.pinUpdatedAt = serverTimestamp();
+      }
       await updateDoc(doc(db, 'employees', existingId), payload);
+      await logAudit('employee_updated', 'employee', existingId, existingEmployee || {}, payload);
       toast('Employee updated.');
     } else {
       // Create new employee
       payload.createdAt = serverTimestamp();
       const newRef = await addDoc(collection(db, 'employees'), payload);
       // Write employeeId field = doc ID
-      await updateDoc(newRef, { employeeId: newRef.id });
+      const identityPayload = { employeeId: newRef.id };
+      if (pin) {
+        identityPayload.pinHash = await hashWorkerPin(pin, newRef.id);
+        identityPayload.pinUpdatedAt = serverTimestamp();
+      }
+      await updateDoc(newRef, identityPayload);
+      await logAudit('employee_created', 'employee', newRef.id, {}, payload);
       toast('Employee created: ' + employeeNumber);
     }
 
@@ -1866,6 +2015,93 @@ async function handleSaveEmployee(event) {
     console.error(error);
     toast(error.message || 'Could not save employee.', true);
   }
+}
+
+async function reactivateEmployee(employeeId) {
+  if (!isManager()) return;
+  const employee = state.allEmployees.find((row) => row.id === employeeId);
+  if (!employee) return;
+  const payload = {
+    status: 'active',
+    reactivatedAt: serverTimestamp(),
+    reactivatedAtMs: Date.now(),
+    reactivatedBy: state.profile?.name || state.me?.email || 'Manager',
+    reactivatedById: state.me?.uid || '',
+    updatedAt: serverTimestamp(),
+  };
+  try {
+    await updateDoc(doc(db, 'employees', employeeId), payload);
+    await logAudit('employee_reactivated', 'employee', employeeId, employee, payload);
+    toast('Employee reactivated.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not reactivate employee.', true);
+  }
+}
+
+async function logAudit(action, entityType, entityId, oldValue, newValue) {
+  if (!state.me || !isManager()) return;
+  try {
+    await addDoc(collection(db, 'auditLogs'), {
+      action,
+      entityType,
+      entityId,
+      oldValue: serializeForExport(oldValue),
+      newValue: serializeForExport(newValue),
+      actorId: state.me.uid,
+      actorName: state.profile?.name || state.me.email || 'Manager',
+      companyId: state.companyId || '',
+      createdAt: serverTimestamp(),
+      createdAtMs: Date.now(),
+    });
+  } catch (error) {
+    console.warn('Audit log could not be saved:', error.message);
+  }
+}
+
+async function exportBackup() {
+  if (!isManager()) return;
+  try {
+    const collections = ['employees', 'punches', 'missedPunchRequests', 'agencies', 'users'];
+    const backup = {
+      exportedAt: new Date().toISOString(),
+      companyId: state.companyId || '',
+      note: 'Non-destructive QRTimeclock backup export',
+    };
+    for (const collectionName of collections) {
+      const constraints = state.companyId && collectionName !== 'agencies'
+        ? [where('companyId', '==', state.companyId)]
+        : [];
+      const snapshot = await getDocs(query(collection(db, collectionName), ...constraints));
+      backup[collectionName] = snapshot.docs.map((record) => ({
+        id: record.id,
+        ...serializeForExport(record.data()),
+      }));
+    }
+    downloadJson(`qrtimeclock-backup-${formatDateKey(new Date())}.json`, backup);
+    toast('Backup exported.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not export backup.', true);
+  }
+}
+
+function serializeForExport(value) {
+  if (value?.toDate instanceof Function) return value.toDate().toISOString();
+  if (Array.isArray(value)) return value.map(serializeForExport);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, serializeForExport(item)]));
+  }
+  return value;
+}
+
+function downloadJson(filename, value) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 async function generateNextEmployeeNumber() {

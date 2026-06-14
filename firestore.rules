@@ -80,7 +80,8 @@ service cloud.firestore {
       allow update: if
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employeeId']);
 
-      allow delete: if isAdmin() && sameCompany(resource.data);
+      // Employee records are retained so historical punches remain connected.
+      allow delete: if false;
     }
 
     // ─── punches ─────────────────────────────────────────
@@ -113,6 +114,11 @@ service cloud.firestore {
     match /punch_edits/{editId} {
       allow create: if isManager();
       allow read: if isManager();
+    }
+
+    match /auditLogs/{auditId} {
+      allow create, read: if isManager();
+      allow update, delete: if false;
     }
 
     // ─── timesheets ──────────────────────────────────────
