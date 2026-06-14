@@ -228,6 +228,32 @@ button {
 .worker-self-service-actions {
   flex-wrap: wrap;
 }
+
+.duplicate-group {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.035);
+}
+
+.duplicate-options {
+  display: grid;
+  gap: 8px;
+}
+
+.duplicate-option {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+}
+
+.duplicate-option input {
+  width: auto;
+}
 .empty-state { padding: 16px; color: var(--muted); }
 .person-row {
   padding: 14px;

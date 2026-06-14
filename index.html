@@ -509,6 +509,16 @@
 
             <div class="stack gap16" style="margin-bottom:12px;">
               <label>
+                <span>Status</span>
+                <select id="empRosterStatusFilter">
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="terminated">Terminated</option>
+                  <option value="merged">Merged</option>
+                  <option value="all">All</option>
+                </select>
+              </label>
+              <label>
                 <span>Filter</span>
                 <input id="empFilterInput" type="text" placeholder="Search by name or number…" />
               </label>
@@ -613,6 +623,16 @@
               </table>
             </div>
           </article>
+        </div>
+        <div class="card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Duplicate Workers</h2>
+              <p>Choose a primary record and merge duplicates without deleting workers or time history.</p>
+            </div>
+            <button id="refreshDuplicatesBtn" class="secondary-btn" type="button">Refresh Duplicates</button>
+          </div>
+          <div id="duplicateWorkersList" class="list-stack empty-state">Duplicate groups will appear here.</div>
         </div>
       </section>
 

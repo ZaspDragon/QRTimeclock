@@ -72,6 +72,8 @@ service cloud.firestore {
         request.resource.data.name.size() <= 80 &&
         request.resource.data.nameKey is string &&
         request.resource.data.employeeNumber is string &&
+        request.resource.data.employeeId == employeeId &&
+        employeeId.matches('auto_.*') &&
         request.resource.data.status == 'active' &&
         request.resource.data.source == 'auto_created';
 

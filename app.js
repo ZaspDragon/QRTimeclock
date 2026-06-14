@@ -23,7 +23,8 @@ import {
   orderBy,
   limit,
   onSnapshot,
-  Timestamp
+  Timestamp,
+  writeBatch
 } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 
 const app = initializeApp(firebaseConfig);
@@ -48,6 +49,8 @@ const state = {
   allMissedRequests: [],
   approvalFilter: 'pending',
   workerPunchSaving: false,
+  employeeStatusFilter: 'active',
+  duplicateGroups: [],
 };
 
 const els = {
@@ -146,9 +149,12 @@ const els = {
   empPinInput: document.getElementById('empPinInput'),
   empCancelEditBtn: document.getElementById('empCancelEditBtn'),
   empFilterInput: document.getElementById('empFilterInput'),
+  empRosterStatusFilter: document.getElementById('empRosterStatusFilter'),
   employeeListBody: document.getElementById('employeeListBody'),
   inactiveWorkerListBody: document.getElementById('inactiveWorkerListBody'),
   exportBackupBtn: document.getElementById('exportBackupBtn'),
+  refreshDuplicatesBtn: document.getElementById('refreshDuplicatesBtn'),
+  duplicateWorkersList: document.getElementById('duplicateWorkersList'),
 
   agencyWorkerSelect: document.getElementById('agencyWorkerSelect'),
   agencyPreviewBtn: document.getElementById('agencyPreviewBtn'),
@@ -314,7 +320,12 @@ function wireEvents() {
   els.employeeForm?.addEventListener('submit', handleSaveEmployee);
   els.empCancelEditBtn?.addEventListener('click', cancelEmployeeEdit);
   els.empFilterInput?.addEventListener('input', () => renderEmployeeList(state.allEmployees || []));
+  els.empRosterStatusFilter?.addEventListener('change', () => {
+    state.employeeStatusFilter = els.empRosterStatusFilter.value || 'active';
+    renderEmployeeList(state.allEmployees || []);
+  });
   els.exportBackupBtn?.addEventListener('click', exportBackup);
+  els.refreshDuplicatesBtn?.addEventListener('click', () => renderDuplicateWorkers(true));
 
   els.agencyPreviewBtn?.addEventListener('click', () => renderAgencyPreview());
   els.agencyPrintBtn?.addEventListener('click', () => printAgencyPreview());
@@ -328,9 +339,10 @@ async function loadPublicEmployees() {
     // backwards-compatible public clock-in scope.
     const q = query(collection(db, 'employees'), where('status', '==', 'active'));
     const snap = await getDocs(q);
-    state.publicEmployees = snap.docs
+    const activeEmployees = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    state.publicEmployees = collapseDuplicateEmployees(activeEmployees);
   } catch (error) {
     console.warn('Could not load employees for autocomplete:', error.message);
     state.publicEmployees = [];
@@ -413,6 +425,90 @@ function handleWorkerNameAutocomplete() {
   }
 
   renderAutocomplete(matches, typed);
+}
+
+function normalizeIdentityPart(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function employeeScopeKey(employee) {
+  return [
+    normalizeIdentityPart(employee?.name || employee?.nameKey),
+    normalizeIdentityPart(employee?.agencyId),
+    normalizeIdentityPart(employee?.assignedSiteId || employee?.siteId),
+  ].join('|');
+}
+
+function employeeRecordScore(employee) {
+  let score = 0;
+  if (normalizeIdentityPart(employee?.agencyId)) score += 20;
+  if (normalizeIdentityPart(employee?.assignedSiteId || employee?.siteId)) score += 20;
+  const employeeNumber = normalizeIdentityPart(employee?.employeeNumber);
+  if (employeeNumber && employeeNumber !== 'emp-1001') score += 10;
+  if (normalizeIdentityPart(employee?.employeeId) === normalizeIdentityPart(employee?.id)) score += 2;
+  return score;
+}
+
+function compareEmployeeRecords(left, right) {
+  const scoreDifference = employeeRecordScore(right) - employeeRecordScore(left);
+  if (scoreDifference) return scoreDifference;
+  const leftCreated = Number(left.createdAt?.seconds || left.createdAtMs || 0);
+  const rightCreated = Number(right.createdAt?.seconds || right.createdAtMs || 0);
+  return leftCreated - rightCreated || String(left.id).localeCompare(String(right.id));
+}
+
+function preferEmployeeRecord(employees) {
+  return [...employees].sort(compareEmployeeRecords)[0];
+}
+
+function collapseDuplicateEmployees(employees) {
+  const kept = [];
+  const nameGroups = new Map();
+
+  employees.forEach((employee) => {
+    const name = normalizeIdentityPart(employee.name || employee.nameKey);
+    if (!nameGroups.has(name)) nameGroups.set(name, []);
+    nameGroups.get(name).push(employee);
+  });
+
+  nameGroups.forEach((nameEmployees) => {
+    const scopedEmployees = new Map();
+    const nonBlankScopes = new Set();
+    nameEmployees.forEach((employee) => {
+      const agency = normalizeIdentityPart(employee.agencyId);
+      const site = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+      const scope = `${agency}|${site}`;
+      if (!scopedEmployees.has(scope)) scopedEmployees.set(scope, []);
+      scopedEmployees.get(scope).push(employee);
+      if (agency || site) nonBlankScopes.add(scope);
+    });
+
+    // Legacy blank copies belong to the sole configured agency/site record.
+    if (nonBlankScopes.size <= 1) {
+      kept.push(preferEmployeeRecord(nameEmployees));
+      return;
+    }
+
+    scopedEmployees.forEach((scopeEmployees) => kept.push(preferEmployeeRecord(scopeEmployees)));
+  });
+
+  return kept.sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
+}
+
+function findReusableEmployee({ name, employeeNumber = '', agencyId = '', assignedSiteId = '' }, employees) {
+  const nameKey = normalizeIdentityPart(name);
+  const numberKey = normalizeIdentityPart(employeeNumber);
+  const scopeKey = employeeScopeKey({ name, agencyId, assignedSiteId });
+  const activeEmployees = (employees || []).filter((employee) => {
+    if (!isActiveEmployee(employee)) return false;
+    return normalizeIdentityPart(employee.name || employee.nameKey) === nameKey;
+  });
+  const scopedMatch = activeEmployees.find((employee) => employeeScopeKey(employee) === scopeKey);
+  if (scopedMatch) return scopedMatch;
+  return activeEmployees.find((employee) => {
+    const existingNumber = normalizeIdentityPart(employee.employeeNumber);
+    return numberKey && existingNumber === numberKey;
+  }) || null;
 }
 
 function renderAutocomplete(matches, typed, selectionRequired = false) {
@@ -555,44 +651,55 @@ async function handleWorkerPunch(action) {
 
   // Auto-create employee if new
   if (emp._isNew) {
-    const similar = state.publicEmployees.filter((candidate) => namesAreSimilar(candidate.name, emp.name));
-    if (similar.length) {
-      state.workerEmployee = null;
-      renderAutocomplete(similar, emp.name, true);
-      toast('A similar active worker already exists. Select the correct person.', true);
-      return;
+    const reusable = findReusableEmployee({
+      name: emp.name,
+      agencyId: '',
+      assignedSiteId: '',
+    }, state.publicEmployees);
+    if (reusable) {
+      emp = reusable;
+      state.workerEmployee = reusable;
     }
+  }
+
+  if (emp._isNew) {
     try {
-      const empNumber = await generateNextPublicEmployeeNumber();
-      const newPayload = {
-        name: emp.name,
-        nameKey: normalizeName(emp.name),
-        employeeNumber: empNumber,
-        companyId: urlCompanyId || '',
-        agencyId: '',
-        assignedSiteId: '',
-        status: 'active',
-        source: 'auto_created',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-      const newRef = await addDoc(collection(db, 'employees'), newPayload);
-      await updateDoc(newRef, { employeeId: newRef.id });
-
-      emp = { id: newRef.id, employeeId: newRef.id, ...newPayload };
-      state.workerEmployee = emp;
-
-      // Update local cache
-      state.publicEmployees.push(emp);
-
-      if (els.workerLookupStatus) {
-        els.workerLookupStatus.textContent = `✓ Created: ${emp.name} (${empNumber}). Punching…`;
-        els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+      const identityHash = await hashIdentityKey(employeeScopeKey(emp));
+      const empNumber = `AUTO-${identityHash.slice(0, 8).toUpperCase()}`;
+      const newRef = doc(db, 'employees', `auto_${identityHash.slice(0, 24)}`);
+      const existingSnap = await getDoc(newRef);
+      if (existingSnap.exists()) {
+        emp = { id: existingSnap.id, ...existingSnap.data() };
+        state.workerEmployee = emp;
+      } else {
+        const newPayload = {
+          name: emp.name,
+          nameKey: normalizeName(emp.name),
+          employeeNumber: empNumber,
+          companyId: urlCompanyId || '',
+          agencyId: '',
+          assignedSiteId: '',
+          status: 'active',
+          source: 'auto_created',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+        await setDoc(newRef, { ...newPayload, employeeId: newRef.id });
+        emp = { id: newRef.id, employeeId: newRef.id, ...newPayload };
+        state.workerEmployee = emp;
+        state.publicEmployees = collapseDuplicateEmployees([...state.publicEmployees, emp]);
+        if (els.workerLookupStatus) {
+          els.workerLookupStatus.textContent = `Found: ${emp.name}. Punching...`;
+          els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+        }
       }
     } catch (error) {
-      console.warn('Auto-create employee skipped (rules may not be deployed yet):', error.message);
-      // Still allow the punch — employee record will be created by manager or once rules are deployed
-      emp = { name: emp.name, nameKey: normalizeName(emp.name), employeeId: '', employeeNumber: '' };
+      console.warn('Auto-create employee skipped:', error.message);
+      const identityHash = await hashIdentityKey(employeeScopeKey(emp));
+      const existingSnap = await getDoc(doc(db, 'employees', `auto_${identityHash.slice(0, 24)}`));
+      emp = existingSnap.exists()
+        ? { id: existingSnap.id, ...existingSnap.data() }
+        : { name: emp.name, nameKey: normalizeName(emp.name), employeeId: '', employeeNumber: '' };
       state.workerEmployee = emp;
     }
   }
@@ -679,6 +786,12 @@ function namesAreSimilar(left, right) {
 
 async function hashWorkerPin(pin, employeeId) {
   const bytes = new TextEncoder().encode(`${employeeId}:${String(pin).trim()}`);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function hashIdentityKey(value) {
+  const bytes = new TextEncoder().encode(String(value || ''));
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
@@ -2001,6 +2114,7 @@ function attachEmployeesView() {
     onSnapshot(empQuery, (snap) => {
       state.allEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       renderEmployeeList(state.allEmployees);
+      if (isAdmin()) renderDuplicateWorkers(false);
     }, (error) => {
       console.error(error);
       toast(error.message || 'Could not load employees.', true);
@@ -2012,15 +2126,20 @@ function renderEmployeeList(employees) {
   if (!els.employeeListBody || !els.inactiveWorkerListBody) return;
 
   const filter = String(els.empFilterInput?.value || '').trim().toLowerCase();
+  const statusFilter = state.employeeStatusFilter || 'active';
   const filtered = employees.filter((e) => {
+    const employeeStatus = String(e.status || 'active').toLowerCase();
+    if (statusFilter !== 'all' && employeeStatus !== statusFilter) return false;
     if (!filter) return true;
     return (
       String(e.name || '').toLowerCase().includes(filter) ||
       String(e.employeeNumber || '').toLowerCase().includes(filter)
     );
   });
-  const activeEmployees = filtered.filter(isActiveEmployee);
-  const inactiveEmployees = filtered.filter((employee) => !isActiveEmployee(employee));
+  const rosterEmployees = statusFilter === 'active'
+    ? collapseDuplicateEmployees(filtered)
+    : filtered;
+  const inactiveEmployees = employees.filter((employee) => !isActiveEmployee(employee));
 
   els.inactiveWorkerListBody.innerHTML = inactiveEmployees.length
     ? inactiveEmployees.map((employee) => `
@@ -2031,7 +2150,9 @@ function renderEmployeeList(employees) {
         <td>${escapeHtml(formatRemovedAt(employee))}</td>
         <td>${escapeHtml(employee.removedBy || '-')}</td>
         <td>${escapeHtml(employee.removalReason || '-')}</td>
-        <td><button class="primary-btn emp-reactivate-btn" data-id="${employee.id}" type="button">Reactivate</button></td>
+        <td>${String(employee.status).toLowerCase() === 'merged'
+          ? `Merged into ${escapeHtml(employee.mergedInto || '-')}`
+          : `<button class="primary-btn emp-reactivate-btn" data-id="${employee.id}" type="button">Reactivate</button>`}</td>
       </tr>
     `).join('')
     : '<tr><td colspan="7">No removed or inactive workers.</td></tr>';
@@ -2040,12 +2161,12 @@ function renderEmployeeList(employees) {
     button.addEventListener('click', () => reactivateEmployee(button.dataset.id));
   });
 
-  if (!activeEmployees.length) {
+  if (!rosterEmployees.length) {
     els.employeeListBody.innerHTML = '<tr><td colspan="6">No employees found.</td></tr>';
     return;
   }
 
-  els.employeeListBody.innerHTML = activeEmployees.map((emp) => `
+  els.employeeListBody.innerHTML = rosterEmployees.map((emp) => `
     <tr>
       <td>${escapeHtml(emp.employeeNumber || '-')}</td>
       <td>${escapeHtml(emp.name || '-')}</td>
@@ -2064,7 +2185,7 @@ function renderEmployeeList(employees) {
 }
 
 function isActiveEmployee(employee) {
-  return !['inactive', 'terminated', 'removed'].includes(String(employee?.status || 'active').toLowerCase());
+  return !['inactive', 'terminated', 'removed', 'merged'].includes(String(employee?.status || 'active').toLowerCase());
 }
 
 function formatRemovedAt(employee) {
@@ -2116,19 +2237,29 @@ async function handleSaveEmployee(event) {
   const existingId = els.employeeDocId?.value || '';
   const existingEmployee = state.allEmployees.find((employee) => employee.id === existingId);
 
-  if (!existingId) {
-    const similarActive = state.allEmployees.filter(
-      (employee) => isActiveEmployee(employee) && namesAreSimilar(employee.name, name)
-    );
-    if (similarActive.length) {
-      toast('A similar active employee already exists. Edit that record instead.', true);
-      return;
-    }
-  }
-
   // Auto-generate employee number if blank
   if (!employeeNumber) {
     employeeNumber = await generateNextEmployeeNumber();
+  }
+
+  if (!existingId) {
+    const reusable = findReusableEmployee({
+      name,
+      employeeNumber,
+      agencyId,
+      assignedSiteId,
+    }, state.allEmployees);
+    if (reusable) {
+      await logAudit('duplicate_detected', 'employee', reusable.id, {}, {
+        attemptedName: name,
+        attemptedEmployeeNumber: employeeNumber,
+        agencyId,
+        assignedSiteId,
+      });
+      loadEmployeeForEdit(reusable.id);
+      toast(`Existing worker reused: ${reusable.name}.`);
+      return;
+    }
   }
 
   const payload = {
@@ -2169,7 +2300,10 @@ async function handleSaveEmployee(event) {
         payload.pinUpdatedAt = serverTimestamp();
       }
       await updateDoc(doc(db, 'employees', existingId), payload);
-      await logAudit('employee_updated', 'employee', existingId, existingEmployee || {}, payload);
+      const auditAction = existingEmployee?.status !== status
+        ? 'worker_status_changed'
+        : 'employee_updated';
+      await logAudit(auditAction, 'employee', existingId, existingEmployee || {}, payload);
       toast('Employee updated.');
     } else {
       // Create new employee
@@ -2207,11 +2341,242 @@ async function reactivateEmployee(employeeId) {
   };
   try {
     await updateDoc(doc(db, 'employees', employeeId), payload);
-    await logAudit('employee_reactivated', 'employee', employeeId, employee, payload);
+    await logAudit('worker_reactivated', 'employee', employeeId, employee, payload);
     toast('Employee reactivated.');
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not reactivate employee.', true);
+  }
+}
+
+function buildDuplicateGroups(employees = state.allEmployees) {
+  const candidates = employees.filter(isActiveEmployee);
+  const buckets = new Map();
+  const employeesByName = new Map();
+
+  const addToBucket = (key, reason, employee) => {
+    if (!key) return;
+    if (!buckets.has(key)) buckets.set(key, { reason, employees: [] });
+    buckets.get(key).employees.push(employee);
+  };
+
+  candidates.forEach((employee) => {
+    const number = normalizeIdentityPart(employee.employeeNumber);
+    const name = normalizeIdentityPart(employee.name || employee.nameKey);
+    const agency = normalizeIdentityPart(employee.agencyId);
+    const site = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+    if (!employeesByName.has(name)) employeesByName.set(name, []);
+    employeesByName.get(name).push(employee);
+    if (number) {
+      addToBucket(
+        `number:${number}|${name}|${agency}|${site}`,
+        `Same employee number, normalized name, agency, and site (${employee.employeeNumber})`,
+        employee
+      );
+    }
+  });
+
+  employeesByName.forEach((nameEmployees, name) => {
+    const nonBlankScopes = new Set(
+      nameEmployees
+        .map((employee) => {
+          const agency = normalizeIdentityPart(employee.agencyId);
+          const site = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+          return { agency, site, key: `${agency}|${site}` };
+        })
+        .filter((scope) => scope.agency || scope.site)
+        .map((scope) => scope.key)
+    );
+
+    if (nonBlankScopes.size <= 1) {
+      nameEmployees.forEach((employee) => {
+        addToBucket(`name:${name}`, 'Same normalized name with one compatible agency/site', employee);
+      });
+      return;
+    }
+
+    nameEmployees.forEach((employee) => {
+      const agency = normalizeIdentityPart(employee.agencyId);
+      const site = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+      addToBucket(`scope:${name}|${agency}|${site}`, 'Same normalized name, agency, and site', employee);
+    });
+  });
+
+  const uniqueGroups = new Map();
+  [...buckets.values()]
+    .filter((group) => group.employees.length > 1)
+    .forEach((group) => {
+      const ids = [...new Set(group.employees.map((employee) => employee.id))].sort();
+      if (ids.length < 2) return;
+      const signature = ids.join('|');
+      if (!uniqueGroups.has(signature)) {
+        uniqueGroups.set(signature, {
+          reasons: [],
+          employees: ids
+            .map((id) => candidates.find((row) => row.id === id))
+            .sort(compareEmployeeRecords),
+        });
+      }
+      uniqueGroups.get(signature).reasons.push(group.reason);
+    });
+
+  return [...uniqueGroups.values()]
+    .map((group) => ({ ...group, reasons: [...new Set(group.reasons)] }))
+    .sort((left, right) => right.employees.length - left.employees.length);
+}
+
+function renderDuplicateWorkers(logDetection = false) {
+  if (!els.duplicateWorkersList || !isAdmin()) return;
+  state.duplicateGroups = buildDuplicateGroups();
+
+  if (!state.duplicateGroups.length) {
+    els.duplicateWorkersList.classList.add('empty-state');
+    els.duplicateWorkersList.innerHTML = 'No active duplicate groups detected.';
+    return;
+  }
+
+  els.duplicateWorkersList.classList.remove('empty-state');
+  els.duplicateWorkersList.innerHTML = state.duplicateGroups.map((group, groupIndex) => `
+    <article class="duplicate-group" data-group-index="${groupIndex}">
+      <div>
+        <strong>${escapeHtml(group.reasons.join(' / '))}</strong>
+        <span class="tiny">${group.employees.length} active records</span>
+      </div>
+      <div class="duplicate-options">
+        ${group.employees.map((employee, employeeIndex) => `
+          <label class="duplicate-option">
+            <input type="radio" name="duplicate-primary-${groupIndex}" value="${employee.id}" ${employeeIndex === 0 ? 'checked' : ''} />
+            <span>Primary: ${escapeHtml(employee.name || '-')} · ${escapeHtml(employee.employeeNumber || '-')} · ${escapeHtml(agencyLabel(employee.agencyId))} · ${escapeHtml(employee.assignedSiteId || '-')}</span>
+            <input class="duplicate-merge-check" type="checkbox" value="${employee.id}" ${employeeIndex === 0 ? '' : 'checked'} />
+            <span>Merge this record</span>
+          </label>
+        `).join('')}
+      </div>
+      <button class="danger-btn merge-workers-btn" data-group-index="${groupIndex}" type="button">Merge Selected Records</button>
+    </article>
+  `).join('');
+
+  els.duplicateWorkersList.querySelectorAll('input[type="radio"]').forEach((radio) => {
+    radio.addEventListener('change', () => syncDuplicatePrimary(Number(radio.closest('.duplicate-group').dataset.groupIndex)));
+  });
+  state.duplicateGroups.forEach((_, index) => syncDuplicatePrimary(index));
+  els.duplicateWorkersList.querySelectorAll('.merge-workers-btn').forEach((button) => {
+    button.addEventListener('click', () => mergeDuplicateGroup(Number(button.dataset.groupIndex)));
+  });
+
+  if (logDetection) {
+    state.duplicateGroups.forEach((group) => {
+      logAudit('duplicate_detected', 'employee_group', group.employees.map((employee) => employee.id).join(','), {}, {
+        reasons: group.reasons,
+        employeeIds: group.employees.map((employee) => employee.id),
+      });
+    });
+  }
+}
+
+function syncDuplicatePrimary(groupIndex) {
+  const container = els.duplicateWorkersList?.querySelector(`[data-group-index="${groupIndex}"]`);
+  if (!container) return;
+  const primaryId = container.querySelector('input[type="radio"]:checked')?.value || '';
+  container.querySelectorAll('.duplicate-merge-check').forEach((checkbox) => {
+    checkbox.disabled = checkbox.value === primaryId;
+    if (checkbox.disabled) checkbox.checked = false;
+  });
+}
+
+async function mergeDuplicateGroup(groupIndex) {
+  if (!isAdmin()) {
+    toast('Only admins can merge duplicate workers.', true);
+    return;
+  }
+  const container = els.duplicateWorkersList?.querySelector(`[data-group-index="${groupIndex}"]`);
+  const primaryId = container?.querySelector('input[type="radio"]:checked')?.value || '';
+  const duplicateIds = [...(container?.querySelectorAll('.duplicate-merge-check:checked') || [])]
+    .map((checkbox) => checkbox.value)
+    .filter((id) => id && id !== primaryId);
+  const primary = state.allEmployees.find((employee) => employee.id === primaryId);
+
+  if (!primary || !duplicateIds.length) {
+    toast('Choose a primary worker and at least one duplicate.', true);
+    return;
+  }
+  if (!confirm(`Merge ${duplicateIds.length} duplicate record(s) into ${primary.name}? No records will be deleted.`)) return;
+
+  try {
+    const totals = { punches: 0, missedPunchRequests: 0, timesheets: 0 };
+    for (const collectionName of Object.keys(totals)) {
+      totals[collectionName] = await reassignWorkerReferences(collectionName, duplicateIds, primary);
+      if (totals[collectionName]) {
+        await logAudit(
+          collectionName === 'punches' ? 'punch_reassigned' : `${collectionName}_reassigned`,
+          collectionName,
+          primary.id,
+          { duplicateWorkerIds: duplicateIds },
+          { primaryWorkerId: primary.id, count: totals[collectionName] }
+        );
+      }
+    }
+
+    const mergedAtMs = Date.now();
+    const actor = state.profile?.name || state.me?.email || 'Admin';
+    await commitDocumentUpdates(duplicateIds.map((duplicateId) => ({
+      ref: doc(db, 'employees', duplicateId),
+      data: {
+        status: 'merged',
+        mergedInto: primary.id,
+        mergedAt: serverTimestamp(),
+        mergedAtMs,
+        mergedBy: actor,
+        mergedById: state.me?.uid || '',
+        updatedAt: serverTimestamp(),
+      },
+    })));
+
+    await logAudit('worker_merged', 'employee', primary.id, {
+      duplicateWorkerIds: duplicateIds,
+    }, {
+      primaryWorkerId: primary.id,
+      totals,
+      mergedBy: actor,
+    });
+    toast(`Merged ${duplicateIds.length} worker record(s). No data was deleted.`);
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not complete the safe merge.', true);
+  }
+}
+
+async function reassignWorkerReferences(collectionName, duplicateIds, primary) {
+  const documents = new Map();
+  for (const duplicateId of duplicateIds) {
+    for (const fieldName of ['employeeId', 'workerId']) {
+      const snapshot = await getDocs(query(collection(db, collectionName), where(fieldName, '==', duplicateId)));
+      snapshot.docs.forEach((record) => documents.set(record.id, { id: record.id, ...record.data() }));
+    }
+  }
+
+  const updates = [...documents.values()].map((record) => {
+    const data = {
+      employeeId: primary.employeeId || primary.id,
+      employeeNumber: primary.employeeNumber || '',
+      name: primary.name || record.name || '',
+      nameKey: normalizeName(primary.name || record.name || ''),
+      updatedAt: serverTimestamp(),
+      mergedFromWorkerId: record.employeeId || record.workerId || '',
+    };
+    if (record.workerId !== undefined) data.workerId = primary.id;
+    if (record.workerName !== undefined) data.workerName = primary.name || '';
+    return { ref: doc(db, collectionName, record.id), data };
+  });
+  await commitDocumentUpdates(updates);
+  return updates.length;
+}
+
+async function commitDocumentUpdates(updates) {
+  for (let index = 0; index < updates.length; index += 400) {
+    const batch = writeBatch(db);
+    updates.slice(index, index + 400).forEach((update) => batch.update(update.ref, update.data));
+    await batch.commit();
   }
 }
 
