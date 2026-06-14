@@ -316,6 +316,31 @@ button {
   border: 1px solid rgba(255, 202, 87, 0.28);
 }
 
+.permission-debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.permission-debug-row {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.permission-debug-row span,
+.permission-debug-row strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.permission-debug-row span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-bottom: 5px;
+}
+
 .duplicate-group {
   display: grid;
   gap: 14px;
@@ -525,7 +550,8 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   .time-range-fields,
   .manager-time-controls,
   .time-range-summary,
-  .time-punch-grid {
+  .time-punch-grid,
+  .permission-debug-grid {
     grid-template-columns: 1fr !important;
   }
 

@@ -165,6 +165,7 @@ const els = {
   exportBackupBtn: document.getElementById('exportBackupBtn'),
   refreshDuplicatesBtn: document.getElementById('refreshDuplicatesBtn'),
   duplicateWorkersList: document.getElementById('duplicateWorkersList'),
+  permissionDebugPanel: document.getElementById('permissionDebugPanel'),
   managerTimeWorkerSelect: document.getElementById('managerTimeWorkerSelect'),
   managerTimeFromInput: document.getElementById('managerTimeFromInput'),
   managerTimeToInput: document.getElementById('managerTimeToInput'),
@@ -262,11 +263,14 @@ async function init() {
 
       showLoggedIn();
       attachRoleViews();
-      attachManagerLiveViews();
-      attachTimesheetView();
-      attachUsersViewIfAdmin();
-      populateAgencyWorkerSelect();
-      renderAgencyPreview();
+      renderPermissionDebug();
+      if (canEditPunches()) {
+        attachManagerLiveViews();
+        attachTimesheetView();
+        attachUsersViewIfAdmin();
+        populateAgencyWorkerSelect();
+        renderAgencyPreview();
+      }
     } catch (error) {
       console.error(error);
       toast(error.message || 'Sign-in setup failed.', true);
@@ -1344,8 +1348,8 @@ async function generateNextPublicEmployeeNumber() {
 async function handleManualPunchSubmit(event) {
   event.preventDefault();
 
-  if (!isManager()) {
-    toast('Only managers and admins can add manual punches.', true);
+  if (!canEditPunches()) {
+    toast('Your role does not allow manual punch corrections.', true);
     return;
   }
 
@@ -1388,7 +1392,7 @@ async function handleManualPunchSubmit(event) {
       createdAt: serverTimestamp(),
       createdBy: state.profile?.name || state.me?.email || 'Manager',
       companyId: state.companyId || '',
-      agencyId: '',
+      agencyId: state.agencyId || '',
       employeeId: '',
     });
 
@@ -1578,20 +1582,21 @@ function agencyLabel(agencyId) {
 
 function attachRoleViews() {
   const emp = isEmployee();
-  const mgr = isManager();
+  const canEdit = canEditPunches();
+  const canManage = canManageEmployees();
 
   // Employee-only tabs
   els.myTimecardTabBtn?.classList.toggle('hidden', !emp);
   els.missedPunchTabBtn?.classList.toggle('hidden', !emp);
 
-  // Manager/admin tabs
-  els.managerTabBtn?.classList.toggle('hidden', emp);
-  els.timesheetsTabBtn?.classList.toggle('hidden', emp);
-  els.editPunchesTabBtn?.classList.toggle('hidden', emp);
-  els.approvalsTabBtn?.classList.toggle('hidden', !mgr);
-  els.employeesTabBtn?.classList.toggle('hidden', !mgr);
+  // Punch editors and employee managers
+  els.managerTabBtn?.classList.toggle('hidden', !canEdit);
+  els.timesheetsTabBtn?.classList.toggle('hidden', !canEdit);
+  els.editPunchesTabBtn?.classList.toggle('hidden', !canEdit);
+  els.approvalsTabBtn?.classList.toggle('hidden', !canEdit);
+  els.employeesTabBtn?.classList.toggle('hidden', !canManage);
   els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
-  els.agencyTabBtn?.classList.toggle('hidden', emp);
+  els.agencyTabBtn?.classList.toggle('hidden', !canEdit);
 
   if (emp) {
     if (els.myTimecardWeekPicker) {
@@ -1601,16 +1606,23 @@ function attachRoleViews() {
     switchTab('myTimecardTab');
     attachMyTimecardView();
     attachMyMissedPunchView();
-  } else {
+  } else if (canEdit) {
     switchTab('managerTab');
-    if (mgr) {
+    if (canManage) {
       attachEmployeesView();
-      attachApprovalView();
     }
+    attachApprovalView();
+  } else {
+    document.querySelectorAll('.tab-panel').forEach((panel) => panel.classList.add('hidden'));
+    toast(`Role "${normalizedRole() || 'unknown'}" has no dashboard permissions.`, true);
   }
 }
 
 function switchTab(tabId) {
+  if (!canAccessTab(tabId)) {
+    toast('Your role does not have access to that section.', true);
+    return;
+  }
   document.querySelectorAll('.tab').forEach((tab) => {
     tab.classList.toggle('active', tab.dataset.tab === tabId);
   });
@@ -1618,6 +1630,16 @@ function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach((panel) => {
     panel.classList.toggle('hidden', panel.id !== tabId);
   });
+}
+
+function canAccessTab(tabId) {
+  if (['myTimecardTab', 'missedPunchTab'].includes(tabId)) return isEmployee();
+  if (['managerTab', 'timesheetsTab', 'editPunchesTab', 'approvalsTab', 'agencyTab'].includes(tabId)) {
+    return canEditPunches();
+  }
+  if (tabId === 'employeesTab') return canManageEmployees();
+  if (tabId === 'adminTab') return isAdmin();
+  return false;
 }
 
 function attachManagerLiveViews() {
@@ -1707,6 +1729,10 @@ function renderActiveNow(rows) {
 
 function renderEditPunchesTable(rows) {
   if (!els.editPunchesBody) return;
+  if (!canEditPunches()) {
+    els.editPunchesBody.innerHTML = '<tr><td colspan="8">Your role cannot edit punches.</td></tr>';
+    return;
+  }
 
   const filter = String(els.editFilterNameInput?.value || '').trim().toLowerCase();
   const filtered = rows.filter((row) => {
@@ -1737,7 +1763,9 @@ function renderEditPunchesTable(rows) {
         <td>${escapeHtml(editedAtText)}</td>
         <td>
           <button class="secondary-btn manager-edit-punch-btn" data-id="${row.id}" type="button">Edit</button>
-          <button class="danger-btn manager-delete-punch-btn" data-id="${row.id}" type="button">Delete</button>
+          ${canDeletePunches()
+            ? `<button class="danger-btn manager-delete-punch-btn" data-id="${row.id}" type="button">Delete</button>`
+            : ''}
         </td>
       </tr>
     `;
@@ -1753,8 +1781,8 @@ function renderEditPunchesTable(rows) {
 }
 
 async function editPunch(punchId) {
-  if (!isManager()) {
-    toast('Only managers and admins can edit punches.', true);
+  if (!canEditPunches()) {
+    toast('Your role does not allow punch editing.', true);
     return;
   }
 
@@ -1851,8 +1879,8 @@ async function editPunch(punchId) {
 }
 
 async function deletePunchRecord(punchId) {
-  if (!isManager()) {
-    toast('Only managers and admins can delete punches.', true);
+  if (!canDeletePunches()) {
+    toast('Your role does not allow punch deletion.', true);
     return;
   }
 
@@ -2158,7 +2186,7 @@ function buildWeekTotals(punches) {
 }
 
 function isEmployee() {
-  return state.profile?.role === 'employee';
+  return ['employee', 'worker'].includes(normalizedRole());
 }
 
 /* ───────────────────────────────────────────────────
@@ -2406,7 +2434,7 @@ function renderApprovalList(requests) {
 }
 
 async function approveRequest(requestId) {
-  if (!isManager()) { toast('Only managers can approve.', true); return; }
+  if (!canEditPunches()) { toast('Your role cannot approve punch requests.', true); return; }
 
   const req = state.allMissedRequests.find((r) => r.id === requestId);
   if (!req) { toast('Request not found.', true); return; }
@@ -2456,7 +2484,7 @@ async function approveRequest(requestId) {
 }
 
 async function denyRequest(requestId) {
-  if (!isManager()) { toast('Only managers can deny.', true); return; }
+  if (!canEditPunches()) { toast('Your role cannot deny punch requests.', true); return; }
 
   const reason = prompt('Denial reason (optional):') || '';
   const managerName = state.profile?.name || state.me?.email || 'Manager';
@@ -2732,8 +2760,8 @@ function cancelEmployeeEdit() {
 async function handleSaveEmployee(event) {
   event.preventDefault();
 
-  if (!isManager()) {
-    toast('Only managers and admins can manage employees.', true);
+  if (!canManageEmployees()) {
+    toast('Your role does not allow employee management.', true);
     return;
   }
 
@@ -3410,12 +3438,68 @@ function clearTimesheetListenerOnly() {
   }
 }
 
+const PUNCH_EDIT_ROLES = new Set([
+  'admin',
+  'manager',
+  'supervisor',
+  'super_admin',
+  'owner',
+  'agency_admin',
+]);
+
+const ADMIN_ROLES = new Set(['admin', 'super_admin', 'owner']);
+const PUNCH_DELETE_ROLES = new Set(['admin', 'manager', 'super_admin', 'owner']);
+
+function normalizeRole(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function normalizedRole() {
+  return normalizeRole(state.profile?.role);
+}
+
+function canEditPunches() {
+  return PUNCH_EDIT_ROLES.has(normalizedRole());
+}
+
+function canManageEmployees() {
+  return PUNCH_EDIT_ROLES.has(normalizedRole());
+}
+
+function canDeletePunches() {
+  return PUNCH_DELETE_ROLES.has(normalizedRole());
+}
+
 function isManager() {
-  return ['manager', 'admin'].includes(state.profile?.role);
+  return canEditPunches();
 }
 
 function isAdmin() {
-  return state.profile?.role === 'admin';
+  return ADMIN_ROLES.has(normalizedRole());
+}
+
+function renderPermissionDebug() {
+  if (!els.permissionDebugPanel) return;
+  els.permissionDebugPanel.classList.toggle('hidden', !isAdmin());
+  if (!isAdmin()) return;
+  const rows = [
+    ['UID', state.me?.uid || '-'],
+    ['Email', state.me?.email || state.profile?.email || '-'],
+    ['Role', normalizedRole() || '-'],
+    ['companyId', state.companyId || '(blank legacy scope)'],
+    ['agencyId', state.agencyId || '(none)'],
+    ['canEditPunches', String(canEditPunches())],
+    ['canManageEmployees', String(canManageEmployees())],
+  ];
+  els.permissionDebugPanel.innerHTML = rows.map(([label, value]) => `
+    <div class="permission-debug-row">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `).join('');
 }
 
 function prettyAction(action) {

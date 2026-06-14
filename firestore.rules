@@ -11,16 +11,28 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    function myRole() {
+      return signedIn() && myProfile().role is string
+        ? myProfile().role.lower()
+        : '';
+    }
+
     function isAdmin() {
-      return signedIn() && myProfile().role == 'admin';
+      return myRole().matches('^ *(admin|super[_ -]admin|owner) *$');
     }
 
     function isManager() {
-      return signedIn() && (myProfile().role == 'manager' || myProfile().role == 'admin');
+      return myRole().matches(
+        '^ *(admin|manager|supervisor|super[_ -]admin|owner|agency[_ -]admin) *$'
+      );
     }
 
     function isEmployee() {
-      return signedIn() && myProfile().role == 'employee';
+      return myRole().matches('^ *(employee|worker) *$');
+    }
+
+    function canDeletePunches() {
+      return myRole().matches('^ *(admin|manager|super[_ -]admin|owner) *$');
     }
 
     function myCompanyId() {
@@ -93,7 +105,10 @@ service cloud.firestore {
         get(/databases/$(database)/documents/employees/$(resource.data.mergedInto)).data.status == 'active';
 
       // Manager creates
-      allow create: if isManager() && request.resource.data.companyId == myCompanyId();
+      allow create: if isManager() && (
+        request.resource.data.companyId == myCompanyId() ||
+        request.resource.data.companyId == ''
+      );
 
       // Auto-create from public QR punch flow (unauthenticated)
       allow create: if
@@ -119,7 +134,8 @@ service cloud.firestore {
 
     // ─── punches ─────────────────────────────────────────
     match /punches/{punchId} {
-      // Public QR punch creation (unauthenticated) with validation
+      // Public QR punches remain unauthenticated; manual corrections require
+      // an approved editing role.
       allow create: if
         request.resource.data.name is string &&
         request.resource.data.name.size() >= 2 &&
@@ -130,7 +146,13 @@ service cloud.firestore {
         request.resource.data.dateKey is string &&
         request.resource.data.weekKey is string &&
         request.resource.data.timestampMs is number &&
-        request.resource.data.source in ['public_qr', 'manual_manager', 'missed_punch_approved'];
+        (
+          (!signedIn() && request.resource.data.source == 'public_qr') ||
+          (
+            isManager() &&
+            request.resource.data.source in ['manual_manager', 'missed_punch_approved']
+          )
+        );
 
       // Managers/admins read current and legacy punches.
       allow read: if isManager();
@@ -147,7 +169,7 @@ service cloud.firestore {
 
       // Managers/admins can update legacy punches. Delete remains company scoped.
       allow update: if isManager();
-      allow delete: if isManager() && sameCompany(resource.data);
+      allow delete: if canDeletePunches() && sameCompany(resource.data);
     }
 
     // ─── punch_edits (audit trail) ───────────────────────

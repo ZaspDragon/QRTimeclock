@@ -609,6 +609,14 @@
       </section>
 
       <section id="adminTab" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>Permission Debug</h2>
+            <p>Current normalized role and effective dashboard permissions.</p>
+          </div>
+          <div id="permissionDebugPanel" class="permission-debug-grid hidden"></div>
+        </div>
+
         <div class="panel-grid two-up">
           <article class="card">
             <div class="card-head">
@@ -634,6 +642,12 @@
                 <select id="userRoleInput">
                   <option value="manager">Manager</option>
                   <option value="admin">Admin</option>
+                  <option value="supervisor">Supervisor</option>
+                  <option value="super_admin">Super Admin</option>
+                  <option value="owner">Owner</option>
+                  <option value="agency_admin">Agency Admin</option>
+                  <option value="employee">Employee</option>
+                  <option value="worker">Worker</option>
                 </select>
               </label>
               <label>
