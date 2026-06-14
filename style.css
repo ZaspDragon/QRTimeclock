@@ -524,11 +524,6 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
 .autocomplete-list li.active {
   background: rgba(59, 130, 246, 0.25);
 }
-.autocomplete-list li .emp-num {
-  font-size: 0.8rem;
-  color: #8899aa;
-  margin-left: 8px;
-}
 .autocomplete-list li.new-worker {
   color: #3bd576;
   font-style: italic;

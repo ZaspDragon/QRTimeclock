@@ -388,7 +388,7 @@ function handleWorkerNameAutocomplete() {
     state.workerEmployee = exactMatch;
     updateWorkerPinField(exactMatch);
     if (els.workerLookupStatus) {
-      els.workerLookupStatus.textContent = `✓ Found: ${exactMatch.name} (${exactMatch.employeeNumber || 'new'}). Ready to punch.`;
+      els.workerLookupStatus.textContent = `✓ Found: ${exactMatch.name}. Ready to punch.`;
       els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
     }
     hideAutocomplete();
@@ -401,7 +401,7 @@ function handleWorkerNameAutocomplete() {
     state.workerEmployee = null;
     updateWorkerPinField(null);
     if (els.workerLookupStatus) {
-      els.workerLookupStatus.textContent = 'Multiple active workers have that name. Select the correct employee number.';
+      els.workerLookupStatus.textContent = 'More than one worker has that name. Select your name from the list.';
     }
     renderAutocomplete(exactMatches, typed, true);
     return;
@@ -428,7 +428,7 @@ function renderAutocomplete(matches, typed, selectionRequired = false) {
 
   matches.forEach((emp, i) => {
     html += `<li data-index="${i}" data-emp-id="${emp.id}">
-      ${escapeHTML(emp.name)}<span class="emp-num">${escapeHTML(emp.employeeNumber || '')}</span>
+      ${escapeHTML(emp.name)}
     </li>`;
   });
 
@@ -488,7 +488,7 @@ function selectAutocompleteEmployee(emp) {
   if (els.workerNameInput) els.workerNameInput.value = emp.name;
   if (els.workerNameValue) els.workerNameValue.textContent = emp.name;
   if (els.workerLookupStatus) {
-    els.workerLookupStatus.textContent = `✓ Found: ${emp.name} (${emp.employeeNumber || ''}). Ready to punch.`;
+    els.workerLookupStatus.textContent = `✓ Found: ${emp.name}. Ready to punch.`;
     els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
   }
   hideAutocomplete();
@@ -688,15 +688,27 @@ async function hashWorkerPin(pin, employeeId) {
 }
 
 function getWorkerCacheKey(employee) {
-  const identity = employee?.employeeId || employee?.id || normalizeName(employee?.name || '');
-  return `qrTimeclockWorkerPunches:${identity}`;
+  return `qrTimeclockWorkerPunches:name:${normalizeName(employee?.name || '')}`;
+}
+
+function getLegacyWorkerCacheKey(employee) {
+  const identity = employee?.employeeId || employee?.id || '';
+  return identity ? `qrTimeclockWorkerPunches:${identity}` : '';
 }
 
 function getCachedWorkerPunches(employee) {
   if (!employee?.name) return [];
   try {
-    const rows = JSON.parse(localStorage.getItem(getWorkerCacheKey(employee)) || '[]');
-    return Array.isArray(rows) ? rows : [];
+    const nameRows = JSON.parse(localStorage.getItem(getWorkerCacheKey(employee)) || '[]');
+    const legacyKey = getLegacyWorkerCacheKey(employee);
+    const legacyRows = legacyKey ? JSON.parse(localStorage.getItem(legacyKey) || '[]') : [];
+    const combined = [...(Array.isArray(legacyRows) ? legacyRows : []), ...(Array.isArray(nameRows) ? nameRows : [])];
+    const unique = new Map();
+    combined.forEach((row) => {
+      const key = `${row.timestampMs || 0}:${row.action || ''}:${row.nameKey || normalizeName(row.name || '')}`;
+      unique.set(key, row);
+    });
+    return [...unique.values()].sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
   } catch (_) {
     return [];
   }
@@ -727,7 +739,7 @@ function getSelectedWorkerByName() {
   }
   if (exactMatches.length > 1) {
     renderAutocomplete(exactMatches, typedName, true);
-    toast('Select the correct employee number first.', true);
+    toast('Select your name from the list first.', true);
   } else {
     toast('Select your existing worker name first.', true);
   }
