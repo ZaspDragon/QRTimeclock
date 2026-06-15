@@ -111,6 +111,11 @@ button {
   font-weight: 700;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .primary-btn {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   color: #07121e;
@@ -166,6 +171,116 @@ button {
   border-radius: 999px;
   font-size: 0.84rem;
   text-transform: capitalize;
+}
+
+.legal-consent {
+  display: flex;
+  grid-template-columns: none;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.legal-consent input {
+  width: auto;
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.legal-consent a,
+.login-legal-links a,
+.site-footer a,
+.legal-document a {
+  color: var(--accent-2);
+  font-weight: 700;
+}
+
+.login-legal-links {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.proprietary-notice {
+  border: 1px solid rgba(255, 202, 87, 0.42);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 202, 87, 0.1);
+  color: #ffe7a8;
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.site-footer {
+  width: min(1200px, calc(100% - 24px));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin: 0 auto;
+  padding: 20px 0 28px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.site-footer p {
+  margin: 0;
+}
+
+.site-footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.legal-page {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+}
+
+.legal-main {
+  width: min(900px, calc(100% - 24px));
+  flex: 1;
+  margin: 0 auto;
+  padding: 12px 0 24px;
+}
+
+.legal-document {
+  line-height: 1.7;
+}
+
+.legal-document h2 {
+  margin: 0;
+  font-size: clamp(1.8rem, 5vw, 2.5rem);
+}
+
+.legal-document h3 {
+  margin: 24px 0 7px;
+}
+
+.legal-document p {
+  margin: 0 0 12px;
+}
+
+.legal-updated {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 12px;
+  padding: 11px 14px;
+  color: var(--text);
+  font-weight: 700;
+  text-decoration: none;
 }
 
 .tabs {
@@ -691,6 +806,16 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   /* Missed punch form mobile */
   #missedPunchTab .grid-form {
     grid-template-columns: 1fr;
+  }
+
+  .site-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .legal-page .topbar {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 
