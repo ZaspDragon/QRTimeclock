@@ -187,3 +187,9 @@ For payroll-grade compliance, you may eventually want:
 - audit trail logs
 - stronger rules around edits after signoff
 - payroll export approval flow
+
+## Copyright
+
+Copyright 2026 Brandon Evanshine. All rights reserved.
+
+This repository and deployed software may not be copied, reused, distributed, sold, or modified without written permission. See [COPYRIGHT.md](COPYRIGHT.md).

@@ -101,6 +101,8 @@ const els = {
   loginForm: document.getElementById('loginForm'),
   emailInput: document.getElementById('emailInput'),
   passwordInput: document.getElementById('passwordInput'),
+  legalConsent: document.getElementById('legalConsent'),
+  loginSubmitBtn: document.getElementById('loginSubmitBtn'),
   resetPasswordBtn: document.getElementById('resetPasswordBtn'),
 
   livePunchBody: document.getElementById('livePunchBody'),
@@ -326,11 +328,14 @@ function wireEvents() {
   });
 
   els.loginForm?.addEventListener('submit', handleLogin);
+  els.legalConsent?.addEventListener('change', syncLoginConsent);
   els.resetPasswordBtn?.addEventListener('click', handlePasswordReset);
 
   els.signOutBtn?.addEventListener('click', async () => {
     await signOut(auth);
   });
+
+  syncLoginConsent();
 
   els.weekPicker?.addEventListener('change', () => {
     state.selectedWeekStart = new Date(`${els.weekPicker.value}T00:00:00`);
@@ -1699,6 +1704,11 @@ function findLatestClockInTime(rows) {
 async function handleLogin(event) {
   event.preventDefault();
 
+  if (!els.legalConsent?.checked) {
+    toast('You must agree to the Terms of Use and Privacy Policy.', true);
+    return;
+  }
+
   try {
     await signInWithEmailAndPassword(
       auth,
@@ -1706,9 +1716,17 @@ async function handleLogin(event) {
       els.passwordInput?.value
     );
     if (els.passwordInput) els.passwordInput.value = '';
+    if (els.legalConsent) els.legalConsent.checked = false;
+    syncLoginConsent();
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not sign in.', true);
+  }
+}
+
+function syncLoginConsent() {
+  if (els.loginSubmitBtn) {
+    els.loginSubmitBtn.disabled = !els.legalConsent?.checked;
   }
 }
 
