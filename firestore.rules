@@ -32,7 +32,7 @@ service cloud.firestore {
     }
 
     function canDeletePunches() {
-      return myRole().matches('^ *(admin|manager|super[_ -]admin|owner) *$');
+      return myRole().matches('^ *(admin|manager|supervisor|super[_ -]admin|owner) *$');
     }
 
     function myCompanyId() {
@@ -173,13 +173,17 @@ service cloud.firestore {
         isPublicTimeEmployee(resource.data.get('employeeId', '')) ||
         resource.data.get('employeeId', '') == '';
 
-      // Employees read only their own punches
+      // Employees read only their own punches.
       allow read: if isEmployee() &&
         resource.data.employeeId == myProfile().employeeId;
 
-      // Managers/admins can update legacy punches. Delete remains company scoped.
+      // Managers/supervisors/admins can fix punch times and retained legacy punches.
       allow update: if isManager();
-      allow delete: if canDeletePunches() && sameCompany(resource.data);
+
+      // Delete is intentionally role-gated, not company-gated, because older
+      // punches may have blank or missing companyId values. This changes access
+      // only; it does not delete any existing data by itself.
+      allow delete: if canDeletePunches();
     }
 
     // ─── punch_edits (audit trail) ───────────────────────
