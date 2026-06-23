@@ -2,9 +2,11 @@ import { firebaseConfig, appSettings } from './firebase-config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
 import {
   getAuth,
+  createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   onAuthStateChanged,
   signOut,
+  updateProfile,
   sendPasswordResetEmail
 } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js';
 import {
@@ -30,10 +32,19 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// Branch deployment config. Change CURRENT_SITE_ID to "OHC" when deploying an OHC-specific manager app.
+const CURRENT_COMPANY_ID = 'chadwell';
+const CURRENT_SITE_ID = 'OH01';
+const BRANCH_OPTIONS = [
+  { siteId: 'OH01', label: 'OH01' },
+  { siteId: 'OHC', label: 'OHC' },
+];
+
 const state = {
   me: null,
   profile: null,
-  companyId: null,        // from user profile
+  companyId: CURRENT_COMPANY_ID,
+  siteId: CURRENT_SITE_ID,
   agencyId: null,         // from user profile (null = direct company user)
   companyDoc: null,       // loaded from companies/{companyId}
   unsubscribers: [],
@@ -47,10 +58,12 @@ const state = {
   allEmployees: [],
   allMissedRequests: [],
   approvalFilter: 'pending',
+  creatingPendingProfile: false,
 };
 
 const els = {
   workerNameInput: document.getElementById('workerNameInput'),
+  workerBranchSelect: document.getElementById('workerBranchSelect'),
   workerAutocompleteList: document.getElementById('workerAutocompleteList'),
   workerLookupStatus: document.getElementById('workerLookupStatus'),
   workerNameValue: document.getElementById('workerNameValue'),
@@ -70,6 +83,12 @@ const els = {
   emailInput: document.getElementById('emailInput'),
   passwordInput: document.getElementById('passwordInput'),
   resetPasswordBtn: document.getElementById('resetPasswordBtn'),
+  signupForm: document.getElementById('signupForm'),
+  signupNameInput: document.getElementById('signupNameInput'),
+  signupEmailInput: document.getElementById('signupEmailInput'),
+  signupPasswordInput: document.getElementById('signupPasswordInput'),
+  signupRequestedRoleInput: document.getElementById('signupRequestedRoleInput'),
+  signupSiteInput: document.getElementById('signupSiteInput'),
 
   livePunchBody: document.getElementById('livePunchBody'),
   activeNowList: document.getElementById('activeNowList'),
@@ -96,7 +115,9 @@ const els = {
   userEmailInput: document.getElementById('userEmailInput'),
   userRoleInput: document.getElementById('userRoleInput'),
   userActiveInput: document.getElementById('userActiveInput'),
+  userSiteIdsInput: document.getElementById('userSiteIdsInput'),
   userListBody: document.getElementById('userListBody'),
+  pendingUserListBody: document.getElementById('pendingUserListBody'),
 
   myTimecardTabBtn: document.getElementById('myTimecardTabBtn'),
   missedPunchTabBtn: document.getElementById('missedPunchTabBtn'),
@@ -144,6 +165,7 @@ init();
 
 async function init() {
   wireEvents();
+  setupBranchSelectors();
 
   // Load employees for public QR autocomplete
   loadPublicEmployees();
@@ -182,17 +204,37 @@ async function init() {
     }
 
     try {
+      if (state.creatingPendingProfile) return;
       state.me = user;
       const profileSnap = await getDoc(doc(db, 'users', user.uid));
 
       if (!profileSnap.exists()) {
         await signOut(auth);
-        toast('No user profile found in Firestore. Add one in the users collection first.', true);
+        toast('No user profile found. Ask an admin to approve your account.', true);
         return;
       }
 
       state.profile = normalizeUserProfile(profileSnap.data(), user);
-      state.companyId = state.profile.companyId || null;
+      if (state.profile.active !== true) {
+        await signOut(auth);
+        toast('Your account is not active yet. Ask an admin to approve your account.', true);
+        return;
+      }
+
+      if (state.profile.companyId !== CURRENT_COMPANY_ID) {
+        await signOut(auth);
+        toast('You do not have access to this company.', true);
+        return;
+      }
+
+      if (!profileCanAccessSite(state.profile, CURRENT_SITE_ID)) {
+        await signOut(auth);
+        toast('You do not have access to this branch.', true);
+        return;
+      }
+
+      state.companyId = CURRENT_COMPANY_ID;
+      state.siteId = CURRENT_SITE_ID;
       state.agencyId = state.profile.agencyId || null;
 
       // Load company doc if companyId exists
@@ -210,6 +252,7 @@ async function init() {
       attachManagerLiveViews();
       attachTimesheetView();
       attachUsersViewIfAdmin();
+      attachPendingUsersViewIfAdmin();
       populateAgencyWorkerSelect();
       renderAgencyPreview();
     } catch (error) {
@@ -237,7 +280,18 @@ function wireEvents() {
   });
 
   els.loginForm?.addEventListener('submit', handleLogin);
+  els.signupForm?.addEventListener('submit', handleSignupRequest);
   els.resetPasswordBtn?.addEventListener('click', handlePasswordReset);
+
+  els.workerBranchSelect?.addEventListener('change', () => {
+    localStorage.setItem('workerPunchSiteId', getPublicSiteId());
+    state.workerEmployee = null;
+    loadPublicEmployees().then(() => {
+      handleWorkerNameAutocomplete();
+      const typed = prettifyHumanName(els.workerNameInput?.value.trim() || '');
+      if (typed) attachWorkerLiveView(typed);
+    });
+  });
 
   els.signOutBtn?.addEventListener('click', async () => {
     await signOut(auth);
@@ -292,13 +346,83 @@ function wireEvents() {
 }
 
 // ─── Public employee loading & autocomplete ─────────────
+function setupBranchSelectors() {
+  populateBranchSelect(els.workerBranchSelect, localStorage.getItem('workerPunchSiteId') || CURRENT_SITE_ID);
+  populateBranchSelect(els.signupSiteInput, CURRENT_SITE_ID);
+  populateBranchSelect(els.empSiteInput, CURRENT_SITE_ID);
+}
+
+function populateBranchSelect(selectEl, selectedSiteId = CURRENT_SITE_ID) {
+  if (!selectEl) return;
+  selectEl.innerHTML = BRANCH_OPTIONS
+    .map((branch) => `<option value="${branch.siteId}">${branch.label}</option>`)
+    .join('');
+  selectEl.value = BRANCH_OPTIONS.some((branch) => branch.siteId === selectedSiteId)
+    ? selectedSiteId
+    : CURRENT_SITE_ID;
+}
+
+function getPublicSiteId() {
+  const selected = String(els.workerBranchSelect?.value || CURRENT_SITE_ID).trim();
+  return BRANCH_OPTIONS.some((branch) => branch.siteId === selected) ? selected : CURRENT_SITE_ID;
+}
+
+function getCurrentCompanyId() {
+  return CURRENT_COMPANY_ID;
+}
+
+function getCurrentSiteId() {
+  return CURRENT_SITE_ID;
+}
+
+function getAllowedSiteIds(profile = state.profile) {
+  if (!profile) return [];
+  if (Array.isArray(profile.siteIds) && profile.siteIds.length) {
+    return profile.siteIds.map((siteId) => String(siteId || '').trim()).filter(Boolean);
+  }
+  const singleSiteId = String(profile.siteId || '').trim();
+  return singleSiteId ? [singleSiteId] : [];
+}
+
+function parseSiteIds(value, fallbackToCurrent = true) {
+  const raw = Array.isArray(value) ? value : String(value || '').split(',');
+  const allowed = new Set(BRANCH_OPTIONS.map((branch) => branch.siteId));
+  const sites = raw
+    .map((siteId) => String(siteId || '').trim())
+    .filter((siteId) => allowed.has(siteId));
+  if (!sites.length && !fallbackToCurrent) return [];
+  return [...new Set(sites.length ? sites : [CURRENT_SITE_ID])];
+}
+
+function profileCanAccessSite(profile, siteId) {
+  return String(profile?.companyId || '').trim() === CURRENT_COMPANY_ID
+    && getAllowedSiteIds(profile).includes(siteId);
+}
+
+function canUseSite(siteId) {
+  return profileCanAccessSite(state.profile, siteId);
+}
+
+function branchConstraints(siteId = getCurrentSiteId()) {
+  return [
+    where('companyId', '==', getCurrentCompanyId()),
+    where('siteId', '==', siteId),
+  ];
+}
+
+function branchPayload(siteId = getCurrentSiteId()) {
+  return {
+    companyId: getCurrentCompanyId(),
+    siteId,
+  };
+}
+
 async function loadPublicEmployees() {
-  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
   try {
-    // Simple query: filter by status only (no orderBy to avoid composite index requirement)
-    const constraints = [];
-    if (urlCompanyId) constraints.push(where('companyId', '==', urlCompanyId));
-    constraints.push(where('status', '==', 'active'));
+    const constraints = [
+      ...branchConstraints(getPublicSiteId()),
+      where('status', '==', 'active'),
+    ];
 
     const q = query(collection(db, 'employees'), ...constraints);
     const snap = await getDocs(q);
@@ -498,7 +622,7 @@ async function handleWorkerPunch(action) {
     return;
   }
 
-  const urlCompanyId = new URLSearchParams(window.location.search).get('company') || '';
+  const publicSiteId = getPublicSiteId();
 
   // Auto-create employee if new
   if (emp._isNew) {
@@ -507,9 +631,9 @@ async function handleWorkerPunch(action) {
       const scope = {
         employeeNumber: empNumber,
         nameKey: normalizeName(emp.name),
-        companyId: urlCompanyId || '',
+        companyId: getCurrentCompanyId(),
         agencyId: '',
-        siteId: ''
+        siteId: publicSiteId
       };
       const existingEmployee = await findExistingEmployeeForUpsert(scope);
       const employeeId = existingEmployee?.id || buildStableEmployeeId(empNumber, scope.agencyId, scope.siteId || scope.companyId);
@@ -521,7 +645,8 @@ async function handleWorkerPunch(action) {
         employeeNumberKey: normalizeWorkerNumber(existingEmployee?.employeeNumber || empNumber),
         companyId: scope.companyId,
         agencyId: '',
-        assignedSiteId: '',
+        assignedSiteId: publicSiteId,
+        siteId: publicSiteId,
         status: 'active',
         active: true,
         employeeId,
@@ -575,7 +700,8 @@ async function handleWorkerPunch(action) {
       createdAt: serverTimestamp(),
       employeeId: emp.employeeId || emp.id || '',
       employeeNumber: emp.employeeNumber || '',
-      companyId: emp.companyId || urlCompanyId || '',
+      companyId: getCurrentCompanyId(),
+      siteId: emp.siteId || publicSiteId,
       agencyId: emp.agencyId || '',
     });
 
@@ -654,7 +780,7 @@ async function handleManualPunchSubmit(event) {
       source: 'manual_manager',
       createdAt: serverTimestamp(),
       createdBy: state.profile?.name || state.me?.email || 'Manager',
-      companyId: state.companyId || '',
+      ...branchPayload(),
       agencyId: '',
       employeeId: '',
     });
@@ -670,7 +796,7 @@ async function handleManualPunchSubmit(event) {
       source: 'manual_manager',
       editedBy: state.profile?.name || state.me?.email || 'Manager',
       editedAt: serverTimestamp(),
-      companyId: state.companyId || '',
+      ...branchPayload(),
     });
 
     els.manualPunchForm?.reset();
@@ -678,6 +804,13 @@ async function handleManualPunchSubmit(event) {
     if (els.manualPunchTimeInput) els.manualPunchTimeInput.value = formatTimeForInput(Date.now());
 
     toast('Manual punch added.');
+    await logAudit('punch_manual_added', 'punch', nameKey, {}, {
+      name,
+      nameKey,
+      action,
+      timestampMs: parsedMs,
+      ...branchPayload(),
+    }, 'Manual manager punch');
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not add manual punch.', true);
@@ -697,6 +830,7 @@ function attachWorkerLiveView(name) {
 
   const q = query(
     collection(db, 'punches'),
+    ...branchConstraints(getPublicSiteId()),
     where('nameKey', '==', nameKey),
     where('dateKey', '==', todayKey),
     orderBy('timestampMs', 'desc'),
@@ -773,6 +907,61 @@ async function handleLogin(event) {
   }
 }
 
+async function handleSignupRequest(event) {
+  event.preventDefault();
+
+  const name = prettifyHumanName(els.signupNameInput?.value.trim());
+  const email = String(els.signupEmailInput?.value || '').trim().toLowerCase();
+  const password = els.signupPasswordInput?.value || '';
+  const requestedRole = els.signupRequestedRoleInput?.value || 'manager';
+  const siteId = els.signupSiteInput?.value || CURRENT_SITE_ID;
+
+  if (!name || !email || password.length < 6) {
+    toast('Enter a name, email, and password with at least 6 characters.', true);
+    return;
+  }
+
+  try {
+    state.creatingPendingProfile = true;
+    const credential = await createUserWithEmailAndPassword(auth, email, password);
+    if (name) {
+      await updateProfile(credential.user, { displayName: name });
+    }
+
+    await setDoc(doc(db, 'users', credential.user.uid), {
+      uid: credential.user.uid,
+      active: false,
+      approvalStatus: 'pending',
+      requestedRole,
+      role: 'worker',
+      companyId: getCurrentCompanyId(),
+      siteId,
+      siteIds: [siteId],
+      email,
+      name,
+      displayName: name,
+      permissions: {
+        canEditPunches: false,
+        canDeletePunches: false,
+        canMergeWorkers: false,
+        manageUsers: false,
+      },
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    await signOut(auth);
+    els.signupForm?.reset();
+    populateBranchSelect(els.signupSiteInput, CURRENT_SITE_ID);
+    toast('Account request submitted. Ask an admin to approve your account.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not request account access.', true);
+  } finally {
+    state.creatingPendingProfile = false;
+  }
+}
+
 async function handlePasswordReset() {
   const email = els.emailInput?.value.trim();
   if (!email) {
@@ -790,7 +979,8 @@ async function handlePasswordReset() {
 }
 
 function showLoggedOut() {
-  state.companyId = null;
+  state.companyId = CURRENT_COMPANY_ID;
+  state.siteId = CURRENT_SITE_ID;
   state.agencyId = null;
   state.companyDoc = null;
   els.authCard?.classList.remove('hidden');
@@ -814,6 +1004,7 @@ function showLoggedIn() {
   if (els.sessionName) els.sessionName.textContent = state.profile?.name || state.me?.email || 'Signed in';
   if (els.sessionRole) {
     const roleParts = [state.profile?.role || 'manager'];
+    roleParts.push(CURRENT_SITE_ID);
     if (state.agencyId) roleParts.push('agency');
     els.sessionRole.textContent = roleParts.join(' · ');
   }
@@ -888,8 +1079,7 @@ function switchTab(tabId) {
 }
 
 function attachManagerLiveViews() {
-  const constraints = [];
-  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  const constraints = [...branchConstraints()];
   if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
   constraints.push(orderBy('timestampMs', 'desc'));
   constraints.push(limit(250));
@@ -1106,10 +1296,12 @@ async function editPunch(punchId) {
         source: row.source || ''
       },
       editedBy: state.profile?.name || state.me?.email || 'Manager',
-      editedAt: serverTimestamp()
+      editedAt: serverTimestamp(),
+      ...branchPayload()
     });
 
-    await updateDoc(doc(db, 'punches', punchId), updatedPayload);
+    await updateDoc(doc(db, 'punches', punchId), { ...updatedPayload, ...branchPayload(row.siteId || CURRENT_SITE_ID) });
+    await logAudit('punch_edited', 'punch', punchId, row || {}, updatedPayload, 'Punch edited from manager dashboard');
 
     toast('Punch updated.');
   } catch (error) {
@@ -1134,7 +1326,8 @@ async function deletePunchRecord(punchId) {
       type: 'delete',
       original: row || null,
       editedBy: state.profile?.name || state.me?.email || 'Manager',
-      editedAt: serverTimestamp()
+      editedAt: serverTimestamp(),
+      ...branchPayload(row?.siteId || CURRENT_SITE_ID)
     });
 
     const deletePayload = {
@@ -1157,15 +1350,19 @@ async function deletePunchRecord(punchId) {
 function attachTimesheetView() {
   const weekKey = formatDateKey(state.selectedWeekStart);
 
-  const punchConstraints = [where('weekKey', '==', weekKey)];
-  if (state.companyId) punchConstraints.push(where('companyId', '==', state.companyId));
+  const punchConstraints = [
+    ...branchConstraints(),
+    where('weekKey', '==', weekKey),
+  ];
   if (isAgencyUser()) punchConstraints.push(where('agencyId', '==', state.agencyId));
   punchConstraints.push(orderBy('timestampMs', 'asc'));
 
   const punchesQuery = query(collection(db, 'punches'), ...punchConstraints);
 
-  const tsConstraints = [where('weekKey', '==', weekKey)];
-  if (state.companyId) tsConstraints.push(where('companyId', '==', state.companyId));
+  const tsConstraints = [
+    ...branchConstraints(),
+    where('weekKey', '==', weekKey),
+  ];
   if (isAgencyUser()) tsConstraints.push(where('agencyId', '==', state.agencyId));
 
   const timesheetsQuery = query(collection(db, 'timesheets'), ...tsConstraints);
@@ -1272,9 +1469,9 @@ function getDerivedTimesheetRows() {
       name: displayName,
       nameKey,
       weekKey,
-      companyId: personPunches[0]?.companyId || state.companyId || '',
+      companyId: personPunches[0]?.companyId || getCurrentCompanyId(),
       agencyId: personPunches[0]?.agencyId || state.agencyId || '',
-      siteId: personPunches[0]?.siteId || personPunches[0]?.assignedSiteId || '',
+      siteId: personPunches[0]?.siteId || personPunches[0]?.assignedSiteId || getCurrentSiteId(),
       weeklyHours: totals.weeklyHours,
       daysWorked: totals.daysWorked,
       dailyTotals: totals.dailyTotals,
@@ -1304,9 +1501,9 @@ async function signTimesheet(timesheetId) {
       name: row.name,
       nameKey: row.nameKey,
       weekKey: row.weekKey,
-      companyId: row.companyId || state.companyId || '',
+      companyId: row.companyId || getCurrentCompanyId(),
       agencyId: row.agencyId || state.agencyId || '',
-      siteId: row.siteId || '',
+      siteId: row.siteId || getCurrentSiteId(),
       dailyTotals: row.dailyTotals,
       weeklyHours: row.weeklyHours,
       daysWorked: row.daysWorked,
@@ -1339,9 +1536,9 @@ async function reopenTimesheet(timesheetId) {
       name: row.name,
       nameKey: row.nameKey,
       weekKey: row.weekKey,
-      companyId: row.companyId || state.companyId || '',
+      companyId: row.companyId || getCurrentCompanyId(),
       agencyId: row.agencyId || state.agencyId || '',
-      siteId: row.siteId || '',
+      siteId: row.siteId || getCurrentSiteId(),
       dailyTotals: row.dailyTotals,
       weeklyHours: row.weeklyHours,
       daysWorked: row.daysWorked,
@@ -1474,7 +1671,7 @@ function attachMyTimecardView() {
   } else {
     constraints.push(where('nameKey', '==', nameKey));
   }
-  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  constraints.push(...branchConstraints());
   constraints.push(orderBy('timestampMs', 'asc'));
 
   const q = query(collection(db, 'punches'), ...constraints);
@@ -1562,7 +1759,7 @@ async function handleMissedPunchSubmit(event) {
     await addDoc(collection(db, 'missedPunchRequests'), {
       uid: state.me.uid,
       employeeId: state.profile.employeeId || '',
-      companyId: state.companyId || '',
+      ...branchPayload(),
       agencyId: state.agencyId || '',
       name: state.profile.name || '',
       requestedAction: action,
@@ -1591,8 +1788,10 @@ async function handleMissedPunchSubmit(event) {
 function attachMyMissedPunchView() {
   if (!state.me) return;
 
-  const constraints = [where('uid', '==', state.me.uid)];
-  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  const constraints = [
+    ...branchConstraints(),
+    where('uid', '==', state.me.uid),
+  ];
 
   const q = query(collection(db, 'missedPunchRequests'), ...constraints);
 
@@ -1636,8 +1835,7 @@ function renderMyMissedPunches(rows) {
    ─────────────────────────────────────────────────── */
 
 function attachApprovalView() {
-  const constraints = [];
-  if (state.companyId) constraints.push(where('companyId', '==', state.companyId));
+  const constraints = [...branchConstraints()];
   if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
 
   const q = query(collection(db, 'missedPunchRequests'), ...constraints);
@@ -1715,6 +1913,10 @@ async function approveRequest(requestId) {
       approvedAt: now,
       updatedAt: serverTimestamp(),
     });
+    await logAudit('missed_punch_approved', 'missedPunchRequest', requestId, req, {
+      status: 'approved',
+      reviewedBy: managerName,
+    }, 'Missed punch request approved');
 
     // 2. Auto-create the actual punch
     const punchDate = new Date(req.requestedTimestampMs);
@@ -1734,7 +1936,8 @@ async function approveRequest(requestId) {
       createdBy: managerName,
       approvedBy: managerName,
       approvedAt: now,
-      companyId: req.companyId || '',
+      companyId: req.companyId || getCurrentCompanyId(),
+      siteId: req.siteId || getCurrentSiteId(),
       agencyId: req.agencyId || '',
       employeeId: req.employeeId || '',
     });
@@ -1749,6 +1952,9 @@ async function approveRequest(requestId) {
 async function denyRequest(requestId) {
   if (!isManager()) { toast('Only managers can deny.', true); return; }
 
+  const req = state.allMissedRequests.find((r) => r.id === requestId);
+  if (!req) { toast('Request not found.', true); return; }
+
   const reason = prompt('Denial reason (optional):') || '';
   const managerName = state.profile?.name || state.me?.email || 'Manager';
 
@@ -1760,6 +1966,11 @@ async function denyRequest(requestId) {
       editReason: reason,
       updatedAt: serverTimestamp(),
     });
+    await logAudit('missed_punch_denied', 'missedPunchRequest', requestId, req, {
+      status: 'denied',
+      reviewedBy: managerName,
+      reason,
+    }, 'Missed punch request denied');
 
     toast('Request denied.');
   } catch (error) {
@@ -1773,8 +1984,7 @@ async function denyRequest(requestId) {
    ─────────────────────────────────────────────────── */
 
 function attachEmployeesView() {
-  const empConstraints = [];
-  if (state.companyId) empConstraints.push(where('companyId', '==', state.companyId));
+  const empConstraints = [...branchConstraints()];
   if (isAgencyUser()) empConstraints.push(where('agencyId', '==', state.agencyId));
   empConstraints.push(orderBy('name', 'asc'));
 
@@ -1813,7 +2023,7 @@ function renderEmployeeList(employees) {
       <td>${escapeHtml(emp.employeeNumber || '-')}</td>
       <td>${escapeHtml(emp.name || '-')}</td>
       <td>${escapeHtml(agencyLabel(emp.agencyId))}</td>
-      <td>${escapeHtml(emp.assignedSiteId || '-')}</td>
+      <td>${escapeHtml(emp.siteId || emp.assignedSiteId || '-')}</td>
       <td><span class="tiny-flag">${escapeHtml(emp.status || 'active')}</span></td>
       <td>
         <button class="secondary-btn emp-edit-btn" data-id="${emp.id}" type="button">Edit</button>
@@ -1834,7 +2044,7 @@ function loadEmployeeForEdit(empId) {
   if (els.empNameInput) els.empNameInput.value = emp.name || '';
   if (els.empNumberInput) els.empNumberInput.value = emp.employeeNumber || '';
   if (els.empAgencySelect) els.empAgencySelect.value = emp.agencyId || '';
-  if (els.empSiteInput) els.empSiteInput.value = emp.assignedSiteId || '';
+  if (els.empSiteInput) els.empSiteInput.value = emp.siteId || emp.assignedSiteId || CURRENT_SITE_ID;
   if (els.empStatusSelect) els.empStatusSelect.value = emp.status || 'active';
   els.empCancelEditBtn?.classList.remove('hidden');
 }
@@ -1863,7 +2073,12 @@ async function handleSaveEmployee(event) {
 
   let employeeNumber = els.empNumberInput?.value.trim();
   const agencyId = els.empAgencySelect?.value || '';
-  const assignedSiteId = els.empSiteInput?.value.trim() || '';
+  const requestedSiteId = String(els.empSiteInput?.value || CURRENT_SITE_ID).trim();
+  const assignedSiteId = canUseSite(requestedSiteId) ? requestedSiteId : CURRENT_SITE_ID;
+  if (requestedSiteId !== assignedSiteId) {
+    toast('You do not have access to assign that branch.', true);
+    return;
+  }
   const status = els.empStatusSelect?.value || 'active';
   const existingId = els.employeeDocId?.value || '';
 
@@ -1878,7 +2093,7 @@ async function handleSaveEmployee(event) {
     normalizedName: nameKey,
     employeeNumber,
     employeeNumberKey: normalizeWorkerNumber(employeeNumber),
-    companyId: state.companyId || '',
+    companyId: getCurrentCompanyId(),
     agencyId,
     assignedSiteId,
     siteId: assignedSiteId,
@@ -1897,11 +2112,11 @@ async function handleSaveEmployee(event) {
       const reusableEmployee = await findExistingEmployeeForUpsert({
         employeeNumber,
         nameKey,
-        companyId: state.companyId || '',
+        companyId: getCurrentCompanyId(),
         agencyId,
         siteId: assignedSiteId
       });
-      const employeeId = reusableEmployee?.id || buildStableEmployeeId(employeeNumber, agencyId, assignedSiteId || state.companyId || '');
+      const employeeId = reusableEmployee?.id || buildStableEmployeeId(employeeNumber, agencyId, assignedSiteId || getCurrentCompanyId());
       payload.employeeId = employeeId;
       if (!reusableEmployee) {
         payload.createdAt = serverTimestamp();
@@ -1937,9 +2152,123 @@ function attachUsersViewIfAdmin() {
   attachUsersView();
 }
 
+function attachPendingUsersViewIfAdmin() {
+  if (!canManageUsers() || !els.pendingUserListBody) return;
+
+  const pendingQuery = query(
+    collection(db, 'users'),
+    where('companyId', '==', getCurrentCompanyId()),
+    where('siteIds', 'array-contains', getCurrentSiteId()),
+    where('approvalStatus', '==', 'pending')
+  );
+
+  state.unsubscribers.push(
+    onSnapshot(pendingQuery, (snap) => {
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderPendingUsers(rows);
+    }, (error) => {
+      console.error(error);
+      toast(error.message || 'Could not load pending users.', true);
+    })
+  );
+}
+
+function renderPendingUsers(rows) {
+  if (!els.pendingUserListBody) return;
+
+  if (!rows.length) {
+    els.pendingUserListBody.innerHTML = '<tr><td colspan="6">No pending users.</td></tr>';
+    return;
+  }
+
+  els.pendingUserListBody.innerHTML = rows.map((row) => `
+    <tr>
+      <td>${escapeHtml(row.name || row.displayName || '-')}</td>
+      <td>${escapeHtml(row.email || '-')}</td>
+      <td>${escapeHtml(row.requestedRole || '-')}</td>
+      <td>${escapeHtml(row.companyId || '-')}</td>
+      <td>${escapeHtml(getAllowedSiteIds(row).join(', ') || '-')}</td>
+      <td>
+        <button class="primary-btn approve-user-btn" data-id="${row.id}" type="button">Approve</button>
+        <button class="danger-btn deny-user-btn" data-id="${row.id}" type="button">Deny</button>
+      </td>
+    </tr>
+  `).join('');
+
+  els.pendingUserListBody.querySelectorAll('.approve-user-btn').forEach((btn) => {
+    btn.addEventListener('click', () => approvePendingUser(btn.dataset.id, rows));
+  });
+
+  els.pendingUserListBody.querySelectorAll('.deny-user-btn').forEach((btn) => {
+    btn.addEventListener('click', () => denyPendingUser(btn.dataset.id, rows));
+  });
+}
+
+async function approvePendingUser(uid, rows) {
+  if (!canManageUsers()) {
+    toast('You do not have permission to approve users.', true);
+    return;
+  }
+
+  const row = rows.find((item) => item.id === uid);
+  if (!row) return;
+
+  const requestedRole = row.requestedRole || 'manager';
+  const role = prompt('Approve role (manager, admin, worker):', requestedRole) || requestedRole;
+  if (!['manager', 'admin', 'worker'].includes(role)) {
+    toast('Invalid role.', true);
+    return;
+  }
+
+  const siteIds = parseSiteIds(prompt('Allowed siteIds, comma-separated:', getAllowedSiteIds(row).join(', ') || CURRENT_SITE_ID));
+  const fullAccess = isOwnerOrSuperAdminRole(role);
+  const payload = {
+    active: true,
+    approvalStatus: 'approved',
+    role,
+    companyId: getCurrentCompanyId(),
+    siteId: siteIds[0],
+    siteIds,
+    permissions: {
+      canEditPunches: fullAccess || row.permissions?.canEditPunches === true,
+      canDeletePunches: fullAccess || row.permissions?.canDeletePunches === true,
+      canMergeWorkers: fullAccess || row.permissions?.canMergeWorkers === true,
+      manageUsers: fullAccess || row.permissions?.manageUsers === true,
+    },
+    approvedBy: state.me.uid,
+    approvedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  await setDoc(doc(db, 'users', uid), payload, { merge: true });
+  await logAudit('user_approved', 'user', uid, row, payload, 'Pending user approved');
+  toast('User approved.');
+}
+
+async function denyPendingUser(uid, rows) {
+  if (!canManageUsers()) {
+    toast('You do not have permission to deny users.', true);
+    return;
+  }
+
+  const row = rows.find((item) => item.id === uid);
+  const payload = {
+    active: false,
+    approvalStatus: 'denied',
+    deniedBy: state.me.uid,
+    deniedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  await setDoc(doc(db, 'users', uid), payload, { merge: true });
+  await logAudit('user_denied', 'user', uid, row || {}, payload, 'Pending user denied');
+  toast('User denied/deactivated.');
+}
+
 function attachUsersView() {
-  const userConstraints = [];
-  if (state.companyId) userConstraints.push(where('companyId', '==', state.companyId));
+  const userConstraints = [
+    where('companyId', '==', getCurrentCompanyId()),
+    where('siteIds', 'array-contains', getCurrentSiteId()),
+  ];
   userConstraints.push(orderBy('name', 'asc'));
 
   const usersQuery = query(collection(db, 'users'), ...userConstraints);
@@ -1960,7 +2289,7 @@ function attachUsersView() {
             <tr>
               <td>${escapeHtml(row.name || '-')}</td>
               <td>${escapeHtml(row.email || '-')}</td>
-              <td>${escapeHtml(row.role || '-')}</td>
+              <td>${escapeHtml(row.role || '-')}<br><span class="tiny">${escapeHtml(getAllowedSiteIds(row).join(', ') || '-')}</span></td>
               <td>${row.active ? 'Yes' : 'No'}</td>
             </tr>
           `)
@@ -1985,6 +2314,7 @@ async function handleSaveProfile(event) {
     const role = els.userRoleInput?.value || existingProfile.role || 'manager';
     const fullAccess = isOwnerOrSuperAdminRole(role);
     const displayName = prettifyHumanName(els.userNameInput?.value.trim()) || existingProfile.displayName || existingProfile.name || '';
+    const requestedSiteIds = parseSiteIds(els.userSiteIdsInput?.value || existingProfile.siteIds || existingProfile.siteId || CURRENT_SITE_ID);
     const profilePayload = {
       uid,
       name: displayName,
@@ -1993,7 +2323,10 @@ async function handleSaveProfile(event) {
       role,
       active: els.userActiveInput?.value === 'true',
       agencyId: existingProfile.agencyId || state.agencyId || '',
-      siteId: existingProfile.siteId || '',
+      companyId: getCurrentCompanyId(),
+      siteId: requestedSiteIds[0] || CURRENT_SITE_ID,
+      siteIds: requestedSiteIds,
+      approvalStatus: els.userActiveInput?.value === 'true' ? 'approved' : (existingProfile.approvalStatus || 'pending'),
       permissions: {
         canEditPunches: fullAccess || existingProfile.permissions?.canEditPunches === true,
         canDeletePunches: fullAccess || existingProfile.permissions?.canDeletePunches === true,
@@ -2005,8 +2338,6 @@ async function handleSaveProfile(event) {
     if (!existingProfileSnap.exists()) {
       profilePayload.createdAt = serverTimestamp();
     }
-    // Auto-assign current user's companyId to new profiles
-    if (state.companyId) profilePayload.companyId = state.companyId;
 
     await setDoc(profileRef, profilePayload, { merge: true });
     const roleChanged = existingProfile.role && existingProfile.role !== profilePayload.role;
@@ -2197,6 +2528,7 @@ function clearTimesheetListenerOnly() {
     attachManagerLiveViews();
     attachTimesheetView();
     attachUsersViewIfAdmin();
+    attachPendingUsersViewIfAdmin();
   }
 }
 
@@ -2213,7 +2545,7 @@ function hasPermission(permissionName) {
 }
 
 function isOwnerOrSuperAdminRole(role) {
-  return ['owner', 'superAdmin', 'platformOwner'].includes(String(role || '').trim());
+  return ['owner', 'superAdmin'].includes(String(role || '').trim());
 }
 
 function isOwnerOrSuperAdmin() {
@@ -2221,11 +2553,11 @@ function isOwnerOrSuperAdmin() {
 }
 
 function isManager() {
-  return hasAnyRole(['owner', 'superAdmin', 'admin', 'manager', 'platformOwner']);
+  return hasAnyRole(['owner', 'superAdmin', 'admin', 'manager']);
 }
 
 function isAdmin() {
-  return hasAnyRole(['owner', 'superAdmin', 'admin', 'platformOwner']);
+  return hasAnyRole(['owner', 'superAdmin', 'admin']);
 }
 
 function canEditPunches() {
@@ -2343,8 +2675,10 @@ function normalizeUserProfile(profile = {}, authUser = null) {
     email: String(profile.email || authUser?.email || '').trim().toLowerCase(),
     role,
     active,
+    companyId: profile.companyId || '',
     agencyId: profile.agencyId || '',
     siteId: profile.siteId || profile.assignedSiteId || '',
+    siteIds: parseSiteIds(profile.siteIds || profile.siteId || profile.assignedSiteId || '', false),
     permissions: {
       canEditPunches: fullAccess || profile.permissions?.canEditPunches === true,
       canDeletePunches: fullAccess || profile.permissions?.canDeletePunches === true,
@@ -2414,7 +2748,7 @@ async function logAudit(action, entityType, entityId, oldValue = {}, newValue = 
   if (!state.me) return;
   try {
     await addDoc(collection(db, 'auditLogs'), {
-      companyId: state.companyId || '',
+      ...branchPayload(),
       agencyId: state.agencyId || '',
       userId: state.me.uid || '',
       actorId: state.me.uid || '',
@@ -2440,8 +2774,8 @@ async function loadPunchesForEmployee(employee) {
   const ids = [...new Set([employee?.id, employee?.employeeId, employee?.workerId].filter(Boolean))];
   const snapshots = [];
   for (const id of ids) {
-    snapshots.push(await getDocs(query(collection(db, 'punches'), where('employeeId', '==', id))));
-    snapshots.push(await getDocs(query(collection(db, 'punches'), where('workerId', '==', id))));
+    snapshots.push(await getDocs(query(collection(db, 'punches'), ...branchConstraints(), where('employeeId', '==', id))));
+    snapshots.push(await getDocs(query(collection(db, 'punches'), ...branchConstraints(), where('workerId', '==', id))));
   }
   const rows = new Map();
   snapshots.forEach((snap) => {
@@ -2552,12 +2886,13 @@ async function mergeDuplicateEmployees(primaryEmployeeId, duplicateEmployeeIds, 
 
   const mergeLogRef = doc(collection(db, 'mergeLogs'));
   batch.set(mergeLogRef, {
+    ...branchPayload(preview.site || getCurrentSiteId()),
     primaryWorkerId: preview.primary.id,
     duplicateWorkerIds: preview.duplicates.map((worker) => worker.id),
     punchCount: preview.punchCount,
     dateRange: preview.dateRange,
     agencyId: preview.agency,
-    siteId: preview.site,
+    siteId: preview.site || getCurrentSiteId(),
     employeeNumber: preview.employeeNumber,
     mergedBy: state.me.uid || '',
     mergedByName: state.profile?.name || state.me?.email || '',
