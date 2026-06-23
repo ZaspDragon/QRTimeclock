@@ -13,26 +13,52 @@ service cloud.firestore {
 
     function myRole() {
       return signedIn() && myProfile().role is string
-        ? myProfile().role.lower()
+        ? myProfile().role.lower().replace(' ', '_').replace('-', '_')
         : '';
     }
 
+    function myPermissions() {
+      return signedIn() && myProfile().permissions is map
+        ? myProfile().permissions
+        : {};
+    }
+
+    function hasPermission(permissionName) {
+      return myPermissions().get(permissionName, false) == true;
+    }
+
+    function isOwner() {
+      return myRole().matches('^ *(owner|super_admin|superadmin|super[_ -]admin) *$');
+    }
+
     function isAdmin() {
-      return myRole().matches('^ *(admin|super[_ -]admin|owner) *$');
+      return isOwner() || myRole().matches('^ *(admin|agency_admin|agency[_ -]admin) *$');
     }
 
     function isManager() {
-      return myRole().matches(
-        '^ *(admin|manager|supervisor|super[_ -]admin|owner|agency[_ -]admin) *$'
-      );
+      return isAdmin() || myRole().matches('^ *(manager|supervisor) *$');
     }
 
     function isEmployee() {
       return myRole().matches('^ *(employee|worker) *$');
     }
 
+    function canEditPunches() {
+      // Backward compatible: existing admin/manager docs without a permissions map
+      // can still fix punch times. New deployments may also set permissions.canEditPunches.
+      return isOwner() || isAdmin() || isManager() || hasPermission('canEditPunches');
+    }
+
     function canDeletePunches() {
-      return myRole().matches('^ *(admin|manager|supervisor|super[_ -]admin|owner) *$');
+      return isOwner() || hasPermission('canDeletePunches');
+    }
+
+    function canMergeWorkers() {
+      return isOwner() || hasPermission('canMergeWorkers');
+    }
+
+    function canManageUsers() {
+      return isOwner() || isAdmin() || hasPermission('manageUsers');
     }
 
     function myCompanyId() {
@@ -66,45 +92,59 @@ service cloud.firestore {
         );
     }
 
+    function isSafeMergedEmployeeUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'status',
+        'active',
+        'mergedInto',
+        'mergedAt',
+        'mergedAtMs',
+        'mergedBy',
+        'mergedById',
+        'updatedAt'
+      ]) &&
+      request.resource.data.status == 'merged' &&
+      request.resource.data.mergedInto is string;
+    }
+
     // ─── companies ───────────────────────────────────────
     match /companies/{companyId} {
       allow read: if signedIn() && myCompanyId() == companyId;
-      allow create, update, delete: if isAdmin() && myCompanyId() == companyId;
+      allow create, update, delete: if isOwner() && myCompanyId() == companyId;
     }
 
     // ─── agencies ────────────────────────────────────────
     match /agencies/{agencyId} {
       allow read: if signedIn();
-      allow create, update, delete: if isAdmin();
+      allow create, update, delete: if isOwner() || isAdmin();
     }
 
     // Optional multi-location settings. Public reads support QR site context;
     // location enforcement remains disabled by the app.
     match /sites/{siteId} {
       allow read: if true;
-      allow create, update: if isAdmin() &&
+      allow create, update: if (isOwner() || isAdmin()) &&
         request.resource.data.siteId == siteId &&
         request.resource.data.enforceLocation == false;
-      allow delete: if false;
+      allow delete: if isOwner();
     }
 
     // ─── users (login accounts) ──────────────────────────
     match /users/{userId} {
       allow read: if signedIn() && (
         request.auth.uid == userId ||
-        (isManager() && resource.data.companyId == myCompanyId())
+        isManager()
       );
-      allow create, update: if isAdmin() && request.resource.data.companyId == myCompanyId();
-      allow delete: if isAdmin() && resource.data.companyId == myCompanyId();
+      allow create, update: if canManageUsers();
+      allow delete: if isOwner();
     }
 
     // ─── employees (all workers, including temps) ────────
     match /employees/{employeeId} {
-      // This deployment contains legacy records with blank companyId values.
-      // Managers retain access while agency filtering remains in the UI.
+      // Managers retain access to current and legacy records while agency filtering remains in the UI.
       allow read: if isManager();
 
-      // Public read for autocomplete (QR punch flow, unauthenticated)
+      // Public read for autocomplete / QR punch flow.
       allow read: if resource.data.status == 'active';
 
       // Public time lookup may resolve retained duplicate IDs to an active primary.
@@ -114,13 +154,14 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/employees/$(resource.data.mergedInto)) &&
         get(/databases/$(database)/documents/employees/$(resource.data.mergedInto)).data.status == 'active';
 
-      // Manager creates
+      // Manager creates.
       allow create: if isManager() && (
         request.resource.data.companyId == myCompanyId() ||
-        request.resource.data.companyId == ''
+        request.resource.data.companyId == '' ||
+        !('companyId' in request.resource.data)
       );
 
-      // Auto-create from public QR punch flow (unauthenticated)
+      // Auto-create from public QR punch flow (unauthenticated). This does not delete or overwrite records.
       allow create: if
         request.resource.data.name is string &&
         request.resource.data.name.size() >= 2 &&
@@ -132,9 +173,11 @@ service cloud.firestore {
         request.resource.data.status == 'active' &&
         request.resource.data.source == 'auto_created';
 
+      // Employee record edits and safe duplicate merges.
       allow update: if isManager();
+      allow update: if canMergeWorkers() && isSafeMergedEmployeeUpdate();
 
-      // Allow the auto-created doc to write back its own employeeId
+      // Allow the auto-created doc to write back its own employeeId.
       allow update: if
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employeeId']);
 
@@ -159,13 +202,13 @@ service cloud.firestore {
         (
           (!signedIn() && request.resource.data.source == 'public_qr') ||
           (
-            isManager() &&
+            canEditPunches() &&
             request.resource.data.source in ['manual_manager', 'missed_punch_approved']
           )
         );
 
       // Managers/admins read current and legacy punches.
-      allow read: if isManager();
+      allow read: if isManager() || canEditPunches();
 
       // No-login worker history is read-only and remains tied to an active
       // employee ID. Blank IDs support legacy punches, filtered by name in UI.
@@ -177,23 +220,28 @@ service cloud.firestore {
       allow read: if isEmployee() &&
         resource.data.employeeId == myProfile().employeeId;
 
-      // Managers/supervisors/admins can fix punch times and retained legacy punches.
-      allow update: if isManager();
+      // Managers/admins can fix punch times. Owner/superAdmin always can.
+      allow update: if canEditPunches();
 
-      // Delete is intentionally role-gated, not company-gated, because older
-      // punches may have blank or missing companyId values. This changes access
-      // only; it does not delete any existing data by itself.
+      // Delete is intentionally separated from edit access.
+      // Existing data is not deleted by this rule; it only permits the UI action when allowed.
       allow delete: if canDeletePunches();
     }
 
     // ─── punch_edits (audit trail) ───────────────────────
     match /punch_edits/{editId} {
-      allow create: if isManager();
-      allow read: if isManager();
+      allow create: if canEditPunches();
+      allow read: if isManager() || canEditPunches();
+      allow update, delete: if false;
     }
 
     match /auditLogs/{auditId} {
-      allow create, read: if isManager();
+      allow create, read: if isManager() || canEditPunches() || canMergeWorkers();
+      allow update, delete: if false;
+    }
+
+    match /mergeLogs/{mergeId} {
+      allow create, read: if canMergeWorkers() || isOwner();
       allow update, delete: if false;
     }
 
@@ -201,13 +249,17 @@ service cloud.firestore {
     match /timesheets/{timesheetId} {
       allow read: if isManager();
 
-      // Employees can read their own timesheets
+      // Employees can read their own timesheets.
       allow read: if isEmployee() &&
         resource.data.employeeId == myProfile().employeeId;
 
-      allow create: if isManager() && request.resource.data.companyId == myCompanyId();
-      allow update: if isManager();
-      allow delete: if isAdmin() && sameCompany(resource.data);
+      allow create: if isManager() && (
+        request.resource.data.companyId == myCompanyId() ||
+        request.resource.data.companyId == '' ||
+        !('companyId' in request.resource.data)
+      );
+      allow update: if canEditPunches();
+      allow delete: if isOwner();
     }
 
     // ─── missedPunchRequests ─────────────────────────────
@@ -237,14 +289,14 @@ service cloud.firestore {
         request.resource.data.reason.size() <= 300
       );
 
-      // Employees read their own requests
+      // Employees read their own requests.
       allow read: if signedIn() && resource.data.uid == request.auth.uid;
 
       // Managers/admins read current and legacy requests.
-      allow read: if isManager();
+      allow read: if isManager() || canEditPunches();
 
-      // Managers/admins can approve/deny
-      allow update: if isManager();
+      // Managers/admins can approve/deny.
+      allow update: if canEditPunches();
     }
   }
 }
