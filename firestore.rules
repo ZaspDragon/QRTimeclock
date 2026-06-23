@@ -13,7 +13,7 @@ service cloud.firestore {
 
     function myRole() {
       return signedIn() && myProfile().role is string
-        ? myProfile().role.lower().replace(' ', '_').replace('-', '_')
+        ? myProfile().role.lower()
         : '';
     }
 
@@ -28,11 +28,11 @@ service cloud.firestore {
     }
 
     function isOwner() {
-      return myRole().matches('^ *(owner|super_admin|superadmin|super[_ -]admin) *$');
+      return myRole().matches('^ *(owner|superadmin|super_admin|super admin|super-admin) *$');
     }
 
     function isAdmin() {
-      return isOwner() || myRole().matches('^ *(admin|agency_admin|agency[_ -]admin) *$');
+      return isOwner() || myRole().matches('^ *(admin|agency_admin|agency admin|agency-admin) *$');
     }
 
     function isManager() {
