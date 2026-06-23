@@ -4,12 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>QR TimeClock Pro</title>
+  <script>
+    (function enforceHttps() {
+      var localHosts = ['localhost', '127.0.0.1', '[::1]'];
+      if (window.location.protocol === 'http:' && !localHosts.includes(window.location.hostname)) {
+        var secureUrl = new URL(window.location.href);
+        secureUrl.protocol = 'https:';
+        window.location.replace(secureUrl.href);
+      }
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=20260615-1" />
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=20260615-1"></script>
 </head>
 <body>
   <div class="bg-orb orb-1"></div>
@@ -50,7 +60,18 @@
             <option value="OHC">OHC</option>
           </select>
         </label>
+        <label id="workerPinField" class="hidden">
+          <span>Worker PIN <small>(only if one is already configured)</small></span>
+          <input id="workerPinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="Enter PIN" />
+        </label>
         <div id="workerLookupStatus" class="status-box">Type your name to begin.</div>
+        <div class="optional-location-box">
+          <button id="workerLocationBtn" class="ghost-btn" type="button">Enable GPS (Optional)</button>
+          <div>
+            <strong>Location verification is optional</strong>
+            <span id="workerLocationStatus">Not requested. You can still punch normally.</span>
+          </div>
+        </div>
 
         <div class="button-grid">
           <button class="primary-btn worker-action-btn" data-action="clock_in" type="button">Clock In</button>
@@ -68,6 +89,12 @@
 
         <div id="workerStatusMessage" class="status-box">Enter your name and punch.</div>
 
+        <div class="form-actions worker-self-service-actions">
+          <button id="workerViewTimeBtn" class="ghost-btn" type="button">My Time This Week</button>
+          <button id="workerViewMoreTimeBtn" class="ghost-btn" type="button">View More Time</button>
+          <button id="workerRequestFixBtn" class="ghost-btn" type="button">Request Time Fix</button>
+        </div>
+
         <div class="mini-table-wrap">
           <table>
             <thead>
@@ -81,6 +108,61 @@
             </tbody>
           </table>
         </div>
+
+        <section id="workerMyTimePanel" class="worker-self-service hidden">
+          <div class="card-head">
+            <h3>My Time This Week + Past Time</h3>
+            <p>Read-only lookup using your existing punch history. Looking up time never creates or changes a punch.</p>
+          </div>
+          <div id="workerTimeRangeControls" class="time-range-controls hidden">
+            <div class="time-range-fields">
+              <label><span>From Date</span><input id="workerTimeFromInput" type="date" /></label>
+              <label><span>To Date</span><input id="workerTimeToInput" type="date" /></label>
+            </div>
+            <div class="quick-range-actions">
+              <button class="ghost-btn worker-range-quick" data-range="this_week" type="button">This Week</button>
+              <button class="ghost-btn worker-range-quick" data-range="last_week" type="button">Last Week</button>
+              <button class="ghost-btn worker-range-quick" data-range="last_2_weeks" type="button">Last 2 Weeks</button>
+              <button class="ghost-btn worker-range-quick" data-range="this_month" type="button">This Month</button>
+              <button id="workerTimeLookupBtn" class="primary-btn" type="button">Look Up Past Time</button>
+            </div>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-card"><span>Total Hours</span><strong id="workerWeekHoursValue">0.00</strong></div>
+            <div class="stat-card"><span>Regular Hours</span><strong id="workerRegularHoursValue">0.00</strong></div>
+            <div class="stat-card"><span>Overtime Hours</span><strong id="workerOvertimeHoursValue">0.00</strong></div>
+            <div class="stat-card"><span>Days worked</span><strong id="workerDaysWorkedValue">0</strong></div>
+          </div>
+          <div id="workerTimeRangeStatus" class="status-box">Select your name, then view this week or choose a date range.</div>
+          <div id="workerTimeRangeResults" class="time-result-cards"></div>
+        </section>
+
+        <section id="workerFixPanel" class="worker-self-service hidden">
+          <div class="card-head">
+            <h3>Request Time Fix</h3>
+            <p>Submit a missing or incorrect punch for manager review. This does not alter punches automatically.</p>
+          </div>
+          <form id="workerFixForm" class="grid-form">
+            <label>
+              <span>Punch type</span>
+              <select id="workerFixActionInput">
+                <option value="clock_in">Clock In</option>
+                <option value="start_lunch">Lunch Out</option>
+                <option value="end_lunch">Lunch In</option>
+                <option value="clock_out">Clock Out</option>
+              </select>
+            </label>
+            <label><span>Date</span><input id="workerFixDateInput" type="date" required /></label>
+            <label><span>Requested time</span><input id="workerFixTimeInput" type="time" required /></label>
+            <label class="full-width">
+              <span>Reason</span>
+              <input id="workerFixReasonInput" type="text" maxlength="300" placeholder="Explain what needs to be corrected" required />
+            </label>
+            <div class="form-actions full-width">
+              <button class="primary-btn" type="submit">Submit Time Fix Request</button>
+            </div>
+          </form>
+        </section>
       </div>
     </section>
 
@@ -99,10 +181,22 @@
           <span>Password</span>
           <input id="passwordInput" type="password" placeholder="Password" required />
         </label>
+        <label class="legal-consent full-width">
+          <input id="legalConsent" type="checkbox" required />
+          <span>
+            I agree to the <a href="terms.html" target="_blank" rel="noopener">Terms of Use</a> and
+            <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.
+          </span>
+        </label>
         <div class="form-actions full-width">
-          <button class="primary-btn" type="submit">Sign in</button>
+          <button id="loginSubmitBtn" class="primary-btn" type="submit" disabled>Sign in</button>
           <button id="resetPasswordBtn" class="secondary-btn" type="button">Send reset email</button>
         </div>
+        <p class="login-legal-links full-width">
+          <a href="terms.html" target="_blank" rel="noopener">Terms of Use</a>
+          <span aria-hidden="true">|</span>
+          <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>
+        </p>
       </form>
 
       <form id="signupForm" class="grid-form" style="margin-top:18px;">
@@ -143,6 +237,10 @@
     </section>
 
     <section id="appShell" class="hidden">
+      <aside class="proprietary-notice" role="note">
+        This system is proprietary software owned by Brandon Evanshine. Unauthorized copying or use is prohibited.
+      </aside>
+
       <nav class="tabs" id="tabBar">
         <button class="tab hidden" data-tab="myTimecardTab" type="button" id="myTimecardTabBtn">My Timecard</button>
         <button class="tab hidden" data-tab="missedPunchTab" type="button" id="missedPunchTabBtn">Request Punch</button>
@@ -265,6 +363,12 @@
               <h2>Live punch feed</h2>
               <p>This updates automatically as workers punch from their phones.</p>
             </div>
+            <div class="stats-grid gps-summary-grid">
+              <div class="stat-card"><span>GPS Verified</span><strong id="gpsVerifiedCount">0</strong></div>
+              <div class="stat-card"><span>GPS Denied</span><strong id="gpsDeniedCount">0</strong></div>
+              <div class="stat-card"><span>Outside Radius</span><strong id="gpsOutsideCount">0</strong></div>
+              <div class="stat-card"><span>Accuracy Too Low</span><strong id="gpsLowAccuracyCount">0</strong></div>
+            </div>
             <div class="mini-table-wrap tall">
               <table>
                 <thead>
@@ -273,10 +377,11 @@
                     <th>Name</th>
                     <th>Action</th>
                     <th>Source</th>
+                    <th>GPS</th>
                   </tr>
                 </thead>
                 <tbody id="livePunchBody">
-                  <tr><td colspan="4">No live data yet.</td></tr>
+                  <tr><td colspan="5">No live data yet.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -393,11 +498,12 @@
                   <th>Source</th>
                   <th>Edited By</th>
                   <th>Edited At</th>
+                  <th>GPS</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="editPunchesBody">
-                <tr><td colspan="8">No punches yet.</td></tr>
+                <tr><td colspan="9">No punches yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -482,6 +588,11 @@
                   <option value="terminated">Terminated</option>
                 </select>
               </label>
+              <label>
+                <span>Worker PIN <small>(optional)</small></span>
+                <input id="empPinInput" type="password" inputmode="numeric" autocomplete="new-password"
+                  placeholder="Leave blank to keep current PIN" />
+              </label>
               <div class="form-actions full-width">
                 <button class="primary-btn" type="submit">Save Employee</button>
                 <button id="empCancelEditBtn" class="ghost-btn hidden" type="button">Cancel Edit</button>
@@ -496,6 +607,16 @@
             </div>
 
             <div class="stack gap16" style="margin-bottom:12px;">
+              <label>
+                <span>Status</span>
+                <select id="empRosterStatusFilter">
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="terminated">Terminated</option>
+                  <option value="merged">Merged</option>
+                  <option value="all">All</option>
+                </select>
+              </label>
               <label>
                 <span>Filter</span>
                 <input id="empFilterInput" type="text" placeholder="Search by name or number…" />
@@ -521,9 +642,92 @@
             </div>
           </article>
         </div>
+
+        <div class="card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Removed / Inactive Workers</h2>
+              <p>Records and punch history are retained. Reactivation updates the same employee.</p>
+            </div>
+            <button id="exportBackupBtn" class="secondary-btn" type="button">Export Backup</button>
+          </div>
+          <div class="mini-table-wrap tall">
+            <table>
+              <thead><tr><th>Emp #</th><th>Name</th><th>Status</th><th>Removed</th><th>Removed By</th><th>Reason</th><th>Action</th></tr></thead>
+              <tbody id="inactiveWorkerListBody"><tr><td colspan="7">No removed or inactive workers.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Worker Time Lookup</h2>
+              <p>Read-only date-range lookup. Agency users only see workers assigned to their agency.</p>
+            </div>
+            <button id="managerTimeExportBtn" class="secondary-btn" type="button" disabled>Export CSV</button>
+          </div>
+          <div class="manager-time-controls">
+            <label>
+              <span>Worker</span>
+              <select id="managerTimeWorkerSelect">
+                <option value="">Select a worker</option>
+              </select>
+            </label>
+            <label><span>From Date</span><input id="managerTimeFromInput" type="date" /></label>
+            <label><span>To Date</span><input id="managerTimeToInput" type="date" /></label>
+          </div>
+          <div class="quick-range-actions">
+            <button class="ghost-btn manager-range-quick" data-range="this_week" type="button">This Week</button>
+            <button class="ghost-btn manager-range-quick" data-range="last_week" type="button">Last Week</button>
+            <button class="ghost-btn manager-range-quick" data-range="last_2_weeks" type="button">Last 2 Weeks</button>
+            <button class="ghost-btn manager-range-quick" data-range="this_month" type="button">This Month</button>
+            <button id="managerTimeLookupBtn" class="primary-btn" type="button">Look Up Time</button>
+          </div>
+          <div class="stats-grid time-range-summary">
+            <div class="stat-card"><span>Total Hours</span><strong id="managerTimeTotalValue">0.00</strong></div>
+            <div class="stat-card"><span>Regular Hours</span><strong id="managerTimeRegularValue">0.00</strong></div>
+            <div class="stat-card"><span>Overtime Hours</span><strong id="managerTimeOvertimeValue">0.00</strong></div>
+            <div class="stat-card"><span>Days worked</span><strong id="managerTimeDaysValue">0</strong></div>
+          </div>
+          <div id="managerTimeRangeStatus" class="status-box">Choose a worker and date range.</div>
+          <div id="managerTimeRangeResults" class="time-result-cards"></div>
+        </div>
       </section>
 
       <section id="adminTab" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>Permission Debug</h2>
+            <p>Current normalized role and effective dashboard permissions.</p>
+          </div>
+          <div id="permissionDebugPanel" class="permission-debug-grid hidden"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Site Location Settings</h2>
+            <p>Optional GPS reference point. Location enforcement remains off.</p>
+          </div>
+          <form id="siteSettingsForm" class="grid-form">
+            <label><span>Site ID</span><input id="siteSettingsId" type="text" placeholder="e.g. chadwell" required /></label>
+            <label><span>QR Slug</span><input id="siteSettingsQrSlug" type="text" placeholder="Optional QR label" /></label>
+            <label><span>Site Latitude</span><input id="siteSettingsLatitude" type="number" step="any" placeholder="Optional" /></label>
+            <label><span>Site Longitude</span><input id="siteSettingsLongitude" type="number" step="any" placeholder="Optional" /></label>
+            <label><span>Allowed Radius (meters)</span><input id="siteSettingsRadius" type="number" min="1" value="300" /></label>
+            <label><span>Maximum GPS Accuracy (meters)</span><input id="siteSettingsAccuracy" type="number" min="1" value="100" /></label>
+            <label>
+              <span>Enforce Location</span>
+              <select id="siteSettingsEnforce" disabled>
+                <option value="false">False (Safe Mode)</option>
+              </select>
+            </label>
+            <div class="form-actions full-width">
+              <button class="primary-btn" type="submit">Save Site Settings</button>
+            </div>
+          </form>
+        </div>
+
         <div class="panel-grid two-up">
           <article class="card">
             <div class="card-head">
@@ -551,6 +755,9 @@
                   <option value="superAdmin">Super Admin</option>
                   <option value="admin">Admin</option>
                   <option value="manager">Manager</option>
+                  <option value="supervisor">Supervisor</option>
+                  <option value="agency_admin">Agency Admin</option>
+                  <option value="employee">Employee</option>
                   <option value="worker">Worker</option>
                 </select>
               </label>
@@ -617,6 +824,16 @@
             </div>
           </article>
         </div>
+        <div class="card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Duplicate Workers</h2>
+              <p>Choose a primary record and merge duplicates without deleting workers or time history.</p>
+            </div>
+            <button id="refreshDuplicatesBtn" class="secondary-btn" type="button">Refresh Duplicates</button>
+          </div>
+          <div id="duplicateWorkersList" class="list-stack empty-state">Duplicate groups will appear here.</div>
+        </div>
       </section>
 
       <section id="agencyTab" class="tab-panel hidden">
@@ -649,6 +866,14 @@
       </section>
     </section>
   </main>
+
+  <footer class="site-footer">
+    <p>&copy; 2026 QR TimeClock Pro. Built and owned by Brandon Evanshine. All rights reserved.</p>
+    <nav aria-label="Legal">
+      <a href="terms.html">Terms of Use</a>
+      <a href="privacy.html">Privacy Policy</a>
+    </nav>
+  </footer>
 
   <div id="toast" class="toast hidden"></div>
 </body>

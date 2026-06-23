@@ -23,11 +23,60 @@ service cloud.firestore {
     }
 
     function role() {
-      return userExists() ? myProfile().role : null;
+      return activeProfile() && myProfile().role is string
+        ? myProfile().role.lower()
+        : '';
     }
 
     function permissions() {
-      return userExists() && myProfile().permissions is map ? myProfile().permissions : {};
+      return activeProfile() && myProfile().permissions is map
+        ? myProfile().permissions
+        : {};
+    }
+
+    function hasPermission(permissionName) {
+      return permissions().get(permissionName, false) == true;
+    }
+
+    function isOwnerOrSuperAdmin() {
+      return role().matches('^ *(owner|superadmin|super_admin|super admin|super-admin) *$');
+    }
+
+    function isAdmin() {
+      return isOwnerOrSuperAdmin() || role().matches('^ *(admin|agency_admin|agency admin|agency-admin) *$');
+    }
+
+    function isManager() {
+      return isAdmin() || role().matches('^ *(manager|supervisor) *$');
+    }
+
+    function isWorker() {
+      return role().matches('^ *(employee|worker) *$');
+    }
+
+    function hasEditPunchPermission() {
+      return isOwnerOrSuperAdmin()
+        || isAdmin()
+        || isManager()
+        || hasPermission('canEditPunches');
+    }
+
+    function hasDeletePunchPermission() {
+      return isOwnerOrSuperAdmin()
+        || role().matches('^ *admin *$')
+        || hasPermission('canDeletePunches');
+    }
+
+    function hasMergeWorkerPermission() {
+      return isOwnerOrSuperAdmin()
+        || role().matches('^ *admin *$')
+        || hasPermission('canMergeWorkers');
+    }
+
+    function hasManageUsersPermission() {
+      return isOwnerOrSuperAdmin()
+        || role().matches('^ *admin *$')
+        || hasPermission('manageUsers');
     }
 
     function myCompanyId() {
@@ -70,42 +119,6 @@ service cloud.firestore {
           (data.siteIds is list && data.siteIds.hasAny(mySiteIds()))
           || (data.siteId is string && mySiteIds().hasAny([data.siteId]))
         );
-    }
-
-    function isOwnerOrSuperAdmin() {
-      return ['owner', 'superAdmin'].hasAny([role()]);
-    }
-
-    function isAdmin() {
-      return role() == 'admin';
-    }
-
-    function isManager() {
-      return role() == 'manager';
-    }
-
-    function isWorker() {
-      return ['worker', 'employee'].hasAny([role()]);
-    }
-
-    function hasEditPunchPermission() {
-      return isOwnerOrSuperAdmin()
-        || ((isAdmin() || isManager()) && permissions().canEditPunches == true);
-    }
-
-    function hasDeletePunchPermission() {
-      return isOwnerOrSuperAdmin()
-        || ((isAdmin() || isManager()) && permissions().canDeletePunches == true);
-    }
-
-    function hasMergeWorkerPermission() {
-      return isOwnerOrSuperAdmin()
-        || (isAdmin() && permissions().canMergeWorkers == true);
-    }
-
-    function hasManageUsersPermission() {
-      return isOwnerOrSuperAdmin()
-        || (isAdmin() && permissions().manageUsers == true);
     }
 
     function activeEmployee(data) {
@@ -183,6 +196,28 @@ service cloud.firestore {
         && request.resource.data.active == false;
     }
 
+    function publicEmployeeIsActive(employeeId) {
+      return employeeId is string
+        && employeeId.size() > 0
+        && exists(/databases/$(database)/documents/employees/$(employeeId))
+        && activeEmployee(get(/databases/$(database)/documents/employees/$(employeeId)).data);
+    }
+
+    function isSafeMergedEmployeeUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'status',
+        'active',
+        'mergedInto',
+        'mergedAt',
+        'mergedAtMs',
+        'mergedBy',
+        'mergedById',
+        'updatedAt'
+      ])
+      && request.resource.data.status == 'merged'
+      && request.resource.data.mergedInto is string;
+    }
+
     match /companies/{companyId} {
       allow read: if activeProfile() && companyId == myCompanyId();
       allow create, update: if activeProfile() && isOwnerOrSuperAdmin();
@@ -196,8 +231,12 @@ service cloud.firestore {
     }
 
     match /sites/{siteId} {
-      allow read: if activeProfile() && mySiteIds().hasAny([siteId]);
-      allow create, update: if activeProfile() && (isOwnerOrSuperAdmin() || isAdmin()) && mySiteIds().hasAny([siteId]);
+      allow read: if true;
+      allow create, update: if activeProfile()
+        && (isOwnerOrSuperAdmin() || isAdmin())
+        && mySiteIds().hasAny([siteId])
+        && request.resource.data.siteId == siteId
+        && request.resource.data.enforceLocation == false;
       allow delete: if false;
     }
 
@@ -212,7 +251,7 @@ service cloud.firestore {
           && hasManageUsersPermission()
           && request.resource.data.uid == userId
           && request.resource.data.email is string
-          && request.resource.data.role in ['owner', 'superAdmin', 'admin', 'manager', 'worker', 'employee']
+          && request.resource.data.role in ['owner', 'superAdmin', 'super_admin', 'admin', 'agency_admin', 'manager', 'supervisor', 'worker', 'employee']
           && request.resource.data.active is bool
           && request.resource.data.permissions is map
           && targetUserInScope(request.resource.data));
@@ -237,7 +276,7 @@ service cloud.firestore {
 
       allow update: if (publicEmployeeWrite() && activeEmployee(resource.data))
         || (activeProfile() && (isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data) && inScope(request.resource.data))
-        || (activeProfile() && hasMergeWorkerPermission() && inScope(resource.data) && inScope(request.resource.data));
+        || (activeProfile() && hasMergeWorkerPermission() && inScope(resource.data) && isSafeMergedEmployeeUpdate());
 
       allow delete: if false;
     }
@@ -262,10 +301,14 @@ service cloud.firestore {
           || (isWorker() && workerOwnsRecord(request.resource.data))
         ));
 
-      allow read: if activeProfile() && (
-        ((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data))
-        || workerOwnsRecord(resource.data)
-      );
+      allow read: if (validCompanySite(resource.data) && (
+          publicEmployeeIsActive(resource.data.get('employeeId', ''))
+          || resource.data.get('employeeId', '') == ''
+        ))
+        || (activeProfile() && (
+          ((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data))
+          || workerOwnsRecord(resource.data)
+        ));
 
       allow update: if activeProfile() && (
         (hasEditPunchPermission() && inScope(resource.data) && inScope(request.resource.data) && !isSoftPunchDeleteRequest())
@@ -301,10 +344,20 @@ service cloud.firestore {
     }
 
     match /missedPunchRequests/{requestId} {
-      allow create: if activeProfile()
+      allow create: if (activeProfile()
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.status == 'pending'
-        && inScope(request.resource.data);
+        && inScope(request.resource.data))
+        || (!signedIn()
+          && request.resource.data.source == 'public_worker'
+          && request.resource.data.status == 'pending'
+          && validCompanySite(request.resource.data)
+          && publicEmployeeIsActive(request.resource.data.employeeId)
+          && request.resource.data.requestedAction in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out']
+          && request.resource.data.requestedTimestampMs is number
+          && request.resource.data.reason is string
+          && request.resource.data.reason.size() >= 2
+          && request.resource.data.reason.size() <= 300);
 
       allow read: if activeProfile() && (
         (resource.data.uid == request.auth.uid && inScope(resource.data))

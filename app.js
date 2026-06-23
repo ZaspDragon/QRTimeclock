@@ -52,6 +52,7 @@ const state = {
   workerUnsub: null,
   workerEmployee: null,      // looked-up employee record for public punch
   publicEmployees: [],       // cached employee list for public QR autocomplete
+  publicEmployeeRecords: [], // full active list retained for historical ID lookup
   allPunchRows: [],
   selectedWeekPunchRows: [],
   selectedWeekTimesheetDocs: {},
@@ -59,6 +60,12 @@ const state = {
   allMissedRequests: [],
   approvalFilter: 'pending',
   creatingPendingProfile: false,
+  workerPunchSaving: false,
+  employeeStatusFilter: 'active',
+  duplicateGroups: [],
+  managerTimeLookup: null,
+  workerLocation: { locationStatus: 'not_requested' },
+  siteContext: buildLegacySiteContext(),
 };
 
 const els = {
@@ -72,6 +79,30 @@ const els = {
   workerStatusValue: document.getElementById('workerStatusValue'),
   workerStatusMessage: document.getElementById('workerStatusMessage'),
   workerHistoryBody: document.getElementById('workerHistoryBody'),
+  workerViewTimeBtn: document.getElementById('workerViewTimeBtn'),
+  workerViewMoreTimeBtn: document.getElementById('workerViewMoreTimeBtn'),
+  workerRequestFixBtn: document.getElementById('workerRequestFixBtn'),
+  workerMyTimePanel: document.getElementById('workerMyTimePanel'),
+  workerFixPanel: document.getElementById('workerFixPanel'),
+  workerTimeRangeControls: document.getElementById('workerTimeRangeControls'),
+  workerTimeFromInput: document.getElementById('workerTimeFromInput'),
+  workerTimeToInput: document.getElementById('workerTimeToInput'),
+  workerTimeLookupBtn: document.getElementById('workerTimeLookupBtn'),
+  workerTimeRangeStatus: document.getElementById('workerTimeRangeStatus'),
+  workerTimeRangeResults: document.getElementById('workerTimeRangeResults'),
+  workerWeekHoursValue: document.getElementById('workerWeekHoursValue'),
+  workerRegularHoursValue: document.getElementById('workerRegularHoursValue'),
+  workerOvertimeHoursValue: document.getElementById('workerOvertimeHoursValue'),
+  workerDaysWorkedValue: document.getElementById('workerDaysWorkedValue'),
+  workerFixForm: document.getElementById('workerFixForm'),
+  workerFixActionInput: document.getElementById('workerFixActionInput'),
+  workerFixDateInput: document.getElementById('workerFixDateInput'),
+  workerFixTimeInput: document.getElementById('workerFixTimeInput'),
+  workerFixReasonInput: document.getElementById('workerFixReasonInput'),
+  workerPinField: document.getElementById('workerPinField'),
+  workerPinInput: document.getElementById('workerPinInput'),
+  workerLocationBtn: document.getElementById('workerLocationBtn'),
+  workerLocationStatus: document.getElementById('workerLocationStatus'),
 
   authCard: document.getElementById('authCard'),
   appShell: document.getElementById('appShell'),
@@ -82,6 +113,8 @@ const els = {
   loginForm: document.getElementById('loginForm'),
   emailInput: document.getElementById('emailInput'),
   passwordInput: document.getElementById('passwordInput'),
+  legalConsent: document.getElementById('legalConsent'),
+  loginSubmitBtn: document.getElementById('loginSubmitBtn'),
   resetPasswordBtn: document.getElementById('resetPasswordBtn'),
   signupForm: document.getElementById('signupForm'),
   signupNameInput: document.getElementById('signupNameInput'),
@@ -92,6 +125,10 @@ const els = {
 
   livePunchBody: document.getElementById('livePunchBody'),
   activeNowList: document.getElementById('activeNowList'),
+  gpsVerifiedCount: document.getElementById('gpsVerifiedCount'),
+  gpsDeniedCount: document.getElementById('gpsDeniedCount'),
+  gpsOutsideCount: document.getElementById('gpsOutsideCount'),
+  gpsLowAccuracyCount: document.getElementById('gpsLowAccuracyCount'),
   timesheetBody: document.getElementById('timesheetBody'),
   weekPicker: document.getElementById('weekPicker'),
   managerTabBtn: document.getElementById('managerTabBtn'),
@@ -149,9 +186,35 @@ const els = {
   empAgencySelect: document.getElementById('empAgencySelect'),
   empSiteInput: document.getElementById('empSiteInput'),
   empStatusSelect: document.getElementById('empStatusSelect'),
+  empPinInput: document.getElementById('empPinInput'),
   empCancelEditBtn: document.getElementById('empCancelEditBtn'),
   empFilterInput: document.getElementById('empFilterInput'),
+  empRosterStatusFilter: document.getElementById('empRosterStatusFilter'),
   employeeListBody: document.getElementById('employeeListBody'),
+  inactiveWorkerListBody: document.getElementById('inactiveWorkerListBody'),
+  exportBackupBtn: document.getElementById('exportBackupBtn'),
+  refreshDuplicatesBtn: document.getElementById('refreshDuplicatesBtn'),
+  duplicateWorkersList: document.getElementById('duplicateWorkersList'),
+  permissionDebugPanel: document.getElementById('permissionDebugPanel'),
+  siteSettingsForm: document.getElementById('siteSettingsForm'),
+  siteSettingsId: document.getElementById('siteSettingsId'),
+  siteSettingsQrSlug: document.getElementById('siteSettingsQrSlug'),
+  siteSettingsLatitude: document.getElementById('siteSettingsLatitude'),
+  siteSettingsLongitude: document.getElementById('siteSettingsLongitude'),
+  siteSettingsRadius: document.getElementById('siteSettingsRadius'),
+  siteSettingsAccuracy: document.getElementById('siteSettingsAccuracy'),
+  siteSettingsEnforce: document.getElementById('siteSettingsEnforce'),
+  managerTimeWorkerSelect: document.getElementById('managerTimeWorkerSelect'),
+  managerTimeFromInput: document.getElementById('managerTimeFromInput'),
+  managerTimeToInput: document.getElementById('managerTimeToInput'),
+  managerTimeLookupBtn: document.getElementById('managerTimeLookupBtn'),
+  managerTimeExportBtn: document.getElementById('managerTimeExportBtn'),
+  managerTimeTotalValue: document.getElementById('managerTimeTotalValue'),
+  managerTimeRegularValue: document.getElementById('managerTimeRegularValue'),
+  managerTimeOvertimeValue: document.getElementById('managerTimeOvertimeValue'),
+  managerTimeDaysValue: document.getElementById('managerTimeDaysValue'),
+  managerTimeRangeStatus: document.getElementById('managerTimeRangeStatus'),
+  managerTimeRangeResults: document.getElementById('managerTimeRangeResults'),
 
   agencyWorkerSelect: document.getElementById('agencyWorkerSelect'),
   agencyPreviewBtn: document.getElementById('agencyPreviewBtn'),
@@ -166,6 +229,7 @@ init();
 async function init() {
   wireEvents();
   setupBranchSelectors();
+  loadSiteContext();
 
   // Load employees for public QR autocomplete
   loadPublicEmployees();
@@ -192,6 +256,16 @@ async function init() {
   if (els.manualPunchTimeInput) {
     els.manualPunchTimeInput.value = formatTimeForInput(Date.now());
   }
+
+  if (els.workerFixDateInput) {
+    els.workerFixDateInput.value = formatDateInput(new Date());
+  }
+
+  if (els.workerFixTimeInput) {
+    els.workerFixTimeInput.value = formatTimeForInput(Date.now());
+  }
+  applyQuickDateRange('this_week', els.workerTimeFromInput, els.workerTimeToInput);
+  applyQuickDateRange('this_week', els.managerTimeFromInput, els.managerTimeToInput);
 
   onAuthStateChanged(auth, async (user) => {
     clearLiveListeners();
@@ -249,12 +323,16 @@ async function init() {
 
       showLoggedIn();
       attachRoleViews();
-      attachManagerLiveViews();
-      attachTimesheetView();
-      attachUsersViewIfAdmin();
-      attachPendingUsersViewIfAdmin();
-      populateAgencyWorkerSelect();
-      renderAgencyPreview();
+      renderPermissionDebug();
+      renderSiteSettingsForm();
+      if (canEditPunches()) {
+        attachManagerLiveViews();
+        attachTimesheetView();
+        attachUsersViewIfAdmin();
+        attachPendingUsersViewIfAdmin();
+        populateAgencyWorkerSelect();
+        renderAgencyPreview();
+      }
     } catch (error) {
       console.error(error);
       toast(error.message || 'Sign-in setup failed.', true);
@@ -271,6 +349,18 @@ function wireEvents() {
   els.workerNameInput?.addEventListener('input', debounce(handleWorkerNameAutocomplete, 250));
   els.workerNameInput?.addEventListener('focus', () => handleWorkerNameAutocomplete());
   els.workerNameInput?.addEventListener('keydown', handleAutocompleteKeydown);
+  els.workerViewTimeBtn?.addEventListener('click', showWorkerTimeThisWeek);
+  els.workerViewMoreTimeBtn?.addEventListener('click', showWorkerMoreTime);
+  els.workerTimeLookupBtn?.addEventListener('click', lookupPublicWorkerTimeRange);
+  document.querySelectorAll('.worker-range-quick').forEach((button) => {
+    button.addEventListener('click', () => {
+      applyQuickDateRange(button.dataset.range, els.workerTimeFromInput, els.workerTimeToInput);
+      lookupPublicWorkerTimeRange();
+    });
+  });
+  els.workerRequestFixBtn?.addEventListener('click', () => toggleWorkerSelfService('fix'));
+  els.workerLocationBtn?.addEventListener('click', requestOptionalWorkerLocation);
+  els.workerFixForm?.addEventListener('submit', handlePublicTimeFixSubmit);
 
   // Close autocomplete on outside click
   document.addEventListener('click', (e) => {
@@ -281,6 +371,7 @@ function wireEvents() {
 
   els.loginForm?.addEventListener('submit', handleLogin);
   els.signupForm?.addEventListener('submit', handleSignupRequest);
+  els.legalConsent?.addEventListener('change', syncLoginConsent);
   els.resetPasswordBtn?.addEventListener('click', handlePasswordReset);
 
   els.workerBranchSelect?.addEventListener('change', () => {
@@ -296,6 +387,8 @@ function wireEvents() {
   els.signOutBtn?.addEventListener('click', async () => {
     await signOut(auth);
   });
+
+  syncLoginConsent();
 
   els.weekPicker?.addEventListener('change', () => {
     state.selectedWeekStart = new Date(`${els.weekPicker.value}T00:00:00`);
@@ -318,6 +411,7 @@ function wireEvents() {
   });
 
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
+  els.siteSettingsForm?.addEventListener('submit', handleSaveSiteSettings);
 
   els.missedPunchForm?.addEventListener('submit', handleMissedPunchSubmit);
 
@@ -339,6 +433,20 @@ function wireEvents() {
   els.employeeForm?.addEventListener('submit', handleSaveEmployee);
   els.empCancelEditBtn?.addEventListener('click', cancelEmployeeEdit);
   els.empFilterInput?.addEventListener('input', () => renderEmployeeList(state.allEmployees || []));
+  els.empRosterStatusFilter?.addEventListener('change', () => {
+    state.employeeStatusFilter = els.empRosterStatusFilter.value || 'active';
+    renderEmployeeList(state.allEmployees || []);
+  });
+  els.exportBackupBtn?.addEventListener('click', exportBackup);
+  els.refreshDuplicatesBtn?.addEventListener('click', () => renderDuplicateWorkers(true));
+  els.managerTimeLookupBtn?.addEventListener('click', lookupManagerTimeRange);
+  els.managerTimeExportBtn?.addEventListener('click', exportManagerTimeRangeCsv);
+  document.querySelectorAll('.manager-range-quick').forEach((button) => {
+    button.addEventListener('click', () => {
+      applyQuickDateRange(button.dataset.range, els.managerTimeFromInput, els.managerTimeToInput);
+      if (els.managerTimeWorkerSelect?.value) lookupManagerTimeRange();
+    });
+  });
 
   els.agencyPreviewBtn?.addEventListener('click', () => renderAgencyPreview());
   els.agencyPrintBtn?.addEventListener('click', () => printAgencyPreview());
@@ -426,20 +534,25 @@ async function loadPublicEmployees() {
 
     const q = query(collection(db, 'employees'), ...constraints);
     const snap = await getDocs(q);
-    state.publicEmployees = snap.docs
+    const activeEmployees = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    state.publicEmployeeRecords = activeEmployees;
+    state.publicEmployees = collapseDuplicateEmployees(activeEmployees);
   } catch (error) {
     console.warn('Could not load employees for autocomplete:', error.message);
+    state.publicEmployeeRecords = [];
     state.publicEmployees = [];
   }
 }
 
 function restoreWorkerFromName(name) {
   const nameKey = normalizeName(name);
-  const match = state.publicEmployees.find((e) => normalizeName(e.name) === nameKey);
-  if (match) {
+  const matches = state.publicEmployees.filter((e) => normalizeName(e.name) === nameKey);
+  if (matches.length === 1) {
+    const match = matches[0];
     state.workerEmployee = match;
+    updateWorkerPinField(match);
     if (els.workerLookupStatus) {
       els.workerLookupStatus.textContent = `✓ Welcome back, ${match.name}. Ready to punch.`;
       els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
@@ -456,6 +569,7 @@ function handleWorkerNameAutocomplete() {
 
   if (typed.length < 2) {
     state.workerEmployee = null;
+    updateWorkerPinField(null);
     hideAutocomplete();
     if (els.workerLookupStatus) {
       els.workerLookupStatus.textContent = 'Type your name to begin.';
@@ -470,19 +584,31 @@ function handleWorkerNameAutocomplete() {
   ).slice(0, 8);
 
   // Check for exact match
-  const exactMatch = state.publicEmployees.find(
+  const exactMatches = state.publicEmployees.filter(
     (e) => normalizeName(e.name) === normalizeName(typed)
   );
 
-  if (exactMatch) {
+  if (exactMatches.length === 1) {
+    const exactMatch = exactMatches[0];
     state.workerEmployee = exactMatch;
+    updateWorkerPinField(exactMatch);
     if (els.workerLookupStatus) {
-      els.workerLookupStatus.textContent = `✓ Found: ${exactMatch.name} (${exactMatch.employeeNumber || 'new'}). Ready to punch.`;
+      els.workerLookupStatus.textContent = `✓ Found: ${exactMatch.name}. Ready to punch.`;
       els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
     }
     hideAutocomplete();
     localStorage.setItem('workerPunchName', exactMatch.name);
     attachWorkerLiveView(exactMatch.name);
+    return;
+  }
+
+  if (exactMatches.length > 1) {
+    state.workerEmployee = null;
+    updateWorkerPinField(null);
+    if (els.workerLookupStatus) {
+      els.workerLookupStatus.textContent = 'More than one worker has that name. Select your name from the list.';
+    }
+    renderAutocomplete(exactMatches, typed, true);
     return;
   }
 
@@ -498,7 +624,91 @@ function handleWorkerNameAutocomplete() {
   renderAutocomplete(matches, typed);
 }
 
-function renderAutocomplete(matches, typed) {
+function normalizeIdentityPart(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function employeeScopeKey(employee) {
+  return [
+    normalizeIdentityPart(employee?.name || employee?.nameKey),
+    normalizeIdentityPart(employee?.agencyId),
+    normalizeIdentityPart(employee?.assignedSiteId || employee?.siteId),
+  ].join('|');
+}
+
+function employeeRecordScore(employee) {
+  let score = 0;
+  if (normalizeIdentityPart(employee?.agencyId)) score += 20;
+  if (normalizeIdentityPart(employee?.assignedSiteId || employee?.siteId)) score += 20;
+  const employeeNumber = normalizeIdentityPart(employee?.employeeNumber);
+  if (employeeNumber && employeeNumber !== 'emp-1001') score += 10;
+  if (normalizeIdentityPart(employee?.employeeId) === normalizeIdentityPart(employee?.id)) score += 2;
+  return score;
+}
+
+function compareEmployeeRecords(left, right) {
+  const scoreDifference = employeeRecordScore(right) - employeeRecordScore(left);
+  if (scoreDifference) return scoreDifference;
+  const leftCreated = Number(left.createdAt?.seconds || left.createdAtMs || 0);
+  const rightCreated = Number(right.createdAt?.seconds || right.createdAtMs || 0);
+  return leftCreated - rightCreated || String(left.id).localeCompare(String(right.id));
+}
+
+function preferEmployeeRecord(employees) {
+  return [...employees].sort(compareEmployeeRecords)[0];
+}
+
+function collapseDuplicateEmployees(employees) {
+  const kept = [];
+  const nameGroups = new Map();
+
+  employees.forEach((employee) => {
+    const name = normalizeIdentityPart(employee.name || employee.nameKey);
+    if (!nameGroups.has(name)) nameGroups.set(name, []);
+    nameGroups.get(name).push(employee);
+  });
+
+  nameGroups.forEach((nameEmployees) => {
+    const scopedEmployees = new Map();
+    const nonBlankScopes = new Set();
+    nameEmployees.forEach((employee) => {
+      const agency = normalizeIdentityPart(employee.agencyId);
+      const site = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+      const scope = `${agency}|${site}`;
+      if (!scopedEmployees.has(scope)) scopedEmployees.set(scope, []);
+      scopedEmployees.get(scope).push(employee);
+      if (agency || site) nonBlankScopes.add(scope);
+    });
+
+    // Legacy blank copies belong to the sole configured agency/site record.
+    if (nonBlankScopes.size <= 1) {
+      kept.push(preferEmployeeRecord(nameEmployees));
+      return;
+    }
+
+    scopedEmployees.forEach((scopeEmployees) => kept.push(preferEmployeeRecord(scopeEmployees)));
+  });
+
+  return kept.sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
+}
+
+function findReusableEmployee({ name, employeeNumber = '', agencyId = '', assignedSiteId = '' }, employees) {
+  const nameKey = normalizeIdentityPart(name);
+  const numberKey = normalizeIdentityPart(employeeNumber);
+  const scopeKey = employeeScopeKey({ name, agencyId, assignedSiteId });
+  const activeEmployees = (employees || []).filter((employee) => {
+    if (!isActiveEmployee(employee)) return false;
+    return normalizeIdentityPart(employee.name || employee.nameKey) === nameKey;
+  });
+  const scopedMatch = activeEmployees.find((employee) => employeeScopeKey(employee) === scopeKey);
+  if (scopedMatch) return scopedMatch;
+  return activeEmployees.find((employee) => {
+    const existingNumber = normalizeIdentityPart(employee.employeeNumber);
+    return numberKey && existingNumber === numberKey;
+  }) || null;
+}
+
+function renderAutocomplete(matches, typed, selectionRequired = false) {
   const list = els.workerAutocompleteList;
   if (!list) return;
 
@@ -507,12 +717,12 @@ function renderAutocomplete(matches, typed) {
 
   matches.forEach((emp, i) => {
     html += `<li data-index="${i}" data-emp-id="${emp.id}">
-      ${escapeHTML(emp.name)}<span class="emp-num">${escapeHTML(emp.employeeNumber || '')}</span>
+      ${escapeHTML(emp.name)}
     </li>`;
   });
 
   // Always show "new worker" option at the bottom if typed name doesn't match
-  if (typed.length >= 2) {
+  if (typed.length >= 2 && !selectionRequired && matches.length === 0) {
     html += `<li class="new-worker" data-index="${matches.length}" data-new="true">
       + Create new: "${escapeHTML(typed)}"
     </li>`;
@@ -563,10 +773,11 @@ function updateActiveItem(items) {
 
 function selectAutocompleteEmployee(emp) {
   state.workerEmployee = emp;
+  updateWorkerPinField(emp);
   if (els.workerNameInput) els.workerNameInput.value = emp.name;
   if (els.workerNameValue) els.workerNameValue.textContent = emp.name;
   if (els.workerLookupStatus) {
-    els.workerLookupStatus.textContent = `✓ Found: ${emp.name} (${emp.employeeNumber || ''}). Ready to punch.`;
+    els.workerLookupStatus.textContent = `✓ Found: ${emp.name}. Ready to punch.`;
     els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
   }
   hideAutocomplete();
@@ -578,6 +789,7 @@ function selectNewWorker(typed) {
   const pretty = prettifyHumanName(typed);
   // Set a placeholder worker employee — will be auto-created on punch
   state.workerEmployee = { _isNew: true, name: pretty, nameKey: normalizeName(pretty) };
+  updateWorkerPinField(null);
   if (els.workerNameInput) els.workerNameInput.value = pretty;
   if (els.workerNameValue) els.workerNameValue.textContent = pretty;
   if (els.workerLookupStatus) {
@@ -602,7 +814,183 @@ function escapeHTML(str) {
   return div.innerHTML;
 }
 
+function buildLegacySiteContext() {
+  const params = new URLSearchParams(window.location.search);
+  const companyId = params.get('company') || params.get('companyId') || '';
+  const siteId = params.get('site') || params.get('siteId') || '';
+  const qrSlug = params.get('qr') || params.get('qrSlug') || '';
+  return {
+    companyId,
+    siteId,
+    qrSlug,
+    legacyMode: !companyId && !siteId && !qrSlug,
+    siteLatitude: null,
+    siteLongitude: null,
+    allowedRadiusMeters: 300,
+    maxGpsAccuracyMeters: 100,
+    enforceLocation: false,
+  };
+}
+
+async function loadSiteContext() {
+  const siteId = state.siteContext.siteId;
+  if (!siteId) return;
+  try {
+    const snapshot = await getDoc(doc(db, 'sites', siteId));
+    if (!snapshot.exists()) return;
+    const site = snapshot.data();
+    state.siteContext = {
+      ...state.siteContext,
+      companyId: state.siteContext.companyId || site.companyId || '',
+      qrSlug: state.siteContext.qrSlug || site.qrSlug || '',
+      siteLatitude: finiteNumberOrNull(site.siteLatitude),
+      siteLongitude: finiteNumberOrNull(site.siteLongitude),
+      allowedRadiusMeters: positiveNumberOrDefault(site.allowedRadiusMeters, 300),
+      maxGpsAccuracyMeters: positiveNumberOrDefault(site.maxGpsAccuracyMeters, 100),
+      // Safe mode: location enforcement is deliberately disabled.
+      enforceLocation: false,
+    };
+    renderSiteSettingsForm();
+  } catch (error) {
+    console.warn('Optional site settings could not be loaded:', error.message);
+  }
+}
+
+function requestOptionalWorkerLocation() {
+  if (!navigator.geolocation) {
+    state.workerLocation = {
+      locationStatus: 'unavailable',
+      locationCapturedAtMs: Date.now(),
+    };
+    updateWorkerLocationStatus('GPS is unavailable. You can still punch normally.');
+    return Promise.resolve(state.workerLocation);
+  }
+
+  if (els.workerLocationBtn) els.workerLocationBtn.disabled = true;
+  updateWorkerLocationStatus('Requesting optional GPS location...');
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        state.workerLocation = buildVerifiedLocation(position.coords);
+        updateWorkerLocationStatus(formatWorkerLocationMessage(state.workerLocation));
+        if (els.workerLocationBtn) els.workerLocationBtn.textContent = 'Refresh GPS (Optional)';
+        if (els.workerLocationBtn) els.workerLocationBtn.disabled = false;
+        resolve(state.workerLocation);
+      },
+      (error) => {
+        state.workerLocation = {
+          locationStatus: error?.code === 1 ? 'denied' : 'unavailable',
+          locationCapturedAtMs: Date.now(),
+        };
+        updateWorkerLocationStatus(
+          error?.code === 1
+            ? 'Location denied. Your punch will still save.'
+            : 'Location could not be captured. Your punch will still save.'
+        );
+        if (els.workerLocationBtn) els.workerLocationBtn.disabled = false;
+        resolve(state.workerLocation);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 7000,
+        maximumAge: 60000,
+      }
+    );
+  });
+}
+
+function buildVerifiedLocation(coords) {
+  const latitude = finiteNumberOrNull(coords?.latitude);
+  const longitude = finiteNumberOrNull(coords?.longitude);
+  const gpsAccuracyMeters = finiteNumberOrNull(coords?.accuracy);
+  const hasSiteCoordinates = Number.isFinite(state.siteContext.siteLatitude) &&
+    Number.isFinite(state.siteContext.siteLongitude);
+  const distanceFromSiteMeters = hasSiteCoordinates && latitude !== null && longitude !== null
+    ? haversineDistanceMeters(
+      latitude,
+      longitude,
+      state.siteContext.siteLatitude,
+      state.siteContext.siteLongitude
+    )
+    : null;
+  return {
+    latitude,
+    longitude,
+    gpsAccuracyMeters,
+    locationStatus: 'verified',
+    locationCapturedAtMs: Date.now(),
+    distanceFromSiteMeters,
+    withinAllowedRadius: distanceFromSiteMeters === null
+      ? null
+      : distanceFromSiteMeters <= state.siteContext.allowedRadiusMeters,
+  };
+}
+
+function buildPunchLocationPayload(employee) {
+  const location = state.workerLocation || { locationStatus: 'not_requested' };
+  const siteId = state.siteContext.siteId || employee?.assignedSiteId || employee?.siteId || '';
+  const capturedAtMs = Number(location.locationCapturedAtMs || 0);
+  return {
+    latitude: finiteNumberOrNull(location.latitude),
+    longitude: finiteNumberOrNull(location.longitude),
+    accuracy: finiteNumberOrNull(location.gpsAccuracyMeters),
+    gpsAccuracyMeters: finiteNumberOrNull(location.gpsAccuracyMeters),
+    locationStatus: location.locationStatus || 'not_requested',
+    locationCapturedAt: capturedAtMs ? Timestamp.fromMillis(capturedAtMs) : null,
+    siteId,
+    siteIds: Array.isArray(employee?.siteIds)
+      ? employee.siteIds
+      : (siteId ? [siteId] : []),
+    distanceFromSiteMeters: finiteNumberOrNull(location.distanceFromSiteMeters),
+    withinAllowedRadius: typeof location.withinAllowedRadius === 'boolean'
+      ? location.withinAllowedRadius
+      : null,
+    allowedRadiusMeters: state.siteContext.allowedRadiusMeters,
+    maxGpsAccuracyMeters: state.siteContext.maxGpsAccuracyMeters,
+    enforceLocation: false,
+  };
+}
+
+function formatWorkerLocationMessage(location) {
+  const parts = ['GPS verified'];
+  if (Number.isFinite(location.gpsAccuracyMeters)) {
+    parts.push(`accuracy ${Math.round(location.gpsAccuracyMeters)}m`);
+  }
+  if (Number.isFinite(location.distanceFromSiteMeters)) {
+    parts.push(`${Math.round(location.distanceFromSiteMeters)}m from site`);
+  }
+  parts.push('Punching remains available.');
+  return parts.join(' · ');
+}
+
+function updateWorkerLocationStatus(message) {
+  if (els.workerLocationStatus) els.workerLocationStatus.textContent = message;
+}
+
+function haversineDistanceMeters(latitudeA, longitudeA, latitudeB, longitudeB) {
+  const radians = (degrees) => degrees * Math.PI / 180;
+  const earthRadiusMeters = 6371000;
+  const deltaLatitude = radians(latitudeB - latitudeA);
+  const deltaLongitude = radians(longitudeB - longitudeA);
+  const a = Math.sin(deltaLatitude / 2) ** 2 +
+    Math.cos(radians(latitudeA)) * Math.cos(radians(latitudeB)) *
+    Math.sin(deltaLongitude / 2) ** 2;
+  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function finiteNumberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function positiveNumberOrDefault(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
 async function handleWorkerPunch(action) {
+  if (state.workerPunchSaving) return;
   let emp = state.workerEmployee;
   const typedName = prettifyHumanName(els.workerNameInput?.value.trim() || '');
 
@@ -617,14 +1005,34 @@ async function handleWorkerPunch(action) {
     return;
   }
 
-  if (emp.status === 'inactive' || emp.status === 'terminated') {
+  if (['inactive', 'terminated', 'removed'].includes(String(emp.status || '').toLowerCase())) {
     toast('Your employee record is not active. Contact your manager.', true);
     return;
   }
 
   const publicSiteId = getPublicSiteId();
+  const enteredPin = String(els.workerPinInput?.value || '').trim();
+  if (enteredPin && emp.pinHash) {
+    const enteredHash = await hashWorkerPin(enteredPin, emp.id || emp.employeeId || '');
+    if (enteredHash !== emp.pinHash) {
+      toast('PIN incorrect. You can clear it and continue with the normal name-based flow.', true);
+      return;
+    }
+  }
 
   // Auto-create employee if new
+  if (emp._isNew) {
+    const reusable = findReusableEmployee({
+      name: emp.name,
+      agencyId: '',
+      assignedSiteId: '',
+    }, state.publicEmployees);
+    if (reusable) {
+      emp = reusable;
+      state.workerEmployee = reusable;
+    }
+  }
+
   if (emp._isNew) {
     try {
       const empNumber = await generateNextPublicEmployeeNumber();
@@ -647,6 +1055,8 @@ async function handleWorkerPunch(action) {
         agencyId: '',
         assignedSiteId: publicSiteId,
         siteId: publicSiteId,
+        siteIds: [publicSiteId],
+        qrSlug: state.siteContext.qrSlug || '',
         status: 'active',
         active: true,
         employeeId,
@@ -673,9 +1083,12 @@ async function handleWorkerPunch(action) {
         els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
       }
     } catch (error) {
-      console.warn('Auto-create employee skipped (rules may not be deployed yet):', error.message);
-      // Still allow the punch — employee record will be created by manager or once rules are deployed
-      emp = { name: emp.name, nameKey: normalizeName(emp.name), employeeId: '', employeeNumber: '' };
+      console.warn('Auto-create employee skipped:', error.message);
+      const identityHash = await hashIdentityKey(employeeScopeKey(emp));
+      const existingSnap = await getDoc(doc(db, 'employees', `auto_${identityHash.slice(0, 24)}`));
+      emp = existingSnap.exists()
+        ? { id: existingSnap.id, ...existingSnap.data() }
+        : { name: emp.name, nameKey: normalizeName(emp.name), employeeId: '', employeeNumber: '' };
       state.workerEmployee = emp;
     }
   }
@@ -687,7 +1100,14 @@ async function handleWorkerPunch(action) {
   const dateKey = formatDateKey(now);
   const weekKey = formatDateKey(getMondayDate(now));
 
+  state.workerPunchSaving = true;
+  setWorkerPunchBusy(true);
   try {
+    const duplicateKey = `lastPunch:${emp.employeeId || emp.id || nameKey}:${action}`;
+    const previousPunchMs = Number(localStorage.getItem(duplicateKey) || 0);
+    if (previousPunchMs && nowMs - previousPunchMs < 10000) {
+      throw new Error('That punch was already saved. Please wait a few seconds.');
+    }
     await addDoc(collection(db, 'punches'), {
       name,
       nameKey,
@@ -703,6 +1123,19 @@ async function handleWorkerPunch(action) {
       companyId: getCurrentCompanyId(),
       siteId: emp.siteId || publicSiteId,
       agencyId: emp.agencyId || '',
+      assignedSiteId: emp.assignedSiteId || '',
+      qrSlug: state.siteContext.qrSlug || '',
+      ...buildPunchLocationPayload(emp),
+    });
+
+    cacheWorkerPunch(emp, {
+      name,
+      nameKey,
+      action,
+      timestampMs: nowMs,
+      dateKey,
+      weekKey,
+      employeeId: emp.employeeId || emp.id || '',
     });
 
     if (els.workerLastActionValue) els.workerLastActionValue.textContent = prettyAction(action);
@@ -714,10 +1147,536 @@ async function handleWorkerPunch(action) {
 
     attachWorkerLiveView(name);
     localStorage.setItem('workerPunchName', name);
+    localStorage.setItem(duplicateKey, String(nowMs));
     toast(`${prettyAction(action)} saved.`);
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not save punch.', true);
+  } finally {
+    state.workerPunchSaving = false;
+    setWorkerPunchBusy(false);
+  }
+}
+
+function setWorkerPunchBusy(busy) {
+  document.querySelectorAll('.worker-action-btn').forEach((button) => {
+    button.disabled = busy;
+    button.setAttribute('aria-busy', busy ? 'true' : 'false');
+  });
+}
+
+function updateWorkerPinField(employee) {
+  const available = Boolean(employee?.pinHash);
+  els.workerPinField?.classList.toggle('hidden', !available);
+  if (!available && els.workerPinInput) els.workerPinInput.value = '';
+}
+
+function namesAreSimilar(left, right) {
+  const a = normalizeName(left);
+  const b = normalizeName(right);
+  return a === b || (a.length >= 4 && b.length >= 4 && (a.includes(b) || b.includes(a)));
+}
+
+async function hashWorkerPin(pin, employeeId) {
+  const bytes = new TextEncoder().encode(`${employeeId}:${String(pin).trim()}`);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function hashIdentityKey(value) {
+  const bytes = new TextEncoder().encode(String(value || ''));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function getWorkerCacheKey(employee) {
+  return `qrTimeclockWorkerPunches:name:${normalizeName(employee?.name || '')}`;
+}
+
+function getLegacyWorkerCacheKey(employee) {
+  const identity = employee?.employeeId || employee?.id || '';
+  return identity ? `qrTimeclockWorkerPunches:${identity}` : '';
+}
+
+function getCachedWorkerPunches(employee) {
+  if (!employee?.name) return [];
+  try {
+    const nameRows = JSON.parse(localStorage.getItem(getWorkerCacheKey(employee)) || '[]');
+    const legacyKey = getLegacyWorkerCacheKey(employee);
+    const legacyRows = legacyKey ? JSON.parse(localStorage.getItem(legacyKey) || '[]') : [];
+    const combined = [...(Array.isArray(legacyRows) ? legacyRows : []), ...(Array.isArray(nameRows) ? nameRows : [])];
+    const unique = new Map();
+    combined.forEach((row) => {
+      const key = `${row.timestampMs || 0}:${row.action || ''}:${row.nameKey || normalizeName(row.name || '')}`;
+      unique.set(key, row);
+    });
+    return [...unique.values()].sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
+  } catch (_) {
+    return [];
+  }
+}
+
+function cacheWorkerPunch(employee, punch) {
+  const rows = getCachedWorkerPunches(employee);
+  rows.push(punch);
+  rows.sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
+  localStorage.setItem(getWorkerCacheKey(employee), JSON.stringify(rows.slice(-250)));
+}
+
+function getSelectedWorkerByName() {
+  const typedName = prettifyHumanName(els.workerNameInput?.value.trim() || '');
+  if (
+    state.workerEmployee?.name &&
+    !state.workerEmployee._isNew &&
+    normalizeName(state.workerEmployee.name) === normalizeName(typedName)
+  ) {
+    return state.workerEmployee;
+  }
+  const exactMatches = state.publicEmployees.filter(
+    (employee) => normalizeName(employee.name) === normalizeName(typedName)
+  );
+  if (exactMatches.length === 1) {
+    state.workerEmployee = exactMatches[0];
+    return exactMatches[0];
+  }
+  if (exactMatches.length > 1) {
+    renderAutocomplete(exactMatches, typedName, true);
+    toast('Select your name from the list first.', true);
+  } else {
+    toast('Select your existing worker name first.', true);
+  }
+  return null;
+}
+
+function toggleWorkerSelfService(panel) {
+  els.workerMyTimePanel?.classList.toggle('hidden', panel !== 'time');
+  els.workerFixPanel?.classList.toggle('hidden', panel !== 'fix');
+}
+
+async function showWorkerTimeThisWeek() {
+  const employee = getSelectedWorkerByName();
+  if (!employee) return;
+
+  toggleWorkerSelfService('time');
+  els.workerTimeRangeControls?.classList.add('hidden');
+  applyQuickDateRange('this_week', els.workerTimeFromInput, els.workerTimeToInput);
+  await lookupPublicWorkerTimeRange(employee);
+}
+
+async function showWorkerMoreTime() {
+  const employee = getSelectedWorkerByName();
+  if (!employee) return;
+  toggleWorkerSelfService('time');
+  els.workerTimeRangeControls?.classList.remove('hidden');
+  if (!els.workerTimeFromInput?.value || !els.workerTimeToInput?.value) {
+    applyQuickDateRange('last_2_weeks', els.workerTimeFromInput, els.workerTimeToInput);
+  }
+  await lookupPublicWorkerTimeRange(employee);
+}
+
+async function lookupPublicWorkerTimeRange(selectedEmployee = null) {
+  const employee = selectedEmployee || getSelectedWorkerByName();
+  if (!employee) return;
+  const range = readDateRange(els.workerTimeFromInput, els.workerTimeToInput);
+  if (!range) return;
+
+  toggleWorkerSelfService('time');
+  setTimeRangeStatus(els.workerTimeRangeStatus, `Loading time for ${employee.name}...`);
+  try {
+    const officialPunches = await loadPunchesForEmployeeRange(employee, range.fromMs, range.toMs, {
+      allowLegacyNameFallback: true,
+    });
+    const cachedPunches = getCachedWorkerPunches(employee)
+      .filter((punch) => Number(punch.timestampMs || 0) >= range.fromMs && Number(punch.timestampMs || 0) <= range.toMs);
+    const totals = buildTimeRangeTotals(dedupePunches([...officialPunches, ...cachedPunches]));
+    renderTimeRangeSummary({
+      totals,
+      totalElement: els.workerWeekHoursValue,
+      regularElement: els.workerRegularHoursValue,
+      overtimeElement: els.workerOvertimeHoursValue,
+      daysElement: els.workerDaysWorkedValue,
+      statusElement: els.workerTimeRangeStatus,
+      resultsElement: els.workerTimeRangeResults,
+      emptyMessage: 'No punches found for selected range.',
+    });
+  } catch (error) {
+    console.warn('Official worker time lookup unavailable:', error.message);
+    const cachedPunches = getCachedWorkerPunches(employee)
+      .filter((punch) => Number(punch.timestampMs || 0) >= range.fromMs && Number(punch.timestampMs || 0) <= range.toMs);
+    const totals = buildTimeRangeTotals(cachedPunches);
+    renderTimeRangeSummary({
+      totals,
+      totalElement: els.workerWeekHoursValue,
+      regularElement: els.workerRegularHoursValue,
+      overtimeElement: els.workerOvertimeHoursValue,
+      daysElement: els.workerDaysWorkedValue,
+      statusElement: els.workerTimeRangeStatus,
+      resultsElement: els.workerTimeRangeResults,
+      emptyMessage: 'No punches found for selected range.',
+      statusPrefix: 'Official history is temporarily unavailable. Showing device history only. ',
+    });
+  }
+}
+
+function applyQuickDateRange(rangeName, fromInput, toInput) {
+  if (!fromInput || !toInput) return;
+  const today = startOfLocalDay(new Date());
+  let fromDate = new Date(today);
+  let toDate = new Date(today);
+
+  if (rangeName === 'this_week') {
+    fromDate = getMondayDate(today);
+    toDate = addLocalDays(fromDate, 6);
+  } else if (rangeName === 'last_week') {
+    fromDate = addLocalDays(getMondayDate(today), -7);
+    toDate = addLocalDays(fromDate, 6);
+  } else if (rangeName === 'last_2_weeks') {
+    fromDate = addLocalDays(today, -13);
+  } else if (rangeName === 'this_month') {
+    fromDate = new Date(today.getFullYear(), today.getMonth(), 1);
+  }
+
+  fromInput.value = formatDateInput(fromDate);
+  toInput.value = formatDateInput(toDate);
+}
+
+function startOfLocalDay(date) {
+  const result = new Date(date);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function addLocalDays(date, days) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function readDateRange(fromInput, toInput) {
+  const fromValue = fromInput?.value || '';
+  const toValue = toInput?.value || '';
+  if (!fromValue || !toValue) {
+    toast('Choose both From Date and To Date.', true);
+    return null;
+  }
+  const fromDate = new Date(`${fromValue}T00:00:00`);
+  const toDate = new Date(`${toValue}T23:59:59.999`);
+  if (!Number.isFinite(fromDate.getTime()) || !Number.isFinite(toDate.getTime()) || fromDate > toDate) {
+    toast('Choose a valid date range. From Date must be before To Date.', true);
+    return null;
+  }
+  return {
+    fromValue,
+    toValue,
+    fromMs: fromDate.getTime(),
+    toMs: toDate.getTime(),
+  };
+}
+
+async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {}) {
+  const primaryId = employee.id || employee.employeeId || '';
+  const workerIds = new Set([primaryId, employee.employeeId].filter(Boolean));
+  const directWorkerIds = new Set([primaryId, employee.employeeId].filter(Boolean));
+  getCompatibleWorkerRecords(employee).forEach((record) => {
+    if (record.id) workerIds.add(record.id);
+    if (record.employeeId) workerIds.add(record.employeeId);
+  });
+  if (primaryId) {
+    const mergedConstraints = state.me && isManager()
+      ? [where('mergedInto', '==', primaryId)]
+      : [where('status', '==', 'merged'), where('mergedInto', '==', primaryId)];
+    const mergedSnapshot = await getDocs(query(collection(db, 'employees'), ...mergedConstraints));
+    mergedSnapshot.docs.forEach((record) => {
+      workerIds.add(record.id);
+      directWorkerIds.add(record.id);
+    });
+  }
+
+  const rows = [];
+  let nameQuerySucceeded = false;
+  if (employee.name) {
+    try {
+      const nameRows = await fetchPunchesWithRange(
+        [where('nameKey', '==', normalizeName(employee.name))],
+        fromMs,
+        toMs
+      );
+      rows.push(...nameRows.filter((punch) => {
+        const punchEmployeeId = String(punch.employeeId || '');
+        return !punchEmployeeId || workerIds.has(punchEmployeeId);
+      }));
+      nameQuerySucceeded = true;
+    } catch (error) {
+      console.warn('Normalized-name history lookup unavailable:', error.message);
+    }
+  }
+
+  const idsToQuery = nameQuerySucceeded ? [...directWorkerIds] : [...workerIds];
+  const idRows = await Promise.all(idsToQuery.map((workerId) =>
+    fetchPunchesWithRange([where('employeeId', '==', workerId)], fromMs, toMs)
+  ));
+  idRows.forEach((workerRows) => rows.push(...workerRows));
+
+  if (options.allowLegacyNameFallback && employee.name) {
+    const legacyConstraints = state.me && isManager()
+      ? []
+      : [where('employeeId', '==', '')];
+    const legacyRows = await fetchPunchesWithRange(
+      legacyConstraints,
+      fromMs,
+      toMs
+    );
+    const normalizedName = normalizeName(employee.name);
+    rows.push(...legacyRows.filter((punch) =>
+      normalizeName(punch.name || punch.employeeName || '') === normalizedName ||
+      String(punch.nameKey || '').trim().toLowerCase() === normalizedName
+    ));
+  }
+
+  return dedupePunches(rows);
+}
+
+function getCompatibleWorkerRecords(employee) {
+  if (!isActiveEmployee(employee)) return [employee];
+  const sourceMap = new Map();
+  const sourceRecords = state.me && isManager()
+    ? [...state.publicEmployeeRecords, ...state.allEmployees]
+    : state.publicEmployeeRecords;
+  sourceRecords.forEach((record) => sourceMap.set(record.id, record));
+  const source = [...sourceMap.values()];
+  const normalizedName = normalizeIdentityPart(employee.name || employee.nameKey);
+  const sameName = source.filter((record) =>
+    isActiveEmployee(record) &&
+    normalizeIdentityPart(record.name || record.nameKey) === normalizedName
+  );
+  const nonBlankScopes = new Set(
+    sameName.map((record) => {
+      const agency = normalizeIdentityPart(record.agencyId);
+      const site = normalizeIdentityPart(record.assignedSiteId || record.siteId);
+      return agency || site ? `${agency}|${site}` : '';
+    }).filter(Boolean)
+  );
+  if (nonBlankScopes.size <= 1) return sameName;
+  const targetAgency = normalizeIdentityPart(employee.agencyId);
+  const targetSite = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+  return sameName.filter((record) =>
+    normalizeIdentityPart(record.agencyId) === targetAgency &&
+    normalizeIdentityPart(record.assignedSiteId || record.siteId) === targetSite
+  );
+}
+
+async function fetchPunchesWithRange(baseConstraints, fromMs, toMs) {
+  try {
+    const rangedQuery = query(
+      collection(db, 'punches'),
+      ...baseConstraints,
+      where('timestampMs', '>=', fromMs),
+      where('timestampMs', '<=', toMs)
+    );
+    const snapshot = await getDocs(rangedQuery);
+    return snapshot.docs.map((record) => ({ id: record.id, ...record.data() }));
+  } catch (error) {
+    if (!['failed-precondition', 'permission-denied'].includes(error.code)) throw error;
+    const snapshot = await getDocs(query(collection(db, 'punches'), ...baseConstraints));
+    return snapshot.docs
+      .map((record) => ({ id: record.id, ...record.data() }))
+      .filter((punch) => Number(punch.timestampMs || 0) >= fromMs && Number(punch.timestampMs || 0) <= toMs);
+  }
+}
+
+function dedupePunches(punches) {
+  const unique = new Map();
+  punches.forEach((punch) => {
+    const key = punch.id || [
+      punch.employeeId || '',
+      punch.timestampMs || 0,
+      punch.action || '',
+      normalizeName(punch.name || punch.employeeName || ''),
+    ].join('|');
+    unique.set(key, punch);
+  });
+  return [...unique.values()].sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
+}
+
+function buildTimeRangeTotals(punches) {
+  const grouped = new Map();
+  dedupePunches(punches).forEach((punch) => {
+    const timestampMs = Number(punch.timestampMs || 0);
+    if (!timestampMs) return;
+    const dateKey = punch.dateKey || formatDateKey(new Date(timestampMs));
+    if (!grouped.has(dateKey)) grouped.set(dateKey, []);
+    grouped.get(dateKey).push({ ...punch, timestampMs });
+  });
+
+  const daily = {};
+  const weeklyMinutes = new Map();
+  let totalMinutes = 0;
+
+  [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right)).forEach(([dateKey, dayPunches]) => {
+    const sorted = [...dayPunches].sort((left, right) => left.timestampMs - right.timestampMs);
+    const actionTimes = {
+      clock_in: [],
+      start_lunch: [],
+      end_lunch: [],
+      clock_out: [],
+    };
+    let activeStart = null;
+    let minutes = 0;
+
+    sorted.forEach((punch) => {
+      if (actionTimes[punch.action]) actionTimes[punch.action].push(punch.timestampMs);
+      if (punch.action === 'clock_in') activeStart = punch.timestampMs;
+      if (punch.action === 'start_lunch') {
+        if (activeStart) minutes += Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
+        activeStart = null;
+      }
+      if (punch.action === 'end_lunch') activeStart = punch.timestampMs;
+      if (punch.action === 'clock_out') {
+        if (activeStart) minutes += Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
+        activeStart = null;
+      }
+    });
+
+    const warnings = [];
+    if (actionTimes.clock_in.length && !actionTimes.clock_out.length) warnings.push('Missing Clock Out');
+    if (actionTimes.clock_out.length && !actionTimes.clock_in.length) warnings.push('Missing Clock In');
+    if (actionTimes.start_lunch.length && !actionTimes.end_lunch.length) warnings.push('Missing Lunch In');
+    if (actionTimes.end_lunch.length && !actionTimes.start_lunch.length) warnings.push('Missing Lunch Out');
+
+    const weekKey = formatDateKey(getMondayDate(new Date(`${dateKey}T12:00:00`)));
+    weeklyMinutes.set(weekKey, (weeklyMinutes.get(weekKey) || 0) + minutes);
+    totalMinutes += minutes;
+    daily[dateKey] = {
+      actionTimes,
+      minutes,
+      hours: Number((minutes / 60).toFixed(2)),
+      warnings,
+    };
+  });
+
+  let regularMinutes = 0;
+  let overtimeMinutes = 0;
+  weeklyMinutes.forEach((minutes) => {
+    regularMinutes += Math.min(minutes, 40 * 60);
+    overtimeMinutes += Math.max(0, minutes - (40 * 60));
+  });
+
+  return {
+    daily,
+    punches: dedupePunches(punches),
+    daysWorked: Object.keys(daily).length,
+    totalHours: Number((totalMinutes / 60).toFixed(2)),
+    regularHours: Number((regularMinutes / 60).toFixed(2)),
+    overtimeHours: Number((overtimeMinutes / 60).toFixed(2)),
+  };
+}
+
+function renderTimeRangeSummary({
+  totals,
+  totalElement,
+  regularElement,
+  overtimeElement,
+  daysElement,
+  statusElement,
+  resultsElement,
+  emptyMessage,
+  statusPrefix = '',
+}) {
+  if (totalElement) totalElement.textContent = Number(totals.totalHours || 0).toFixed(2);
+  if (regularElement) regularElement.textContent = Number(totals.regularHours || 0).toFixed(2);
+  if (overtimeElement) overtimeElement.textContent = Number(totals.overtimeHours || 0).toFixed(2);
+  if (daysElement) daysElement.textContent = String(totals.daysWorked || 0);
+
+  const dateKeys = Object.keys(totals.daily || {}).sort().reverse();
+  setTimeRangeStatus(
+    statusElement,
+    `${statusPrefix}Total Hours: ${Number(totals.totalHours || 0).toFixed(2)}`
+  );
+  if (!resultsElement) return;
+  resultsElement.innerHTML = dateKeys.length
+    ? dateKeys.map((dateKey) => renderTimeResultCard(dateKey, totals.daily[dateKey])).join('')
+    : `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
+}
+
+function renderTimeResultCard(dateKey, day) {
+  const actionLabel = (action) => {
+    const times = day.actionTimes[action] || [];
+    return times.length ? times.map(formatTime).join(', ') : '-';
+  };
+  return `
+    <article class="time-result-card">
+      <div class="time-result-card-head">
+        <strong>${escapeHtml(formatDateOnly(new Date(`${dateKey}T12:00:00`).getTime()))}</strong>
+        <span class="pill">${Number(day.hours || 0).toFixed(2)} hours</span>
+      </div>
+      <div class="time-punch-grid">
+        <div class="time-punch-item"><span>Clock In</span><strong>${escapeHtml(actionLabel('clock_in'))}</strong></div>
+        <div class="time-punch-item"><span>Lunch Out</span><strong>${escapeHtml(actionLabel('start_lunch'))}</strong></div>
+        <div class="time-punch-item"><span>Lunch In</span><strong>${escapeHtml(actionLabel('end_lunch'))}</strong></div>
+        <div class="time-punch-item"><span>Clock Out</span><strong>${escapeHtml(actionLabel('clock_out'))}</strong></div>
+      </div>
+      ${day.warnings.length
+        ? `<div class="time-warning">${day.warnings.map(escapeHtml).join(' · ')}</div>`
+        : ''}
+    </article>
+  `;
+}
+
+function setTimeRangeStatus(element, message) {
+  if (element) element.textContent = message;
+}
+
+async function handlePublicTimeFixSubmit(event) {
+  event.preventDefault();
+  const employee = getSelectedWorkerByName();
+  if (!employee) return;
+
+  const requestedAction = els.workerFixActionInput?.value || '';
+  const requestedDate = els.workerFixDateInput?.value || '';
+  const requestedTime = els.workerFixTimeInput?.value || '';
+  const reason = String(els.workerFixReasonInput?.value || '').trim();
+  const requestedTimestampMs = parseLocalDateAndTime(requestedDate, requestedTime);
+
+  if (!requestedAction || !requestedDate || !requestedTime || !reason || !requestedTimestampMs) {
+    toast('Fill out every time fix field.', true);
+    return;
+  }
+
+  try {
+    await addDoc(collection(db, 'missedPunchRequests'), {
+      uid: '',
+      employeeId: employee.employeeId || employee.id,
+      employeeNumber: employee.employeeNumber || '',
+      ...branchPayload(employee.siteId || getPublicSiteId()),
+      agencyId: employee.agencyId || '',
+      name: employee.name,
+      nameKey: normalizeName(employee.name),
+      requestedAction,
+      requestedDate,
+      requestedTime,
+      requestedTimestampMs,
+      reason,
+      status: 'pending',
+      source: 'public_worker',
+      reviewedBy: '',
+      reviewedAt: null,
+      approvedBy: '',
+      approvedAt: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    els.workerFixForm?.reset();
+    if (els.workerFixDateInput) els.workerFixDateInput.value = formatDateInput(new Date());
+    if (els.workerFixTimeInput) els.workerFixTimeInput.value = formatTimeForInput(Date.now());
+    toggleWorkerSelfService(null);
+    if (els.workerStatusMessage) {
+      els.workerStatusMessage.textContent = `Time fix request submitted for ${employee.name}. A manager will review it.`;
+    }
+    toast('Time fix request submitted.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not submit the time fix request.', true);
   }
 }
 
@@ -781,7 +1740,7 @@ async function handleManualPunchSubmit(event) {
       createdAt: serverTimestamp(),
       createdBy: state.profile?.name || state.me?.email || 'Manager',
       ...branchPayload(),
-      agencyId: '',
+      agencyId: state.agencyId || '',
       employeeId: '',
     });
 
@@ -894,6 +1853,11 @@ function findLatestClockInTime(rows) {
 async function handleLogin(event) {
   event.preventDefault();
 
+  if (!els.legalConsent?.checked) {
+    toast('You must agree to the Terms of Use and Privacy Policy.', true);
+    return;
+  }
+
   try {
     await signInWithEmailAndPassword(
       auth,
@@ -901,6 +1865,8 @@ async function handleLogin(event) {
       els.passwordInput?.value
     );
     if (els.passwordInput) els.passwordInput.value = '';
+    if (els.legalConsent) els.legalConsent.checked = false;
+    syncLoginConsent();
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not sign in.', true);
@@ -959,6 +1925,12 @@ async function handleSignupRequest(event) {
     toast(error.message || 'Could not request account access.', true);
   } finally {
     state.creatingPendingProfile = false;
+  }
+}
+
+function syncLoginConsent() {
+  if (els.loginSubmitBtn) {
+    els.loginSubmitBtn.disabled = !els.legalConsent?.checked;
   }
 }
 
@@ -1036,20 +2008,21 @@ function agencyLabel(agencyId) {
 
 function attachRoleViews() {
   const emp = isEmployee();
-  const mgr = isManager();
+  const canEdit = canEditPunches();
+  const canManage = canManageEmployees();
 
   // Employee-only tabs
   els.myTimecardTabBtn?.classList.toggle('hidden', !emp);
   els.missedPunchTabBtn?.classList.toggle('hidden', !emp);
 
-  // Manager/admin tabs
-  els.managerTabBtn?.classList.toggle('hidden', emp);
-  els.timesheetsTabBtn?.classList.toggle('hidden', emp);
-  els.editPunchesTabBtn?.classList.toggle('hidden', emp);
-  els.approvalsTabBtn?.classList.toggle('hidden', !mgr);
-  els.employeesTabBtn?.classList.toggle('hidden', !mgr);
+  // Punch editors and employee managers
+  els.managerTabBtn?.classList.toggle('hidden', !canEdit);
+  els.timesheetsTabBtn?.classList.toggle('hidden', !canEdit);
+  els.editPunchesTabBtn?.classList.toggle('hidden', !canEdit);
+  els.approvalsTabBtn?.classList.toggle('hidden', !canEdit);
+  els.employeesTabBtn?.classList.toggle('hidden', !canManage);
   els.adminTabBtn?.classList.toggle('hidden', !isAdmin());
-  els.agencyTabBtn?.classList.toggle('hidden', emp);
+  els.agencyTabBtn?.classList.toggle('hidden', !canEdit);
 
   if (emp) {
     if (els.myTimecardWeekPicker) {
@@ -1059,16 +2032,23 @@ function attachRoleViews() {
     switchTab('myTimecardTab');
     attachMyTimecardView();
     attachMyMissedPunchView();
-  } else {
+  } else if (canEdit) {
     switchTab('managerTab');
-    if (mgr) {
+    if (canManage) {
       attachEmployeesView();
-      attachApprovalView();
     }
+    attachApprovalView();
+  } else {
+    document.querySelectorAll('.tab-panel').forEach((panel) => panel.classList.add('hidden'));
+    toast(`Role "${normalizedRole() || 'unknown'}" has no dashboard permissions.`, true);
   }
 }
 
 function switchTab(tabId) {
+  if (!canAccessTab(tabId)) {
+    toast('Your role does not have access to that section.', true);
+    return;
+  }
   document.querySelectorAll('.tab').forEach((tab) => {
     tab.classList.toggle('active', tab.dataset.tab === tabId);
   });
@@ -1076,6 +2056,16 @@ function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach((panel) => {
     panel.classList.toggle('hidden', panel.id !== tabId);
   });
+}
+
+function canAccessTab(tabId) {
+  if (['myTimecardTab', 'missedPunchTab'].includes(tabId)) return isEmployee();
+  if (['managerTab', 'timesheetsTab', 'editPunchesTab', 'approvalsTab', 'agencyTab'].includes(tabId)) {
+    return canEditPunches();
+  }
+  if (tabId === 'employeesTab') return canManageEmployees();
+  if (tabId === 'adminTab') return isAdmin();
+  return false;
 }
 
 function attachManagerLiveViews() {
@@ -1098,6 +2088,7 @@ function attachManagerLiveViews() {
         renderLivePunches(rows);
         renderActiveNow(rows);
         renderEditPunchesTable(rows);
+        renderGpsSummary(rows);
       },
       (error) => {
         console.error(error);
@@ -1111,7 +2102,7 @@ function renderLivePunches(rows) {
   if (!els.livePunchBody) return;
 
   if (!rows.length) {
-    els.livePunchBody.innerHTML = '<tr><td colspan="4">No live data yet.</td></tr>';
+    els.livePunchBody.innerHTML = '<tr><td colspan="5">No live data yet.</td></tr>';
     return;
   }
 
@@ -1122,9 +2113,44 @@ function renderLivePunches(rows) {
         <td>${escapeHtml(row.name || '-')}</td>
         <td>${prettyAction(row.action)}</td>
         <td>${escapeHtml(row.source || '-')}</td>
+        <td>${renderGpsBadge(row)}</td>
       </tr>
     `)
     .join('');
+}
+
+function renderGpsSummary(rows) {
+  const summary = rows.reduce((counts, row) => {
+    const status = String(row.locationStatus || 'not_requested').toLowerCase();
+    if (status === 'verified') counts.verified += 1;
+    if (status === 'denied') counts.denied += 1;
+    if (row.withinAllowedRadius === false) counts.outside += 1;
+    if (isGpsAccuracyTooLow(row)) counts.lowAccuracy += 1;
+    return counts;
+  }, { verified: 0, denied: 0, outside: 0, lowAccuracy: 0 });
+  if (els.gpsVerifiedCount) els.gpsVerifiedCount.textContent = String(summary.verified);
+  if (els.gpsDeniedCount) els.gpsDeniedCount.textContent = String(summary.denied);
+  if (els.gpsOutsideCount) els.gpsOutsideCount.textContent = String(summary.outside);
+  if (els.gpsLowAccuracyCount) els.gpsLowAccuracyCount.textContent = String(summary.lowAccuracy);
+}
+
+function renderGpsBadge(row) {
+  if (row.withinAllowedRadius === false) {
+    return '<span class="gps-badge warning">Outside Radius</span>';
+  }
+  if (isGpsAccuracyTooLow(row)) {
+    return '<span class="gps-badge warning">Accuracy Too Low</span>';
+  }
+  const status = String(row.locationStatus || 'not_requested').toLowerCase();
+  if (status === 'verified') return '<span class="gps-badge verified">GPS Verified</span>';
+  if (status === 'denied') return '<span class="gps-badge denied">GPS Denied</span>';
+  return `<span class="gps-badge">${escapeHtml(prettyAction(status))}</span>`;
+}
+
+function isGpsAccuracyTooLow(row) {
+  const accuracy = finiteNumberOrNull(row.gpsAccuracyMeters);
+  const threshold = positiveNumberOrDefault(row.maxGpsAccuracyMeters, 100);
+  return accuracy !== null && accuracy > threshold;
 }
 
 function renderActiveNow(rows) {
@@ -1165,6 +2191,10 @@ function renderActiveNow(rows) {
 
 function renderEditPunchesTable(rows) {
   if (!els.editPunchesBody) return;
+  if (!canEditPunches()) {
+    els.editPunchesBody.innerHTML = '<tr><td colspan="9">Your role cannot edit punches.</td></tr>';
+    return;
+  }
 
   const filter = String(els.editFilterNameInput?.value || '').trim().toLowerCase();
   const filtered = rows.filter((row) => {
@@ -1173,7 +2203,7 @@ function renderEditPunchesTable(rows) {
   });
 
   if (!filtered.length) {
-    els.editPunchesBody.innerHTML = '<tr><td colspan="8">No punches found.</td></tr>';
+    els.editPunchesBody.innerHTML = '<tr><td colspan="9">No punches found.</td></tr>';
     return;
   }
 
@@ -1193,6 +2223,7 @@ function renderEditPunchesTable(rows) {
         <td>${escapeHtml(row.source || '-')}</td>
         <td>${escapeHtml(row.editedBy || '-')}</td>
         <td>${escapeHtml(editedAtText)}</td>
+        <td>${renderGpsBadge(row)}</td>
         <td>
           <button class="secondary-btn manager-edit-punch-btn" data-id="${row.id}" type="button" ${canEditPunches() ? '' : 'disabled'}>Edit</button>
           <button class="danger-btn manager-delete-punch-btn" data-id="${row.id}" type="button" ${canDeletePunches() ? '' : 'disabled'}>Delete</button>
@@ -1895,7 +2926,7 @@ function renderApprovalList(requests) {
 }
 
 async function approveRequest(requestId) {
-  if (!isManager()) { toast('Only managers can approve.', true); return; }
+  if (!canEditPunches()) { toast('Your role cannot approve punch requests.', true); return; }
 
   const req = state.allMissedRequests.find((r) => r.id === requestId);
   if (!req) { toast('Request not found.', true); return; }
@@ -1950,7 +2981,7 @@ async function approveRequest(requestId) {
 }
 
 async function denyRequest(requestId) {
-  if (!isManager()) { toast('Only managers can deny.', true); return; }
+  if (!canEditPunches()) { toast('Your role cannot deny punch requests.', true); return; }
 
   const req = state.allMissedRequests.find((r) => r.id === requestId);
   if (!req) { toast('Request not found.', true); return; }
@@ -1994,6 +3025,8 @@ function attachEmployeesView() {
     onSnapshot(empQuery, (snap) => {
       state.allEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       renderEmployeeList(state.allEmployees);
+      renderManagerTimeWorkerOptions();
+      if (isAdmin()) renderDuplicateWorkers(false);
     }, (error) => {
       console.error(error);
       toast(error.message || 'Could not load employees.', true);
@@ -2002,23 +3035,50 @@ function attachEmployeesView() {
 }
 
 function renderEmployeeList(employees) {
-  if (!els.employeeListBody) return;
+  if (!els.employeeListBody || !els.inactiveWorkerListBody) return;
 
   const filter = String(els.empFilterInput?.value || '').trim().toLowerCase();
+  const statusFilter = state.employeeStatusFilter || 'active';
   const filtered = employees.filter((e) => {
+    const employeeStatus = String(e.status || 'active').toLowerCase();
+    if (statusFilter !== 'all' && employeeStatus !== statusFilter) return false;
     if (!filter) return true;
     return (
       String(e.name || '').toLowerCase().includes(filter) ||
       String(e.employeeNumber || '').toLowerCase().includes(filter)
     );
   });
+  const rosterEmployees = statusFilter === 'active'
+    ? collapseDuplicateEmployees(filtered)
+    : filtered;
+  const inactiveEmployees = employees.filter((employee) => !isActiveEmployee(employee));
 
-  if (!filtered.length) {
+  els.inactiveWorkerListBody.innerHTML = inactiveEmployees.length
+    ? inactiveEmployees.map((employee) => `
+      <tr>
+        <td>${escapeHtml(employee.employeeNumber || '-')}</td>
+        <td>${escapeHtml(employee.name || '-')}</td>
+        <td>${escapeHtml(employee.status || 'inactive')}</td>
+        <td>${escapeHtml(formatRemovedAt(employee))}</td>
+        <td>${escapeHtml(employee.removedBy || '-')}</td>
+        <td>${escapeHtml(employee.removalReason || '-')}</td>
+        <td>${String(employee.status).toLowerCase() === 'merged'
+          ? `Merged into ${escapeHtml(employee.mergedInto || '-')}`
+          : `<button class="primary-btn emp-reactivate-btn" data-id="${employee.id}" type="button">Reactivate</button>`}</td>
+      </tr>
+    `).join('')
+    : '<tr><td colspan="7">No removed or inactive workers.</td></tr>';
+
+  els.inactiveWorkerListBody.querySelectorAll('.emp-reactivate-btn').forEach((button) => {
+    button.addEventListener('click', () => reactivateEmployee(button.dataset.id));
+  });
+
+  if (!rosterEmployees.length) {
     els.employeeListBody.innerHTML = '<tr><td colspan="6">No employees found.</td></tr>';
     return;
   }
 
-  els.employeeListBody.innerHTML = filtered.map((emp) => `
+  els.employeeListBody.innerHTML = rosterEmployees.map((emp) => `
     <tr>
       <td>${escapeHtml(emp.employeeNumber || '-')}</td>
       <td>${escapeHtml(emp.name || '-')}</td>
@@ -2036,6 +3096,152 @@ function renderEmployeeList(employees) {
   });
 }
 
+function renderManagerTimeWorkerOptions() {
+  if (!els.managerTimeWorkerSelect || !isManager()) return;
+  const selectedId = els.managerTimeWorkerSelect.value;
+  const activeEmployees = collapseDuplicateEmployees(state.allEmployees.filter(isActiveEmployee));
+  const historicalEmployees = state.allEmployees.filter((employee) =>
+    !isActiveEmployee(employee) && String(employee.status || '').toLowerCase() !== 'merged'
+  );
+  const employees = [...activeEmployees, ...historicalEmployees]
+    .sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
+
+  els.managerTimeWorkerSelect.innerHTML = [
+    '<option value="">Select a worker</option>',
+    ...employees.map((employee) => `
+      <option value="${escapeHtml(employee.id)}">
+        ${escapeHtml(employee.name || '-')} · ${escapeHtml(employee.employeeNumber || '-')} · ${escapeHtml(agencyLabel(employee.agencyId))}
+      </option>
+    `),
+  ].join('');
+  if (employees.some((employee) => employee.id === selectedId)) {
+    els.managerTimeWorkerSelect.value = selectedId;
+  }
+}
+
+async function lookupManagerTimeRange() {
+  if (!isManager()) return;
+  const employeeId = els.managerTimeWorkerSelect?.value || '';
+  const employee = state.allEmployees.find((row) => row.id === employeeId);
+  if (!employee) {
+    toast('Choose a worker first.', true);
+    return;
+  }
+  if (isAgencyUser() && employee.agencyId !== state.agencyId) {
+    toast('That worker is outside your agency.', true);
+    return;
+  }
+  const range = readDateRange(els.managerTimeFromInput, els.managerTimeToInput);
+  if (!range) return;
+
+  setTimeRangeStatus(els.managerTimeRangeStatus, `Loading time for ${employee.name}...`);
+  if (els.managerTimeExportBtn) els.managerTimeExportBtn.disabled = true;
+  try {
+    const punches = await loadPunchesForEmployeeRange(employee, range.fromMs, range.toMs, {
+      allowLegacyNameFallback: true,
+    });
+    const totals = buildTimeRangeTotals(punches);
+    state.managerTimeLookup = { employee, range, totals };
+    renderTimeRangeSummary({
+      totals,
+      totalElement: els.managerTimeTotalValue,
+      regularElement: els.managerTimeRegularValue,
+      overtimeElement: els.managerTimeOvertimeValue,
+      daysElement: els.managerTimeDaysValue,
+      statusElement: els.managerTimeRangeStatus,
+      resultsElement: els.managerTimeRangeResults,
+      emptyMessage: 'No punches were found for this worker and date range.',
+      statusPrefix: `${employee.name} · `,
+    });
+    if (els.managerTimeExportBtn) els.managerTimeExportBtn.disabled = !totals.daysWorked;
+  } catch (error) {
+    console.error(error);
+    state.managerTimeLookup = null;
+    setTimeRangeStatus(els.managerTimeRangeStatus, error.message || 'Could not load worker time.');
+    if (els.managerTimeRangeResults) {
+      els.managerTimeRangeResults.innerHTML = '<div class="empty-state">The lookup failed without changing any punch data.</div>';
+    }
+    toast(error.message || 'Could not load worker time.', true);
+  }
+}
+
+function exportManagerTimeRangeCsv() {
+  if (!isManager() || !state.managerTimeLookup) return;
+  const { employee, range, totals } = state.managerTimeLookup;
+  if (isAgencyUser() && employee.agencyId !== state.agencyId) return;
+
+  const headers = [
+    'Worker Name',
+    'Employee Number',
+    'Date',
+    'Clock In',
+    'Lunch Out',
+    'Lunch In',
+    'Clock Out',
+    'Total Hours',
+    'Warnings',
+    'Agency',
+    'Site',
+  ];
+  const rows = Object.keys(totals.daily).sort().map((dateKey) => {
+    const day = totals.daily[dateKey];
+    const times = (action) => (day.actionTimes[action] || []).map(formatTime).join(' | ');
+    return [
+      employee.name || '',
+      employee.employeeNumber || '',
+      dateKey,
+      times('clock_in'),
+      times('start_lunch'),
+      times('end_lunch'),
+      times('clock_out'),
+      Number(day.hours || 0).toFixed(2),
+      day.warnings.join(' | '),
+      agencyLabel(employee.agencyId),
+      employee.assignedSiteId || employee.siteId || '',
+    ];
+  });
+  rows.push([
+    employee.name || '',
+    employee.employeeNumber || '',
+    `${range.fromValue} to ${range.toValue}`,
+    '',
+    '',
+    '',
+    '',
+    Number(totals.totalHours || 0).toFixed(2),
+    `Regular: ${Number(totals.regularHours || 0).toFixed(2)} | Overtime: ${Number(totals.overtimeHours || 0).toFixed(2)}`,
+    agencyLabel(employee.agencyId),
+    employee.assignedSiteId || employee.siteId || '',
+  ]);
+
+  downloadCsv(
+    `worker-time-${normalizeName(employee.name)}-${range.fromValue}-to-${range.toValue}.csv`,
+    [headers, ...rows]
+  );
+}
+
+function downloadCsv(filename, rows) {
+  const csv = rows
+    .map((row) => row.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(','))
+    .join('\r\n');
+  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function isActiveEmployee(employee) {
+  return !['inactive', 'terminated', 'removed', 'merged'].includes(String(employee?.status || 'active').toLowerCase());
+}
+
+function formatRemovedAt(employee) {
+  const milliseconds = Number(employee?.removedAtMs || 0)
+    || Number(employee?.removedAt?.seconds || 0) * 1000;
+  return milliseconds ? formatDateTime(milliseconds) : '-';
+}
+
 function loadEmployeeForEdit(empId) {
   const emp = (state.allEmployees || []).find((e) => e.id === empId);
   if (!emp) { toast('Employee not found.', true); return; }
@@ -2046,6 +3252,7 @@ function loadEmployeeForEdit(empId) {
   if (els.empAgencySelect) els.empAgencySelect.value = emp.agencyId || '';
   if (els.empSiteInput) els.empSiteInput.value = emp.siteId || emp.assignedSiteId || CURRENT_SITE_ID;
   if (els.empStatusSelect) els.empStatusSelect.value = emp.status || 'active';
+  if (els.empPinInput) els.empPinInput.value = '';
   els.empCancelEditBtn?.classList.remove('hidden');
 }
 
@@ -2058,8 +3265,8 @@ function cancelEmployeeEdit() {
 async function handleSaveEmployee(event) {
   event.preventDefault();
 
-  if (!isManager()) {
-    toast('Only managers and admins can manage employees.', true);
+  if (!canManageEmployees()) {
+    toast('Your role does not allow employee management.', true);
     return;
   }
 
@@ -2081,10 +3288,31 @@ async function handleSaveEmployee(event) {
   }
   const status = els.empStatusSelect?.value || 'active';
   const existingId = els.employeeDocId?.value || '';
+  const existingEmployee = state.allEmployees.find((employee) => employee.id === existingId);
 
   // Auto-generate employee number if blank
   if (!employeeNumber) {
     employeeNumber = await generateNextEmployeeNumber();
+  }
+
+  if (!existingId) {
+    const reusable = findReusableEmployee({
+      name,
+      employeeNumber,
+      agencyId,
+      assignedSiteId,
+    }, state.allEmployees);
+    if (reusable) {
+      await logAudit('duplicate_detected', 'employee', reusable.id, {}, {
+        attemptedName: name,
+        attemptedEmployeeNumber: employeeNumber,
+        agencyId,
+        assignedSiteId,
+      });
+      loadEmployeeForEdit(reusable.id);
+      toast(`Existing worker reused: ${reusable.name}.`);
+      return;
+    }
   }
 
   const payload = {
@@ -2097,16 +3325,43 @@ async function handleSaveEmployee(event) {
     agencyId,
     assignedSiteId,
     siteId: assignedSiteId,
+    siteIds: assignedSiteId ? [assignedSiteId] : [],
+    qrSlug: existingEmployee?.qrSlug || state.siteContext.qrSlug || '',
     status,
     active: status === 'active',
     updatedAt: serverTimestamp(),
   };
 
+  if (existingId && status !== 'active' && isActiveEmployee(existingEmployee)) {
+    const removalReason = String(prompt(`Reason for marking ${name} ${status}:`) || '').trim();
+    if (!removalReason) {
+      toast('A removal reason is required.', true);
+      return;
+    }
+    payload.removedAt = serverTimestamp();
+    payload.removedAtMs = Date.now();
+    payload.removedBy = state.profile?.name || state.me?.email || 'Manager';
+    payload.removedById = state.me?.uid || '';
+    payload.removalReason = removalReason;
+  }
+
+  const pin = String(els.empPinInput?.value || '').trim();
+  if (pin && !/^\d{4,12}$/.test(pin)) {
+    toast('Optional PIN must be 4 to 12 digits.', true);
+    return;
+  }
+
   try {
     if (existingId) {
-      // Update existing employee
+      if (pin) {
+        payload.pinHash = await hashWorkerPin(pin, existingId);
+        payload.pinUpdatedAt = serverTimestamp();
+      }
       await setDoc(doc(db, 'employees', existingId), payload, { merge: true });
-      await logAudit('employee_updated', 'employee', existingId, {}, payload, 'Admin employee update');
+      const auditAction = existingEmployee?.status !== status
+        ? 'worker_status_changed'
+        : 'employee_updated';
+      await logAudit(auditAction, 'employee', existingId, existingEmployee || {}, payload, 'Admin employee update');
       toast('Employee updated.');
     } else {
       const reusableEmployee = await findExistingEmployeeForUpsert({
@@ -2118,6 +3373,10 @@ async function handleSaveEmployee(event) {
       });
       const employeeId = reusableEmployee?.id || buildStableEmployeeId(employeeNumber, agencyId, assignedSiteId || getCurrentCompanyId());
       payload.employeeId = employeeId;
+      if (pin) {
+        payload.pinHash = await hashWorkerPin(pin, employeeId);
+        payload.pinUpdatedAt = serverTimestamp();
+      }
       if (!reusableEmployee) {
         payload.createdAt = serverTimestamp();
       }
@@ -2132,6 +3391,302 @@ async function handleSaveEmployee(event) {
     console.error(error);
     toast(error.message || 'Could not save employee.', true);
   }
+}
+
+async function reactivateEmployee(employeeId) {
+  if (!isManager()) return;
+  const employee = state.allEmployees.find((row) => row.id === employeeId);
+  if (!employee) return;
+  const payload = {
+    status: 'active',
+    reactivatedAt: serverTimestamp(),
+    reactivatedAtMs: Date.now(),
+    reactivatedBy: state.profile?.name || state.me?.email || 'Manager',
+    reactivatedById: state.me?.uid || '',
+    updatedAt: serverTimestamp(),
+  };
+  try {
+    await updateDoc(doc(db, 'employees', employeeId), payload);
+    await logAudit('worker_reactivated', 'employee', employeeId, employee, payload);
+    toast('Employee reactivated.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not reactivate employee.', true);
+  }
+}
+
+function buildDuplicateGroups(employees = state.allEmployees) {
+  const candidates = employees.filter(isActiveEmployee);
+  const buckets = new Map();
+  const employeesByName = new Map();
+
+  const addToBucket = (key, reason, employee) => {
+    if (!key) return;
+    if (!buckets.has(key)) buckets.set(key, { reason, employees: [] });
+    buckets.get(key).employees.push(employee);
+  };
+
+  candidates.forEach((employee) => {
+    const number = normalizeIdentityPart(employee.employeeNumber);
+    const name = normalizeIdentityPart(employee.name || employee.nameKey);
+    const agency = normalizeIdentityPart(employee.agencyId);
+    const site = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+    if (!employeesByName.has(name)) employeesByName.set(name, []);
+    employeesByName.get(name).push(employee);
+    if (number) {
+      addToBucket(
+        `number:${number}|${name}|${agency}|${site}`,
+        `Same employee number, normalized name, agency, and site (${employee.employeeNumber})`,
+        employee
+      );
+    }
+  });
+
+  employeesByName.forEach((nameEmployees, name) => {
+    const nonBlankScopes = new Set(
+      nameEmployees
+        .map((employee) => {
+          const agency = normalizeIdentityPart(employee.agencyId);
+          const site = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+          return { agency, site, key: `${agency}|${site}` };
+        })
+        .filter((scope) => scope.agency || scope.site)
+        .map((scope) => scope.key)
+    );
+
+    if (nonBlankScopes.size <= 1) {
+      nameEmployees.forEach((employee) => {
+        addToBucket(`name:${name}`, 'Same normalized name with one compatible agency/site', employee);
+      });
+      return;
+    }
+
+    nameEmployees.forEach((employee) => {
+      const agency = normalizeIdentityPart(employee.agencyId);
+      const site = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
+      addToBucket(`scope:${name}|${agency}|${site}`, 'Same normalized name, agency, and site', employee);
+    });
+  });
+
+  const uniqueGroups = new Map();
+  [...buckets.values()]
+    .filter((group) => group.employees.length > 1)
+    .forEach((group) => {
+      const ids = [...new Set(group.employees.map((employee) => employee.id))].sort();
+      if (ids.length < 2) return;
+      const signature = ids.join('|');
+      if (!uniqueGroups.has(signature)) {
+        uniqueGroups.set(signature, {
+          reasons: [],
+          employees: ids
+            .map((id) => candidates.find((row) => row.id === id))
+            .sort(compareEmployeeRecords),
+        });
+      }
+      uniqueGroups.get(signature).reasons.push(group.reason);
+    });
+
+  return [...uniqueGroups.values()]
+    .map((group) => ({ ...group, reasons: [...new Set(group.reasons)] }))
+    .sort((left, right) => right.employees.length - left.employees.length);
+}
+
+function renderDuplicateWorkers(logDetection = false) {
+  if (!els.duplicateWorkersList || !isAdmin()) return;
+  state.duplicateGroups = buildDuplicateGroups();
+
+  if (!state.duplicateGroups.length) {
+    els.duplicateWorkersList.classList.add('empty-state');
+    els.duplicateWorkersList.innerHTML = 'No active duplicate groups detected.';
+    return;
+  }
+
+  els.duplicateWorkersList.classList.remove('empty-state');
+  els.duplicateWorkersList.innerHTML = state.duplicateGroups.map((group, groupIndex) => `
+    <article class="duplicate-group" data-group-index="${groupIndex}">
+      <div>
+        <strong>${escapeHtml(group.reasons.join(' / '))}</strong>
+        <span class="tiny">${group.employees.length} active records</span>
+      </div>
+      <div class="duplicate-options">
+        ${group.employees.map((employee, employeeIndex) => `
+          <label class="duplicate-option">
+            <input type="radio" name="duplicate-primary-${groupIndex}" value="${employee.id}" ${employeeIndex === 0 ? 'checked' : ''} />
+            <span>Primary: ${escapeHtml(employee.name || '-')} · ${escapeHtml(employee.employeeNumber || '-')} · ${escapeHtml(agencyLabel(employee.agencyId))} · ${escapeHtml(employee.assignedSiteId || '-')}</span>
+            <input class="duplicate-merge-check" type="checkbox" value="${employee.id}" ${employeeIndex === 0 ? '' : 'checked'} />
+            <span>Merge this record</span>
+          </label>
+        `).join('')}
+      </div>
+      <button class="danger-btn merge-workers-btn" data-group-index="${groupIndex}" type="button">Merge Selected Records</button>
+    </article>
+  `).join('');
+
+  els.duplicateWorkersList.querySelectorAll('input[type="radio"]').forEach((radio) => {
+    radio.addEventListener('change', () => syncDuplicatePrimary(Number(radio.closest('.duplicate-group').dataset.groupIndex)));
+  });
+  state.duplicateGroups.forEach((_, index) => syncDuplicatePrimary(index));
+  els.duplicateWorkersList.querySelectorAll('.merge-workers-btn').forEach((button) => {
+    button.addEventListener('click', () => mergeDuplicateGroup(Number(button.dataset.groupIndex)));
+  });
+
+  if (logDetection) {
+    state.duplicateGroups.forEach((group) => {
+      logAudit('duplicate_detected', 'employee_group', group.employees.map((employee) => employee.id).join(','), {}, {
+        reasons: group.reasons,
+        employeeIds: group.employees.map((employee) => employee.id),
+      });
+    });
+  }
+}
+
+function syncDuplicatePrimary(groupIndex) {
+  const container = els.duplicateWorkersList?.querySelector(`[data-group-index="${groupIndex}"]`);
+  if (!container) return;
+  const primaryId = container.querySelector('input[type="radio"]:checked')?.value || '';
+  container.querySelectorAll('.duplicate-merge-check').forEach((checkbox) => {
+    checkbox.disabled = checkbox.value === primaryId;
+    if (checkbox.disabled) checkbox.checked = false;
+  });
+}
+
+async function mergeDuplicateGroup(groupIndex) {
+  if (!isAdmin()) {
+    toast('Only admins can merge duplicate workers.', true);
+    return;
+  }
+  const container = els.duplicateWorkersList?.querySelector(`[data-group-index="${groupIndex}"]`);
+  const primaryId = container?.querySelector('input[type="radio"]:checked')?.value || '';
+  const duplicateIds = [...(container?.querySelectorAll('.duplicate-merge-check:checked') || [])]
+    .map((checkbox) => checkbox.value)
+    .filter((id) => id && id !== primaryId);
+  const primary = state.allEmployees.find((employee) => employee.id === primaryId);
+
+  if (!primary || !duplicateIds.length) {
+    toast('Choose a primary worker and at least one duplicate.', true);
+    return;
+  }
+  if (!confirm(`Merge ${duplicateIds.length} duplicate record(s) into ${primary.name}? No records will be deleted.`)) return;
+
+  try {
+    const totals = { punches: 0, missedPunchRequests: 0, timesheets: 0 };
+    for (const collectionName of Object.keys(totals)) {
+      totals[collectionName] = await reassignWorkerReferences(collectionName, duplicateIds, primary);
+      if (totals[collectionName]) {
+        await logAudit(
+          collectionName === 'punches' ? 'punch_reassigned' : `${collectionName}_reassigned`,
+          collectionName,
+          primary.id,
+          { duplicateWorkerIds: duplicateIds },
+          { primaryWorkerId: primary.id, count: totals[collectionName] }
+        );
+      }
+    }
+
+    const mergedAtMs = Date.now();
+    const actor = state.profile?.name || state.me?.email || 'Admin';
+    await commitDocumentUpdates(duplicateIds.map((duplicateId) => ({
+      ref: doc(db, 'employees', duplicateId),
+      data: {
+        status: 'merged',
+        mergedInto: primary.id,
+        mergedAt: serverTimestamp(),
+        mergedAtMs,
+        mergedBy: actor,
+        mergedById: state.me?.uid || '',
+        updatedAt: serverTimestamp(),
+      },
+    })));
+
+    await logAudit('worker_merged', 'employee', primary.id, {
+      duplicateWorkerIds: duplicateIds,
+    }, {
+      primaryWorkerId: primary.id,
+      totals,
+      mergedBy: actor,
+    });
+    toast(`Merged ${duplicateIds.length} worker record(s). No data was deleted.`);
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not complete the safe merge.', true);
+  }
+}
+
+async function reassignWorkerReferences(collectionName, duplicateIds, primary) {
+  const documents = new Map();
+  for (const duplicateId of duplicateIds) {
+    for (const fieldName of ['employeeId', 'workerId']) {
+      const snapshot = await getDocs(query(collection(db, collectionName), where(fieldName, '==', duplicateId)));
+      snapshot.docs.forEach((record) => documents.set(record.id, { id: record.id, ...record.data() }));
+    }
+  }
+
+  const updates = [...documents.values()].map((record) => {
+    const data = {
+      employeeId: primary.employeeId || primary.id,
+      employeeNumber: primary.employeeNumber || '',
+      name: primary.name || record.name || '',
+      nameKey: normalizeName(primary.name || record.name || ''),
+      updatedAt: serverTimestamp(),
+      mergedFromWorkerId: record.employeeId || record.workerId || '',
+    };
+    if (record.workerId !== undefined) data.workerId = primary.id;
+    if (record.workerName !== undefined) data.workerName = primary.name || '';
+    return { ref: doc(db, collectionName, record.id), data };
+  });
+  await commitDocumentUpdates(updates);
+  return updates.length;
+}
+
+async function commitDocumentUpdates(updates) {
+  for (let index = 0; index < updates.length; index += 400) {
+    const batch = writeBatch(db);
+    updates.slice(index, index + 400).forEach((update) => batch.update(update.ref, update.data));
+    await batch.commit();
+  }
+}
+
+async function exportBackup() {
+  if (!isManager()) return;
+  try {
+    const collections = ['employees', 'punches', 'missedPunchRequests', 'agencies', 'sites', 'users'];
+    const backup = {
+      exportedAt: new Date().toISOString(),
+      companyId: state.companyId || '',
+      note: 'Non-destructive QRTimeclock backup export',
+    };
+    for (const collectionName of collections) {
+      const constraints = [];
+      const snapshot = await getDocs(query(collection(db, collectionName), ...constraints));
+      backup[collectionName] = snapshot.docs.map((record) => ({
+        id: record.id,
+        ...serializeForExport(record.data()),
+      }));
+    }
+    downloadJson(`qrtimeclock-backup-${formatDateKey(new Date())}.json`, backup);
+    toast('Backup exported.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not export backup.', true);
+  }
+}
+
+function serializeForExport(value) {
+  if (value?.toDate instanceof Function) return value.toDate().toISOString();
+  if (Array.isArray(value)) return value.map(serializeForExport);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, serializeForExport(item)]));
+  }
+  return value;
+}
+
+function downloadJson(filename, value) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 async function generateNextEmployeeNumber() {
@@ -2221,7 +3776,7 @@ async function approvePendingUser(uid, rows) {
   }
 
   const siteIds = parseSiteIds(prompt('Allowed siteIds, comma-separated:', getAllowedSiteIds(row).join(', ') || CURRENT_SITE_ID));
-  const fullAccess = isOwnerOrSuperAdminRole(role);
+  const defaultPermissions = defaultPermissionsForRole(role);
   const payload = {
     active: true,
     approvalStatus: 'approved',
@@ -2230,10 +3785,10 @@ async function approvePendingUser(uid, rows) {
     siteId: siteIds[0],
     siteIds,
     permissions: {
-      canEditPunches: fullAccess || row.permissions?.canEditPunches === true,
-      canDeletePunches: fullAccess || row.permissions?.canDeletePunches === true,
-      canMergeWorkers: fullAccess || row.permissions?.canMergeWorkers === true,
-      manageUsers: fullAccess || row.permissions?.manageUsers === true,
+      canEditPunches: defaultPermissions.canEditPunches || row.permissions?.canEditPunches === true,
+      canDeletePunches: defaultPermissions.canDeletePunches || row.permissions?.canDeletePunches === true,
+      canMergeWorkers: defaultPermissions.canMergeWorkers || row.permissions?.canMergeWorkers === true,
+      manageUsers: defaultPermissions.manageUsers || row.permissions?.manageUsers === true,
     },
     approvedBy: state.me.uid,
     approvedAt: serverTimestamp(),
@@ -2312,7 +3867,7 @@ async function handleSaveProfile(event) {
     const existingProfileSnap = await getDoc(profileRef);
     const existingProfile = existingProfileSnap.exists() ? existingProfileSnap.data() : {};
     const role = els.userRoleInput?.value || existingProfile.role || 'manager';
-    const fullAccess = isOwnerOrSuperAdminRole(role);
+    const defaultPermissions = defaultPermissionsForRole(role);
     const displayName = prettifyHumanName(els.userNameInput?.value.trim()) || existingProfile.displayName || existingProfile.name || '';
     const requestedSiteIds = parseSiteIds(els.userSiteIdsInput?.value || existingProfile.siteIds || existingProfile.siteId || CURRENT_SITE_ID);
     const profilePayload = {
@@ -2328,10 +3883,10 @@ async function handleSaveProfile(event) {
       siteIds: requestedSiteIds,
       approvalStatus: els.userActiveInput?.value === 'true' ? 'approved' : (existingProfile.approvalStatus || 'pending'),
       permissions: {
-        canEditPunches: fullAccess || existingProfile.permissions?.canEditPunches === true,
-        canDeletePunches: fullAccess || existingProfile.permissions?.canDeletePunches === true,
-        canMergeWorkers: fullAccess || existingProfile.permissions?.canMergeWorkers === true,
-        manageUsers: fullAccess || existingProfile.permissions?.manageUsers === true
+        canEditPunches: defaultPermissions.canEditPunches || existingProfile.permissions?.canEditPunches === true,
+        canDeletePunches: defaultPermissions.canDeletePunches || existingProfile.permissions?.canDeletePunches === true,
+        canMergeWorkers: defaultPermissions.canMergeWorkers || existingProfile.permissions?.canMergeWorkers === true,
+        manageUsers: defaultPermissions.manageUsers || existingProfile.permissions?.manageUsers === true
       },
       updatedAt: serverTimestamp(),
     };
@@ -2532,52 +4087,166 @@ function clearTimesheetListenerOnly() {
   }
 }
 
+const PUNCH_EDIT_ROLES = new Set([
+  'admin',
+  'manager',
+  'supervisor',
+  'super_admin',
+  'superadmin',
+  'owner',
+  'agency_admin',
+]);
+
+const ADMIN_ROLES = new Set(['admin', 'super_admin', 'superadmin', 'owner']);
+const PUNCH_DELETE_ROLES = new Set(['admin', 'manager', 'super_admin', 'superadmin', 'owner']);
+
+function normalizeRole(value) {
+  return String(value || '')
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function normalizedRole() {
+  return normalizeRole(state.profile?.role);
+}
+
 function currentRole() {
-  return String(state.profile?.role || '').trim();
+  return normalizedRole();
 }
 
 function hasAnyRole(roles) {
-  return roles.includes(currentRole());
+  const role = normalizedRole();
+  return roles.map(normalizeRole).includes(role);
 }
 
 function hasPermission(permissionName) {
   return state.profile?.permissions?.[permissionName] === true;
 }
 
+function defaultPermissionsForRole(role) {
+  const normalized = normalizeRole(role);
+  const fullAccess = isOwnerOrSuperAdminRole(normalized);
+  return {
+    canEditPunches: fullAccess || ['admin', 'agency_admin', 'manager', 'supervisor'].includes(normalized),
+    canDeletePunches: fullAccess || normalized === 'admin',
+    canMergeWorkers: fullAccess || normalized === 'admin',
+    manageUsers: fullAccess || normalized === 'admin',
+  };
+}
+
 function isOwnerOrSuperAdminRole(role) {
-  return ['owner', 'superAdmin'].includes(String(role || '').trim());
+  return ['owner', 'super_admin', 'superadmin'].includes(normalizeRole(role));
 }
 
 function isOwnerOrSuperAdmin() {
-  return isOwnerOrSuperAdminRole(currentRole());
-}
-
-function isManager() {
-  return hasAnyRole(['owner', 'superAdmin', 'admin', 'manager']);
-}
-
-function isAdmin() {
-  return hasAnyRole(['owner', 'superAdmin', 'admin']);
+  return isOwnerOrSuperAdminRole(state.profile?.role);
 }
 
 function canEditPunches() {
   if (isOwnerOrSuperAdmin()) return true;
-  return hasAnyRole(['admin', 'manager']) && hasPermission('canEditPunches');
+  return PUNCH_EDIT_ROLES.has(normalizedRole()) && hasPermission('canEditPunches');
+}
+
+function canManageEmployees() {
+  return canEditPunches();
 }
 
 function canDeletePunches() {
   if (isOwnerOrSuperAdmin()) return true;
-  return hasAnyRole(['admin', 'manager']) && hasPermission('canDeletePunches');
+  return PUNCH_DELETE_ROLES.has(normalizedRole()) && hasPermission('canDeletePunches');
 }
 
 function canMergeWorkers() {
   if (isOwnerOrSuperAdmin()) return true;
-  return hasAnyRole(['admin']) && hasPermission('canMergeWorkers');
+  return isAdmin() && hasPermission('canMergeWorkers');
 }
 
 function canManageUsers() {
   if (isOwnerOrSuperAdmin()) return true;
-  return hasAnyRole(['admin']) && hasPermission('manageUsers');
+  return isAdmin() && hasPermission('manageUsers');
+}
+
+function isManager() {
+  return PUNCH_EDIT_ROLES.has(normalizedRole());
+}
+
+function isAdmin() {
+  return ADMIN_ROLES.has(normalizedRole());
+}
+
+function renderPermissionDebug() {
+  if (!els.permissionDebugPanel) return;
+  els.permissionDebugPanel.classList.toggle('hidden', !isAdmin());
+  if (!isAdmin()) return;
+  const rows = [
+    ['UID', state.me?.uid || '-'],
+    ['Email', state.me?.email || state.profile?.email || '-'],
+    ['Role', normalizedRole() || '-'],
+    ['companyId', state.companyId || '(blank legacy scope)'],
+    ['agencyId', state.agencyId || '(none)'],
+    ['canEditPunches', String(canEditPunches())],
+    ['canManageEmployees', String(canManageEmployees())],
+  ];
+  els.permissionDebugPanel.innerHTML = rows.map(([label, value]) => `
+    <div class="permission-debug-row">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `).join('');
+}
+
+function renderSiteSettingsForm() {
+  if (!isAdmin() || !els.siteSettingsForm) return;
+  if (els.siteSettingsId) els.siteSettingsId.value = state.siteContext.siteId || '';
+  if (els.siteSettingsQrSlug) els.siteSettingsQrSlug.value = state.siteContext.qrSlug || '';
+  if (els.siteSettingsLatitude) els.siteSettingsLatitude.value = state.siteContext.siteLatitude ?? '';
+  if (els.siteSettingsLongitude) els.siteSettingsLongitude.value = state.siteContext.siteLongitude ?? '';
+  if (els.siteSettingsRadius) els.siteSettingsRadius.value = String(state.siteContext.allowedRadiusMeters || 300);
+  if (els.siteSettingsAccuracy) els.siteSettingsAccuracy.value = String(state.siteContext.maxGpsAccuracyMeters || 100);
+  if (els.siteSettingsEnforce) els.siteSettingsEnforce.value = 'false';
+}
+
+async function handleSaveSiteSettings(event) {
+  event.preventDefault();
+  if (!isAdmin()) {
+    toast('Only admins can save site settings.', true);
+    return;
+  }
+  const siteId = String(els.siteSettingsId?.value || '').trim();
+  if (!siteId) {
+    toast('Enter a Site ID.', true);
+    return;
+  }
+  const siteLatitude = finiteNumberOrNull(els.siteSettingsLatitude?.value);
+  const siteLongitude = finiteNumberOrNull(els.siteSettingsLongitude?.value);
+  if ((siteLatitude === null) !== (siteLongitude === null)) {
+    toast('Enter both site latitude and longitude, or leave both blank.', true);
+    return;
+  }
+  const payload = {
+    companyId: state.companyId || '',
+    siteId,
+    qrSlug: String(els.siteSettingsQrSlug?.value || '').trim(),
+    siteLatitude,
+    siteLongitude,
+    allowedRadiusMeters: positiveNumberOrDefault(els.siteSettingsRadius?.value, 300),
+    maxGpsAccuracyMeters: positiveNumberOrDefault(els.siteSettingsAccuracy?.value, 100),
+    enforceLocation: false,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.me?.uid || '',
+  };
+  try {
+    await setDoc(doc(db, 'sites', siteId), payload, { merge: true });
+    if (state.siteContext.siteId === siteId) {
+      state.siteContext = { ...state.siteContext, ...payload, enforceLocation: false };
+    }
+    toast('Site settings saved. Location remains optional.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not save site settings.', true);
+  }
 }
 
 function prettyAction(action) {
@@ -2655,7 +4324,7 @@ function isActivePunchRecord(record) {
 function normalizeUserProfile(profile = {}, authUser = null) {
   const status = String(profile.status || '').trim().toLowerCase();
   const role = profile.role === 'worker' ? 'worker' : (profile.role || 'manager');
-  const fullAccess = isOwnerOrSuperAdminRole(role);
+  const defaultPermissions = defaultPermissionsForRole(role);
   const active = typeof profile.active === 'boolean' ? profile.active : status !== 'inactive';
   const displayName = prettifyHumanName(
     profile.displayName
@@ -2680,10 +4349,10 @@ function normalizeUserProfile(profile = {}, authUser = null) {
     siteId: profile.siteId || profile.assignedSiteId || '',
     siteIds: parseSiteIds(profile.siteIds || profile.siteId || profile.assignedSiteId || '', false),
     permissions: {
-      canEditPunches: fullAccess || profile.permissions?.canEditPunches === true,
-      canDeletePunches: fullAccess || profile.permissions?.canDeletePunches === true,
-      canMergeWorkers: fullAccess || profile.permissions?.canMergeWorkers === true,
-      manageUsers: fullAccess || profile.permissions?.manageUsers === true
+      canEditPunches: defaultPermissions.canEditPunches || profile.permissions?.canEditPunches === true,
+      canDeletePunches: defaultPermissions.canDeletePunches || profile.permissions?.canDeletePunches === true,
+      canMergeWorkers: defaultPermissions.canMergeWorkers || profile.permissions?.canMergeWorkers === true,
+      manageUsers: defaultPermissions.manageUsers || profile.permissions?.manageUsers === true
     },
     employeeId: profile.employeeId || profile.workerId || '',
     workerId: profile.workerId || profile.employeeId || ''
