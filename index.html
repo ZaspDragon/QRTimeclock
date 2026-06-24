@@ -201,7 +201,7 @@
 
       <form id="signupForm" class="grid-form" style="margin-top:18px;">
         <div class="full-width">
-          <strong>Request manager access</strong>
+          <strong>Request manager, supervisor, or agency access</strong>
           <p class="tiny">New accounts stay inactive until an admin approves them.</p>
         </div>
         <label>
@@ -220,7 +220,8 @@
           <span>Requested role</span>
           <select id="signupRequestedRoleInput">
             <option value="manager">Manager</option>
-            <option value="admin">Admin</option>
+            <option value="supervisor">Supervisor</option>
+            <option value="agency_admin">Temp Agency Admin</option>
           </select>
         </label>
         <label>
@@ -229,6 +230,17 @@
             <option value="OH01">OH01</option>
             <option value="OHC">OHC</option>
           </select>
+        </label>
+        <label>
+          <span>Agency name <small>(agency admin only)</small></span>
+          <input id="signupAgencyNameInput" type="text" placeholder="Agency name" />
+        </label>
+        <label class="legal-consent full-width">
+          <input id="signupTermsInput" type="checkbox" required />
+          <span>
+            I agree to the <a href="terms.html" target="_blank" rel="noopener">Terms of Use</a> and
+            <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.
+          </span>
         </label>
         <div class="form-actions full-width">
           <button class="secondary-btn" type="submit">Request access</button>
@@ -240,6 +252,49 @@
       <aside class="proprietary-notice" role="note">
         This system is proprietary software owned by Brandon Evanshine. Unauthorized copying or use is prohibited.
       </aside>
+
+      <section id="signedInAccessRequestCard" class="card hidden">
+        <div class="card-head">
+          <h2>Request Manager / Supervisor / Agency Access</h2>
+          <p>Submit or resubmit an access request from your signed-in account. Approval is still required.</p>
+        </div>
+        <form id="signedInAccessRequestForm" class="grid-form">
+          <label>
+            <span>Full name</span>
+            <input id="signedInRequestNameInput" type="text" placeholder="Full name" required />
+          </label>
+          <label>
+            <span>Email</span>
+            <input id="signedInRequestEmailInput" type="email" placeholder="email@company.com" readonly />
+          </label>
+          <label>
+            <span>Requested role</span>
+            <select id="signedInRequestRoleInput">
+              <option value="manager">Manager</option>
+              <option value="supervisor">Supervisor</option>
+              <option value="agency_admin">Temp Agency Admin</option>
+            </select>
+          </label>
+          <label>
+            <span>Branch</span>
+            <select id="signedInRequestSiteInput">
+              <option value="OH01">OH01</option>
+              <option value="OHC">OHC</option>
+            </select>
+          </label>
+          <label>
+            <span>Agency name <small>(agency admin only)</small></span>
+            <input id="signedInRequestAgencyNameInput" type="text" placeholder="Agency name" />
+          </label>
+          <label class="legal-consent full-width">
+            <input id="signedInRequestTermsInput" type="checkbox" required />
+            <span>I agree to the Terms of Use and Privacy Policy.</span>
+          </label>
+          <div class="form-actions full-width">
+            <button class="secondary-btn" type="submit">Submit access request</button>
+          </div>
+        </form>
+      </section>
 
       <nav class="tabs" id="tabBar">
         <button class="tab hidden" data-tab="myTimecardTab" type="button" id="myTimecardTabBtn">My Timecard</button>
@@ -814,15 +869,28 @@
                     <th>Requested</th>
                     <th>Company</th>
                     <th>Branch</th>
+                    <th>Agency</th>
+                    <th>Admin Email</th>
+                    <th>Requested At</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody id="pendingUserListBody">
-                  <tr><td colspan="6">No pending users.</td></tr>
+                  <tr><td colspan="9">No pending users.</td></tr>
                 </tbody>
               </table>
             </div>
           </article>
+        </div>
+        <div class="card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Manual User Branch Cleanup</h2>
+              <p>Owner-only. Preview and fix user siteIds arrays. This never touches punches, employees, or timesheets.</p>
+            </div>
+            <button id="fixUserBranchDataBtn" class="secondary-btn" type="button">Fix user branch data</button>
+          </div>
+          <div id="userBranchCleanupPreview" class="list-stack empty-state">No cleanup preview loaded.</div>
         </div>
         <div class="card">
           <div class="card-head split-head">
