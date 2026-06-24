@@ -53,6 +53,13 @@
             <ul id="workerAutocompleteList" class="autocomplete-list" hidden></ul>
           </div>
         </label>
+        <label>
+          <span>Branch</span>
+          <select id="workerBranchSelect">
+            <option value="OH01">OH01</option>
+            <option value="OHC">OHC</option>
+          </select>
+        </label>
         <label id="workerPinField" class="hidden">
           <span>Worker PIN <small>(only if one is already configured)</small></span>
           <input id="workerPinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="Enter PIN" />
@@ -190,6 +197,42 @@
           <span aria-hidden="true">|</span>
           <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>
         </p>
+      </form>
+
+      <form id="signupForm" class="grid-form" style="margin-top:18px;">
+        <div class="full-width">
+          <strong>Request manager access</strong>
+          <p class="tiny">New accounts stay inactive until an admin approves them.</p>
+        </div>
+        <label>
+          <span>Name</span>
+          <input id="signupNameInput" type="text" placeholder="Full name" />
+        </label>
+        <label>
+          <span>Email</span>
+          <input id="signupEmailInput" type="email" placeholder="manager@company.com" />
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="signupPasswordInput" type="password" placeholder="At least 6 characters" />
+        </label>
+        <label>
+          <span>Requested role</span>
+          <select id="signupRequestedRoleInput">
+            <option value="manager">Manager</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <label>
+          <span>Branch</span>
+          <select id="signupSiteInput">
+            <option value="OH01">OH01</option>
+            <option value="OHC">OHC</option>
+          </select>
+        </label>
+        <div class="form-actions full-width">
+          <button class="secondary-btn" type="submit">Request access</button>
+        </div>
       </form>
     </section>
 
@@ -531,8 +574,11 @@
                 </select>
               </label>
               <label>
-                <span>Assigned site</span>
-                <input id="empSiteInput" type="text" placeholder="e.g. Warehouse A" />
+                <span>Assigned branch</span>
+                <select id="empSiteInput">
+                  <option value="OH01">OH01</option>
+                  <option value="OHC">OHC</option>
+                </select>
               </label>
               <label>
                 <span>Status</span>
@@ -705,11 +751,11 @@
               <label>
                 <span>Role</span>
                 <select id="userRoleInput">
-                  <option value="manager">Manager</option>
-                  <option value="admin">Admin</option>
-                  <option value="supervisor">Supervisor</option>
-                  <option value="super_admin">Super Admin</option>
                   <option value="owner">Owner</option>
+                  <option value="superAdmin">Super Admin</option>
+                  <option value="admin">Admin</option>
+                  <option value="manager">Manager</option>
+                  <option value="supervisor">Supervisor</option>
                   <option value="agency_admin">Agency Admin</option>
                   <option value="employee">Employee</option>
                   <option value="worker">Worker</option>
@@ -721,6 +767,10 @@
                   <option value="true">Yes</option>
                   <option value="false">No</option>
                 </select>
+              </label>
+              <label>
+                <span>Allowed branches</span>
+                <input id="userSiteIdsInput" type="text" placeholder="OH01 or OH01,OHC" value="OH01" />
               </label>
               <div class="form-actions full-width">
                 <button class="primary-btn" type="submit">Save profile</button>
@@ -745,6 +795,30 @@
                 </thead>
                 <tbody id="userListBody">
                   <tr><td colspan="4">No users yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>Pending account approvals</h2>
+              <p>Approve only users who should access this company and branch.</p>
+            </div>
+            <div class="mini-table-wrap tall">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Requested</th>
+                    <th>Company</th>
+                    <th>Branch</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="pendingUserListBody">
+                  <tr><td colspan="6">No pending users.</td></tr>
                 </tbody>
               </table>
             </div>

@@ -2,9 +2,11 @@ import { firebaseConfig, appSettings } from './firebase-config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
 import {
   getAuth,
+  createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   onAuthStateChanged,
   signOut,
+  updateProfile,
   sendPasswordResetEmail
 } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js';
 import {
@@ -16,25 +18,33 @@ import {
   setDoc,
   addDoc,
   updateDoc,
-  deleteDoc,
+  writeBatch,
   serverTimestamp,
   query,
   where,
   orderBy,
   limit,
   onSnapshot,
-  Timestamp,
-  writeBatch
+  Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// Branch deployment config. Change CURRENT_SITE_ID to "OHC" when deploying an OHC-specific manager app.
+const CURRENT_COMPANY_ID = 'chadwell';
+const CURRENT_SITE_ID = 'OH01';
+const BRANCH_OPTIONS = [
+  { siteId: 'OH01', label: 'OH01' },
+  { siteId: 'OHC', label: 'OHC' },
+];
+
 const state = {
   me: null,
   profile: null,
-  companyId: null,        // from user profile
+  companyId: CURRENT_COMPANY_ID,
+  siteId: CURRENT_SITE_ID,
   agencyId: null,         // from user profile (null = direct company user)
   companyDoc: null,       // loaded from companies/{companyId}
   unsubscribers: [],
@@ -49,6 +59,7 @@ const state = {
   allEmployees: [],
   allMissedRequests: [],
   approvalFilter: 'pending',
+  creatingPendingProfile: false,
   workerPunchSaving: false,
   employeeStatusFilter: 'active',
   duplicateGroups: [],
@@ -59,6 +70,7 @@ const state = {
 
 const els = {
   workerNameInput: document.getElementById('workerNameInput'),
+  workerBranchSelect: document.getElementById('workerBranchSelect'),
   workerAutocompleteList: document.getElementById('workerAutocompleteList'),
   workerLookupStatus: document.getElementById('workerLookupStatus'),
   workerNameValue: document.getElementById('workerNameValue'),
@@ -104,6 +116,12 @@ const els = {
   legalConsent: document.getElementById('legalConsent'),
   loginSubmitBtn: document.getElementById('loginSubmitBtn'),
   resetPasswordBtn: document.getElementById('resetPasswordBtn'),
+  signupForm: document.getElementById('signupForm'),
+  signupNameInput: document.getElementById('signupNameInput'),
+  signupEmailInput: document.getElementById('signupEmailInput'),
+  signupPasswordInput: document.getElementById('signupPasswordInput'),
+  signupRequestedRoleInput: document.getElementById('signupRequestedRoleInput'),
+  signupSiteInput: document.getElementById('signupSiteInput'),
 
   livePunchBody: document.getElementById('livePunchBody'),
   activeNowList: document.getElementById('activeNowList'),
@@ -134,7 +152,9 @@ const els = {
   userEmailInput: document.getElementById('userEmailInput'),
   userRoleInput: document.getElementById('userRoleInput'),
   userActiveInput: document.getElementById('userActiveInput'),
+  userSiteIdsInput: document.getElementById('userSiteIdsInput'),
   userListBody: document.getElementById('userListBody'),
+  pendingUserListBody: document.getElementById('pendingUserListBody'),
 
   myTimecardTabBtn: document.getElementById('myTimecardTabBtn'),
   missedPunchTabBtn: document.getElementById('missedPunchTabBtn'),
@@ -208,6 +228,7 @@ init();
 
 async function init() {
   wireEvents();
+  setupBranchSelectors();
   loadSiteContext();
 
   // Load employees for public QR autocomplete
@@ -257,17 +278,37 @@ async function init() {
     }
 
     try {
+      if (state.creatingPendingProfile) return;
       state.me = user;
       const profileSnap = await getDoc(doc(db, 'users', user.uid));
 
       if (!profileSnap.exists()) {
         await signOut(auth);
-        toast('No user profile found in Firestore. Add one in the users collection first.', true);
+        toast('No user profile found. Ask an admin to approve your account.', true);
         return;
       }
 
-      state.profile = profileSnap.data();
-      state.companyId = state.profile.companyId || null;
+      state.profile = normalizeUserProfile(profileSnap.data(), user);
+      if (state.profile.active !== true) {
+        await signOut(auth);
+        toast('Your account is not active yet. Ask an admin to approve your account.', true);
+        return;
+      }
+
+      if (state.profile.companyId !== CURRENT_COMPANY_ID) {
+        await signOut(auth);
+        toast('You do not have access to this company.', true);
+        return;
+      }
+
+      if (!profileCanAccessSite(state.profile, CURRENT_SITE_ID)) {
+        await signOut(auth);
+        toast('You do not have access to this branch.', true);
+        return;
+      }
+
+      state.companyId = CURRENT_COMPANY_ID;
+      state.siteId = CURRENT_SITE_ID;
       state.agencyId = state.profile.agencyId || null;
 
       // Load company doc if companyId exists
@@ -288,6 +329,7 @@ async function init() {
         attachManagerLiveViews();
         attachTimesheetView();
         attachUsersViewIfAdmin();
+        attachPendingUsersViewIfAdmin();
         populateAgencyWorkerSelect();
         renderAgencyPreview();
       }
@@ -328,8 +370,19 @@ function wireEvents() {
   });
 
   els.loginForm?.addEventListener('submit', handleLogin);
+  els.signupForm?.addEventListener('submit', handleSignupRequest);
   els.legalConsent?.addEventListener('change', syncLoginConsent);
   els.resetPasswordBtn?.addEventListener('click', handlePasswordReset);
+
+  els.workerBranchSelect?.addEventListener('change', () => {
+    localStorage.setItem('workerPunchSiteId', getPublicSiteId());
+    state.workerEmployee = null;
+    loadPublicEmployees().then(() => {
+      handleWorkerNameAutocomplete();
+      const typed = prettifyHumanName(els.workerNameInput?.value.trim() || '');
+      if (typed) attachWorkerLiveView(typed);
+    });
+  });
 
   els.signOutBtn?.addEventListener('click', async () => {
     await signOut(auth);
@@ -401,11 +454,85 @@ function wireEvents() {
 }
 
 // ─── Public employee loading & autocomplete ─────────────
+function setupBranchSelectors() {
+  populateBranchSelect(els.workerBranchSelect, localStorage.getItem('workerPunchSiteId') || CURRENT_SITE_ID);
+  populateBranchSelect(els.signupSiteInput, CURRENT_SITE_ID);
+  populateBranchSelect(els.empSiteInput, CURRENT_SITE_ID);
+}
+
+function populateBranchSelect(selectEl, selectedSiteId = CURRENT_SITE_ID) {
+  if (!selectEl) return;
+  selectEl.innerHTML = BRANCH_OPTIONS
+    .map((branch) => `<option value="${branch.siteId}">${branch.label}</option>`)
+    .join('');
+  selectEl.value = BRANCH_OPTIONS.some((branch) => branch.siteId === selectedSiteId)
+    ? selectedSiteId
+    : CURRENT_SITE_ID;
+}
+
+function getPublicSiteId() {
+  const selected = String(els.workerBranchSelect?.value || CURRENT_SITE_ID).trim();
+  return BRANCH_OPTIONS.some((branch) => branch.siteId === selected) ? selected : CURRENT_SITE_ID;
+}
+
+function getCurrentCompanyId() {
+  return CURRENT_COMPANY_ID;
+}
+
+function getCurrentSiteId() {
+  return CURRENT_SITE_ID;
+}
+
+function getAllowedSiteIds(profile = state.profile) {
+  if (!profile) return [];
+  if (Array.isArray(profile.siteIds) && profile.siteIds.length) {
+    return profile.siteIds.map((siteId) => String(siteId || '').trim()).filter(Boolean);
+  }
+  const singleSiteId = String(profile.siteId || '').trim();
+  return singleSiteId ? [singleSiteId] : [];
+}
+
+function parseSiteIds(value, fallbackToCurrent = true) {
+  const raw = Array.isArray(value) ? value : String(value || '').split(',');
+  const allowed = new Set(BRANCH_OPTIONS.map((branch) => branch.siteId));
+  const sites = raw
+    .map((siteId) => String(siteId || '').trim())
+    .filter((siteId) => allowed.has(siteId));
+  if (!sites.length && !fallbackToCurrent) return [];
+  return [...new Set(sites.length ? sites : [CURRENT_SITE_ID])];
+}
+
+function profileCanAccessSite(profile, siteId) {
+  return String(profile?.companyId || '').trim() === CURRENT_COMPANY_ID
+    && getAllowedSiteIds(profile).includes(siteId);
+}
+
+function canUseSite(siteId) {
+  return profileCanAccessSite(state.profile, siteId);
+}
+
+function branchConstraints(siteId = getCurrentSiteId()) {
+  return [
+    where('companyId', '==', getCurrentCompanyId()),
+    where('siteId', '==', siteId),
+  ];
+}
+
+function branchPayload(siteId = getCurrentSiteId()) {
+  return {
+    companyId: getCurrentCompanyId(),
+    siteId,
+  };
+}
+
 async function loadPublicEmployees() {
   try {
-    // Legacy employee records use a blank companyId. Status is the stable,
-    // backwards-compatible public clock-in scope.
-    const q = query(collection(db, 'employees'), where('status', '==', 'active'));
+    const constraints = [
+      ...branchConstraints(getPublicSiteId()),
+      where('status', '==', 'active'),
+    ];
+
+    const q = query(collection(db, 'employees'), ...constraints);
     const snap = await getDocs(q);
     const activeEmployees = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
@@ -883,6 +1010,7 @@ async function handleWorkerPunch(action) {
     return;
   }
 
+  const publicSiteId = getPublicSiteId();
   const enteredPin = String(els.workerPinInput?.value || '').trim();
   if (enteredPin && emp.pinHash) {
     const enteredHash = await hashWorkerPin(enteredPin, emp.id || emp.employeeId || '');
@@ -891,9 +1019,6 @@ async function handleWorkerPunch(action) {
       return;
     }
   }
-
-  const urlCompanyId = state.siteContext.companyId || '';
-  const urlSiteId = state.siteContext.siteId || '';
 
   // Auto-create employee if new
   if (emp._isNew) {
@@ -910,37 +1035,52 @@ async function handleWorkerPunch(action) {
 
   if (emp._isNew) {
     try {
-      const identityHash = await hashIdentityKey(employeeScopeKey(emp));
-      const empNumber = `AUTO-${identityHash.slice(0, 8).toUpperCase()}`;
-      const newRef = doc(db, 'employees', `auto_${identityHash.slice(0, 24)}`);
-      const existingSnap = await getDoc(newRef);
-      if (existingSnap.exists()) {
-        emp = { id: existingSnap.id, ...existingSnap.data() };
-        state.workerEmployee = emp;
-      } else {
-        const newPayload = {
-          name: emp.name,
-          nameKey: normalizeName(emp.name),
-          employeeNumber: empNumber,
-          companyId: urlCompanyId || '',
-          agencyId: '',
-          assignedSiteId: urlSiteId,
-          siteId: urlSiteId,
-          siteIds: urlSiteId ? [urlSiteId] : [],
-          qrSlug: state.siteContext.qrSlug || '',
-          status: 'active',
-          source: 'auto_created',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        };
-        await setDoc(newRef, { ...newPayload, employeeId: newRef.id });
-        emp = { id: newRef.id, employeeId: newRef.id, ...newPayload };
-        state.workerEmployee = emp;
-        state.publicEmployees = collapseDuplicateEmployees([...state.publicEmployees, emp]);
-        if (els.workerLookupStatus) {
-          els.workerLookupStatus.textContent = `Found: ${emp.name}. Punching...`;
-          els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
-        }
+      const empNumber = await generateNextPublicEmployeeNumber();
+      const scope = {
+        employeeNumber: empNumber,
+        nameKey: normalizeName(emp.name),
+        companyId: getCurrentCompanyId(),
+        agencyId: '',
+        siteId: publicSiteId
+      };
+      const existingEmployee = await findExistingEmployeeForUpsert(scope);
+      const employeeId = existingEmployee?.id || buildStableEmployeeId(empNumber, scope.agencyId, scope.siteId || scope.companyId);
+      const newPayload = {
+        name: emp.name,
+        nameKey: scope.nameKey,
+        normalizedName: scope.nameKey,
+        employeeNumber: existingEmployee?.employeeNumber || empNumber,
+        employeeNumberKey: normalizeWorkerNumber(existingEmployee?.employeeNumber || empNumber),
+        companyId: scope.companyId,
+        agencyId: '',
+        assignedSiteId: publicSiteId,
+        siteId: publicSiteId,
+        siteIds: [publicSiteId],
+        qrSlug: state.siteContext.qrSlug || '',
+        status: 'active',
+        active: true,
+        employeeId,
+        source: 'auto_created',
+        updatedAt: serverTimestamp(),
+      };
+      if (!existingEmployee) {
+        newPayload.createdAt = serverTimestamp();
+        await setDoc(doc(db, 'employees', employeeId), newPayload, { merge: true });
+      }
+
+      emp = { id: employeeId, ...existingEmployee, ...newPayload };
+      state.workerEmployee = emp;
+
+      // Update local cache
+      if (!state.publicEmployees.some((row) => row.id === employeeId || row.employeeId === employeeId)) {
+        state.publicEmployees.push(emp);
+      }
+
+      if (els.workerLookupStatus) {
+        els.workerLookupStatus.textContent = existingEmployee
+          ? `Found: ${emp.name} (${emp.employeeNumber || empNumber}). Punching...`
+          : `Created: ${emp.name} (${empNumber}). Punching...`;
+        els.workerLookupStatus.style.borderColor = 'rgba(43,213,118,0.4)';
       }
     } catch (error) {
       console.warn('Auto-create employee skipped:', error.message);
@@ -980,7 +1120,8 @@ async function handleWorkerPunch(action) {
       createdAt: serverTimestamp(),
       employeeId: emp.employeeId || emp.id || '',
       employeeNumber: emp.employeeNumber || '',
-      companyId: emp.companyId || urlCompanyId || '',
+      companyId: getCurrentCompanyId(),
+      siteId: emp.siteId || publicSiteId,
       agencyId: emp.agencyId || '',
       assignedSiteId: emp.assignedSiteId || '',
       qrSlug: state.siteContext.qrSlug || '',
@@ -1506,7 +1647,7 @@ async function handlePublicTimeFixSubmit(event) {
       uid: '',
       employeeId: employee.employeeId || employee.id,
       employeeNumber: employee.employeeNumber || '',
-      companyId: employee.companyId || new URLSearchParams(window.location.search).get('company') || '',
+      ...branchPayload(employee.siteId || getPublicSiteId()),
       agencyId: employee.agencyId || '',
       name: employee.name,
       nameKey: normalizeName(employee.name),
@@ -1556,7 +1697,7 @@ async function handleManualPunchSubmit(event) {
   event.preventDefault();
 
   if (!canEditPunches()) {
-    toast('Your role does not allow manual punch corrections.', true);
+    toast('You need edit-punch permission to add manual punches.', true);
     return;
   }
 
@@ -1598,7 +1739,7 @@ async function handleManualPunchSubmit(event) {
       source: 'manual_manager',
       createdAt: serverTimestamp(),
       createdBy: state.profile?.name || state.me?.email || 'Manager',
-      companyId: state.companyId || '',
+      ...branchPayload(),
       agencyId: state.agencyId || '',
       employeeId: '',
     });
@@ -1614,7 +1755,7 @@ async function handleManualPunchSubmit(event) {
       source: 'manual_manager',
       editedBy: state.profile?.name || state.me?.email || 'Manager',
       editedAt: serverTimestamp(),
-      companyId: state.companyId || '',
+      ...branchPayload(),
     });
 
     els.manualPunchForm?.reset();
@@ -1622,6 +1763,13 @@ async function handleManualPunchSubmit(event) {
     if (els.manualPunchTimeInput) els.manualPunchTimeInput.value = formatTimeForInput(Date.now());
 
     toast('Manual punch added.');
+    await logAudit('punch_manual_added', 'punch', nameKey, {}, {
+      name,
+      nameKey,
+      action,
+      timestampMs: parsedMs,
+      ...branchPayload(),
+    }, 'Manual manager punch');
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not add manual punch.', true);
@@ -1641,6 +1789,7 @@ function attachWorkerLiveView(name) {
 
   const q = query(
     collection(db, 'punches'),
+    ...branchConstraints(getPublicSiteId()),
     where('nameKey', '==', nameKey),
     where('dateKey', '==', todayKey),
     orderBy('timestampMs', 'desc'),
@@ -1724,6 +1873,61 @@ async function handleLogin(event) {
   }
 }
 
+async function handleSignupRequest(event) {
+  event.preventDefault();
+
+  const name = prettifyHumanName(els.signupNameInput?.value.trim());
+  const email = String(els.signupEmailInput?.value || '').trim().toLowerCase();
+  const password = els.signupPasswordInput?.value || '';
+  const requestedRole = els.signupRequestedRoleInput?.value || 'manager';
+  const siteId = els.signupSiteInput?.value || CURRENT_SITE_ID;
+
+  if (!name || !email || password.length < 6) {
+    toast('Enter a name, email, and password with at least 6 characters.', true);
+    return;
+  }
+
+  try {
+    state.creatingPendingProfile = true;
+    const credential = await createUserWithEmailAndPassword(auth, email, password);
+    if (name) {
+      await updateProfile(credential.user, { displayName: name });
+    }
+
+    await setDoc(doc(db, 'users', credential.user.uid), {
+      uid: credential.user.uid,
+      active: false,
+      approvalStatus: 'pending',
+      requestedRole,
+      role: 'worker',
+      companyId: getCurrentCompanyId(),
+      siteId,
+      siteIds: [siteId],
+      email,
+      name,
+      displayName: name,
+      permissions: {
+        canEditPunches: false,
+        canDeletePunches: false,
+        canMergeWorkers: false,
+        manageUsers: false,
+      },
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    await signOut(auth);
+    els.signupForm?.reset();
+    populateBranchSelect(els.signupSiteInput, CURRENT_SITE_ID);
+    toast('Account request submitted. Ask an admin to approve your account.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not request account access.', true);
+  } finally {
+    state.creatingPendingProfile = false;
+  }
+}
+
 function syncLoginConsent() {
   if (els.loginSubmitBtn) {
     els.loginSubmitBtn.disabled = !els.legalConsent?.checked;
@@ -1747,7 +1951,8 @@ async function handlePasswordReset() {
 }
 
 function showLoggedOut() {
-  state.companyId = null;
+  state.companyId = CURRENT_COMPANY_ID;
+  state.siteId = CURRENT_SITE_ID;
   state.agencyId = null;
   state.companyDoc = null;
   els.authCard?.classList.remove('hidden');
@@ -1771,6 +1976,7 @@ function showLoggedIn() {
   if (els.sessionName) els.sessionName.textContent = state.profile?.name || state.me?.email || 'Signed in';
   if (els.sessionRole) {
     const roleParts = [state.profile?.role || 'manager'];
+    roleParts.push(CURRENT_SITE_ID);
     if (state.agencyId) roleParts.push('agency');
     els.sessionRole.textContent = roleParts.join(' · ');
   }
@@ -1863,7 +2069,7 @@ function canAccessTab(tabId) {
 }
 
 function attachManagerLiveViews() {
-  const constraints = [];
+  const constraints = [...branchConstraints()];
   if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
   constraints.push(orderBy('timestampMs', 'desc'));
   constraints.push(limit(250));
@@ -1877,7 +2083,7 @@ function attachManagerLiveViews() {
     onSnapshot(
       liveQuery,
       (snap) => {
-        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
         state.allPunchRows = rows;
         renderLivePunches(rows);
         renderActiveNow(rows);
@@ -2019,10 +2225,8 @@ function renderEditPunchesTable(rows) {
         <td>${escapeHtml(editedAtText)}</td>
         <td>${renderGpsBadge(row)}</td>
         <td>
-          <button class="secondary-btn manager-edit-punch-btn" data-id="${row.id}" type="button">Edit</button>
-          ${canDeletePunches()
-            ? `<button class="danger-btn manager-delete-punch-btn" data-id="${row.id}" type="button">Delete</button>`
-            : ''}
+          <button class="secondary-btn manager-edit-punch-btn" data-id="${row.id}" type="button" ${canEditPunches() ? '' : 'disabled'}>Edit</button>
+          <button class="danger-btn manager-delete-punch-btn" data-id="${row.id}" type="button" ${canDeletePunches() ? '' : 'disabled'}>Delete</button>
         </td>
       </tr>
     `;
@@ -2039,7 +2243,7 @@ function renderEditPunchesTable(rows) {
 
 async function editPunch(punchId) {
   if (!canEditPunches()) {
-    toast('Your role does not allow punch editing.', true);
+    toast('You need edit-punch permission to edit punches.', true);
     return;
   }
 
@@ -2123,10 +2327,12 @@ async function editPunch(punchId) {
         source: row.source || ''
       },
       editedBy: state.profile?.name || state.me?.email || 'Manager',
-      editedAt: serverTimestamp()
+      editedAt: serverTimestamp(),
+      ...branchPayload()
     });
 
-    await updateDoc(doc(db, 'punches', punchId), updatedPayload);
+    await updateDoc(doc(db, 'punches', punchId), { ...updatedPayload, ...branchPayload(row.siteId || CURRENT_SITE_ID) });
+    await logAudit('punch_edited', 'punch', punchId, row || {}, updatedPayload, 'Punch edited from manager dashboard');
 
     toast('Punch updated.');
   } catch (error) {
@@ -2137,7 +2343,7 @@ async function editPunch(punchId) {
 
 async function deletePunchRecord(punchId) {
   if (!canDeletePunches()) {
-    toast('Your role does not allow punch deletion.', true);
+    toast('You need delete-punch permission to delete punches.', true);
     return;
   }
 
@@ -2151,11 +2357,21 @@ async function deletePunchRecord(punchId) {
       type: 'delete',
       original: row || null,
       editedBy: state.profile?.name || state.me?.email || 'Manager',
-      editedAt: serverTimestamp()
+      editedAt: serverTimestamp(),
+      ...branchPayload(row?.siteId || CURRENT_SITE_ID)
     });
 
-    await deleteDoc(doc(db, 'punches', punchId));
-    toast('Punch deleted.');
+    const deletePayload = {
+      status: 'deleted',
+      active: false,
+      deletedAt: serverTimestamp(),
+      deletedBy: state.profile?.name || state.me?.email || 'Manager',
+      deleteReason: 'Manager deleted from punch editor',
+      updatedAt: serverTimestamp()
+    };
+    await updateDoc(doc(db, 'punches', punchId), deletePayload);
+    await logAudit('punch_deleted', 'punch', punchId, row || {}, deletePayload, 'Soft delete from punch editor');
+    toast('Punch marked deleted.');
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not delete punch.', true);
@@ -2165,13 +2381,19 @@ async function deletePunchRecord(punchId) {
 function attachTimesheetView() {
   const weekKey = formatDateKey(state.selectedWeekStart);
 
-  const punchConstraints = [where('weekKey', '==', weekKey)];
+  const punchConstraints = [
+    ...branchConstraints(),
+    where('weekKey', '==', weekKey),
+  ];
   if (isAgencyUser()) punchConstraints.push(where('agencyId', '==', state.agencyId));
   punchConstraints.push(orderBy('timestampMs', 'asc'));
 
   const punchesQuery = query(collection(db, 'punches'), ...punchConstraints);
 
-  const tsConstraints = [where('weekKey', '==', weekKey)];
+  const tsConstraints = [
+    ...branchConstraints(),
+    where('weekKey', '==', weekKey),
+  ];
   if (isAgencyUser()) tsConstraints.push(where('agencyId', '==', state.agencyId));
 
   const timesheetsQuery = query(collection(db, 'timesheets'), ...tsConstraints);
@@ -2180,7 +2402,7 @@ function attachTimesheetView() {
     onSnapshot(
       punchesQuery,
       (snap) => {
-        state.selectedWeekPunchRows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        state.selectedWeekPunchRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
         renderDerivedTimesheets();
         populateAgencyWorkerSelect();
         renderAgencyPreview();
@@ -2278,6 +2500,9 @@ function getDerivedTimesheetRows() {
       name: displayName,
       nameKey,
       weekKey,
+      companyId: personPunches[0]?.companyId || getCurrentCompanyId(),
+      agencyId: personPunches[0]?.agencyId || state.agencyId || '',
+      siteId: personPunches[0]?.siteId || personPunches[0]?.assignedSiteId || getCurrentSiteId(),
       weeklyHours: totals.weeklyHours,
       daysWorked: totals.daysWorked,
       dailyTotals: totals.dailyTotals,
@@ -2307,6 +2532,9 @@ async function signTimesheet(timesheetId) {
       name: row.name,
       nameKey: row.nameKey,
       weekKey: row.weekKey,
+      companyId: row.companyId || getCurrentCompanyId(),
+      agencyId: row.agencyId || state.agencyId || '',
+      siteId: row.siteId || getCurrentSiteId(),
       dailyTotals: row.dailyTotals,
       weeklyHours: row.weeklyHours,
       daysWorked: row.daysWorked,
@@ -2339,6 +2567,9 @@ async function reopenTimesheet(timesheetId) {
       name: row.name,
       nameKey: row.nameKey,
       weekKey: row.weekKey,
+      companyId: row.companyId || getCurrentCompanyId(),
+      agencyId: row.agencyId || state.agencyId || '',
+      siteId: row.siteId || getCurrentSiteId(),
       dailyTotals: row.dailyTotals,
       weeklyHours: row.weeklyHours,
       daysWorked: row.daysWorked,
@@ -2443,7 +2674,7 @@ function buildWeekTotals(punches) {
 }
 
 function isEmployee() {
-  return ['employee', 'worker'].includes(normalizedRole());
+  return hasAnyRole(['employee', 'worker']);
 }
 
 /* ───────────────────────────────────────────────────
@@ -2471,12 +2702,13 @@ function attachMyTimecardView() {
   } else {
     constraints.push(where('nameKey', '==', nameKey));
   }
+  constraints.push(...branchConstraints());
   constraints.push(orderBy('timestampMs', 'asc'));
 
   const q = query(collection(db, 'punches'), ...constraints);
 
   state._myTcUnsub = onSnapshot(q, (snap) => {
-    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
     renderMyTimecard(rows);
   }, (error) => {
     console.error(error);
@@ -2558,7 +2790,7 @@ async function handleMissedPunchSubmit(event) {
     await addDoc(collection(db, 'missedPunchRequests'), {
       uid: state.me.uid,
       employeeId: state.profile.employeeId || '',
-      companyId: state.companyId || '',
+      ...branchPayload(),
       agencyId: state.agencyId || '',
       name: state.profile.name || '',
       requestedAction: action,
@@ -2587,7 +2819,10 @@ async function handleMissedPunchSubmit(event) {
 function attachMyMissedPunchView() {
   if (!state.me) return;
 
-  const constraints = [where('uid', '==', state.me.uid)];
+  const constraints = [
+    ...branchConstraints(),
+    where('uid', '==', state.me.uid),
+  ];
 
   const q = query(collection(db, 'missedPunchRequests'), ...constraints);
 
@@ -2631,7 +2866,7 @@ function renderMyMissedPunches(rows) {
    ─────────────────────────────────────────────────── */
 
 function attachApprovalView() {
-  const constraints = [];
+  const constraints = [...branchConstraints()];
   if (isAgencyUser()) constraints.push(where('agencyId', '==', state.agencyId));
 
   const q = query(collection(db, 'missedPunchRequests'), ...constraints);
@@ -2709,6 +2944,10 @@ async function approveRequest(requestId) {
       approvedAt: now,
       updatedAt: serverTimestamp(),
     });
+    await logAudit('missed_punch_approved', 'missedPunchRequest', requestId, req, {
+      status: 'approved',
+      reviewedBy: managerName,
+    }, 'Missed punch request approved');
 
     // 2. Auto-create the actual punch
     const punchDate = new Date(req.requestedTimestampMs);
@@ -2728,7 +2967,8 @@ async function approveRequest(requestId) {
       createdBy: managerName,
       approvedBy: managerName,
       approvedAt: now,
-      companyId: req.companyId || '',
+      companyId: req.companyId || getCurrentCompanyId(),
+      siteId: req.siteId || getCurrentSiteId(),
       agencyId: req.agencyId || '',
       employeeId: req.employeeId || '',
     });
@@ -2743,6 +2983,9 @@ async function approveRequest(requestId) {
 async function denyRequest(requestId) {
   if (!canEditPunches()) { toast('Your role cannot deny punch requests.', true); return; }
 
+  const req = state.allMissedRequests.find((r) => r.id === requestId);
+  if (!req) { toast('Request not found.', true); return; }
+
   const reason = prompt('Denial reason (optional):') || '';
   const managerName = state.profile?.name || state.me?.email || 'Manager';
 
@@ -2754,6 +2997,11 @@ async function denyRequest(requestId) {
       editReason: reason,
       updatedAt: serverTimestamp(),
     });
+    await logAudit('missed_punch_denied', 'missedPunchRequest', requestId, req, {
+      status: 'denied',
+      reviewedBy: managerName,
+      reason,
+    }, 'Missed punch request denied');
 
     toast('Request denied.');
   } catch (error) {
@@ -2767,7 +3015,7 @@ async function denyRequest(requestId) {
    ─────────────────────────────────────────────────── */
 
 function attachEmployeesView() {
-  const empConstraints = [];
+  const empConstraints = [...branchConstraints()];
   if (isAgencyUser()) empConstraints.push(where('agencyId', '==', state.agencyId));
   empConstraints.push(orderBy('name', 'asc'));
 
@@ -2835,7 +3083,7 @@ function renderEmployeeList(employees) {
       <td>${escapeHtml(emp.employeeNumber || '-')}</td>
       <td>${escapeHtml(emp.name || '-')}</td>
       <td>${escapeHtml(agencyLabel(emp.agencyId))}</td>
-      <td>${escapeHtml(emp.assignedSiteId || '-')}</td>
+      <td>${escapeHtml(emp.siteId || emp.assignedSiteId || '-')}</td>
       <td><span class="tiny-flag">${escapeHtml(emp.status || 'active')}</span></td>
       <td>
         <button class="secondary-btn emp-edit-btn" data-id="${emp.id}" type="button">Edit</button>
@@ -3002,7 +3250,7 @@ function loadEmployeeForEdit(empId) {
   if (els.empNameInput) els.empNameInput.value = emp.name || '';
   if (els.empNumberInput) els.empNumberInput.value = emp.employeeNumber || '';
   if (els.empAgencySelect) els.empAgencySelect.value = emp.agencyId || '';
-  if (els.empSiteInput) els.empSiteInput.value = emp.assignedSiteId || '';
+  if (els.empSiteInput) els.empSiteInput.value = emp.siteId || emp.assignedSiteId || CURRENT_SITE_ID;
   if (els.empStatusSelect) els.empStatusSelect.value = emp.status || 'active';
   if (els.empPinInput) els.empPinInput.value = '';
   els.empCancelEditBtn?.classList.remove('hidden');
@@ -3032,7 +3280,12 @@ async function handleSaveEmployee(event) {
 
   let employeeNumber = els.empNumberInput?.value.trim();
   const agencyId = els.empAgencySelect?.value || '';
-  const assignedSiteId = els.empSiteInput?.value.trim() || '';
+  const requestedSiteId = String(els.empSiteInput?.value || CURRENT_SITE_ID).trim();
+  const assignedSiteId = canUseSite(requestedSiteId) ? requestedSiteId : CURRENT_SITE_ID;
+  if (requestedSiteId !== assignedSiteId) {
+    toast('You do not have access to assign that branch.', true);
+    return;
+  }
   const status = els.empStatusSelect?.value || 'active';
   const existingId = els.employeeDocId?.value || '';
   const existingEmployee = state.allEmployees.find((employee) => employee.id === existingId);
@@ -3065,14 +3318,17 @@ async function handleSaveEmployee(event) {
   const payload = {
     name,
     nameKey,
+    normalizedName: nameKey,
     employeeNumber,
-    companyId: state.companyId || '',
+    employeeNumberKey: normalizeWorkerNumber(employeeNumber),
+    companyId: getCurrentCompanyId(),
     agencyId,
     assignedSiteId,
     siteId: assignedSiteId,
     siteIds: assignedSiteId ? [assignedSiteId] : [],
     qrSlug: existingEmployee?.qrSlug || state.siteContext.qrSlug || '',
     status,
+    active: status === 'active',
     updatedAt: serverTimestamp(),
   };
 
@@ -3097,30 +3353,37 @@ async function handleSaveEmployee(event) {
 
   try {
     if (existingId) {
-      // Update existing employee
       if (pin) {
         payload.pinHash = await hashWorkerPin(pin, existingId);
         payload.pinUpdatedAt = serverTimestamp();
       }
-      await updateDoc(doc(db, 'employees', existingId), payload);
+      await setDoc(doc(db, 'employees', existingId), payload, { merge: true });
       const auditAction = existingEmployee?.status !== status
         ? 'worker_status_changed'
         : 'employee_updated';
-      await logAudit(auditAction, 'employee', existingId, existingEmployee || {}, payload);
+      await logAudit(auditAction, 'employee', existingId, existingEmployee || {}, payload, 'Admin employee update');
       toast('Employee updated.');
     } else {
-      // Create new employee
-      payload.createdAt = serverTimestamp();
-      const newRef = await addDoc(collection(db, 'employees'), payload);
-      // Write employeeId field = doc ID
-      const identityPayload = { employeeId: newRef.id };
+      const reusableEmployee = await findExistingEmployeeForUpsert({
+        employeeNumber,
+        nameKey,
+        companyId: getCurrentCompanyId(),
+        agencyId,
+        siteId: assignedSiteId
+      });
+      const employeeId = reusableEmployee?.id || buildStableEmployeeId(employeeNumber, agencyId, assignedSiteId || getCurrentCompanyId());
+      payload.employeeId = employeeId;
       if (pin) {
-        identityPayload.pinHash = await hashWorkerPin(pin, newRef.id);
-        identityPayload.pinUpdatedAt = serverTimestamp();
+        payload.pinHash = await hashWorkerPin(pin, employeeId);
+        payload.pinUpdatedAt = serverTimestamp();
       }
-      await updateDoc(newRef, identityPayload);
-      await logAudit('employee_created', 'employee', newRef.id, {}, payload);
-      toast('Employee created: ' + employeeNumber);
+      if (!reusableEmployee) {
+        payload.createdAt = serverTimestamp();
+      }
+
+      await setDoc(doc(db, 'employees', employeeId), payload, { merge: true });
+      await logAudit(reusableEmployee ? 'employee_reused_existing' : 'employee_created', 'employee', employeeId, reusableEmployee || {}, payload, 'Admin employee save with stable ID');
+      toast(reusableEmployee ? 'Existing active employee reused and updated.' : 'Employee created: ' + employeeNumber);
     }
 
     cancelEmployeeEdit();
@@ -3383,26 +3646,6 @@ async function commitDocumentUpdates(updates) {
   }
 }
 
-async function logAudit(action, entityType, entityId, oldValue, newValue) {
-  if (!state.me || !isManager()) return;
-  try {
-    await addDoc(collection(db, 'auditLogs'), {
-      action,
-      entityType,
-      entityId,
-      oldValue: serializeForExport(oldValue),
-      newValue: serializeForExport(newValue),
-      actorId: state.me.uid,
-      actorName: state.profile?.name || state.me.email || 'Manager',
-      companyId: state.companyId || '',
-      createdAt: serverTimestamp(),
-      createdAtMs: Date.now(),
-    });
-  } catch (error) {
-    console.warn('Audit log could not be saved:', error.message);
-  }
-}
-
 async function exportBackup() {
   if (!isManager()) return;
   try {
@@ -3460,13 +3703,127 @@ async function generateNextEmployeeNumber() {
 }
 
 function attachUsersViewIfAdmin() {
-  if (!isAdmin()) return;
+  if (!canManageUsers()) return;
   attachUsersView();
 }
 
+function attachPendingUsersViewIfAdmin() {
+  if (!canManageUsers() || !els.pendingUserListBody) return;
+
+  const pendingQuery = query(
+    collection(db, 'users'),
+    where('companyId', '==', getCurrentCompanyId()),
+    where('siteIds', 'array-contains', getCurrentSiteId()),
+    where('approvalStatus', '==', 'pending')
+  );
+
+  state.unsubscribers.push(
+    onSnapshot(pendingQuery, (snap) => {
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderPendingUsers(rows);
+    }, (error) => {
+      console.error(error);
+      toast(error.message || 'Could not load pending users.', true);
+    })
+  );
+}
+
+function renderPendingUsers(rows) {
+  if (!els.pendingUserListBody) return;
+
+  if (!rows.length) {
+    els.pendingUserListBody.innerHTML = '<tr><td colspan="6">No pending users.</td></tr>';
+    return;
+  }
+
+  els.pendingUserListBody.innerHTML = rows.map((row) => `
+    <tr>
+      <td>${escapeHtml(row.name || row.displayName || '-')}</td>
+      <td>${escapeHtml(row.email || '-')}</td>
+      <td>${escapeHtml(row.requestedRole || '-')}</td>
+      <td>${escapeHtml(row.companyId || '-')}</td>
+      <td>${escapeHtml(getAllowedSiteIds(row).join(', ') || '-')}</td>
+      <td>
+        <button class="primary-btn approve-user-btn" data-id="${row.id}" type="button">Approve</button>
+        <button class="danger-btn deny-user-btn" data-id="${row.id}" type="button">Deny</button>
+      </td>
+    </tr>
+  `).join('');
+
+  els.pendingUserListBody.querySelectorAll('.approve-user-btn').forEach((btn) => {
+    btn.addEventListener('click', () => approvePendingUser(btn.dataset.id, rows));
+  });
+
+  els.pendingUserListBody.querySelectorAll('.deny-user-btn').forEach((btn) => {
+    btn.addEventListener('click', () => denyPendingUser(btn.dataset.id, rows));
+  });
+}
+
+async function approvePendingUser(uid, rows) {
+  if (!canManageUsers()) {
+    toast('You do not have permission to approve users.', true);
+    return;
+  }
+
+  const row = rows.find((item) => item.id === uid);
+  if (!row) return;
+
+  const requestedRole = row.requestedRole || 'manager';
+  const role = prompt('Approve role (manager, admin, worker):', requestedRole) || requestedRole;
+  if (!['manager', 'admin', 'worker'].includes(role)) {
+    toast('Invalid role.', true);
+    return;
+  }
+
+  const siteIds = parseSiteIds(prompt('Allowed siteIds, comma-separated:', getAllowedSiteIds(row).join(', ') || CURRENT_SITE_ID));
+  const defaultPermissions = defaultPermissionsForRole(role);
+  const payload = {
+    active: true,
+    approvalStatus: 'approved',
+    role,
+    companyId: getCurrentCompanyId(),
+    siteId: siteIds[0],
+    siteIds,
+    permissions: {
+      canEditPunches: defaultPermissions.canEditPunches || row.permissions?.canEditPunches === true,
+      canDeletePunches: defaultPermissions.canDeletePunches || row.permissions?.canDeletePunches === true,
+      canMergeWorkers: defaultPermissions.canMergeWorkers || row.permissions?.canMergeWorkers === true,
+      manageUsers: defaultPermissions.manageUsers || row.permissions?.manageUsers === true,
+    },
+    approvedBy: state.me.uid,
+    approvedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  await setDoc(doc(db, 'users', uid), payload, { merge: true });
+  await logAudit('user_approved', 'user', uid, row, payload, 'Pending user approved');
+  toast('User approved.');
+}
+
+async function denyPendingUser(uid, rows) {
+  if (!canManageUsers()) {
+    toast('You do not have permission to deny users.', true);
+    return;
+  }
+
+  const row = rows.find((item) => item.id === uid);
+  const payload = {
+    active: false,
+    approvalStatus: 'denied',
+    deniedBy: state.me.uid,
+    deniedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  await setDoc(doc(db, 'users', uid), payload, { merge: true });
+  await logAudit('user_denied', 'user', uid, row || {}, payload, 'Pending user denied');
+  toast('User denied/deactivated.');
+}
+
 function attachUsersView() {
-  const userConstraints = [];
-  if (state.companyId) userConstraints.push(where('companyId', '==', state.companyId));
+  const userConstraints = [
+    where('companyId', '==', getCurrentCompanyId()),
+    where('siteIds', 'array-contains', getCurrentSiteId()),
+  ];
   userConstraints.push(orderBy('name', 'asc'));
 
   const usersQuery = query(collection(db, 'users'), ...userConstraints);
@@ -3487,7 +3844,7 @@ function attachUsersView() {
             <tr>
               <td>${escapeHtml(row.name || '-')}</td>
               <td>${escapeHtml(row.email || '-')}</td>
-              <td>${escapeHtml(row.role || '-')}</td>
+              <td>${escapeHtml(row.role || '-')}<br><span class="tiny">${escapeHtml(getAllowedSiteIds(row).join(', ') || '-')}</span></td>
               <td>${row.active ? 'Yes' : 'No'}</td>
             </tr>
           `)
@@ -3506,17 +3863,48 @@ async function handleSaveProfile(event) {
 
   try {
     const uid = els.userUidInput?.value.trim();
+    const profileRef = doc(db, 'users', uid);
+    const existingProfileSnap = await getDoc(profileRef);
+    const existingProfile = existingProfileSnap.exists() ? existingProfileSnap.data() : {};
+    const role = els.userRoleInput?.value || existingProfile.role || 'manager';
+    const defaultPermissions = defaultPermissionsForRole(role);
+    const displayName = prettifyHumanName(els.userNameInput?.value.trim()) || existingProfile.displayName || existingProfile.name || '';
+    const requestedSiteIds = parseSiteIds(els.userSiteIdsInput?.value || existingProfile.siteIds || existingProfile.siteId || CURRENT_SITE_ID);
     const profilePayload = {
-      name: prettifyHumanName(els.userNameInput?.value.trim()),
+      uid,
+      name: displayName,
+      displayName,
       email: els.userEmailInput?.value.trim().toLowerCase(),
-      role: els.userRoleInput?.value,
+      role,
       active: els.userActiveInput?.value === 'true',
+      agencyId: existingProfile.agencyId || state.agencyId || '',
+      companyId: getCurrentCompanyId(),
+      siteId: requestedSiteIds[0] || CURRENT_SITE_ID,
+      siteIds: requestedSiteIds,
+      approvalStatus: els.userActiveInput?.value === 'true' ? 'approved' : (existingProfile.approvalStatus || 'pending'),
+      permissions: {
+        canEditPunches: defaultPermissions.canEditPunches || existingProfile.permissions?.canEditPunches === true,
+        canDeletePunches: defaultPermissions.canDeletePunches || existingProfile.permissions?.canDeletePunches === true,
+        canMergeWorkers: defaultPermissions.canMergeWorkers || existingProfile.permissions?.canMergeWorkers === true,
+        manageUsers: defaultPermissions.manageUsers || existingProfile.permissions?.manageUsers === true
+      },
       updatedAt: serverTimestamp(),
     };
-    // Auto-assign current user's companyId to new profiles
-    if (state.companyId) profilePayload.companyId = state.companyId;
+    if (!existingProfileSnap.exists()) {
+      profilePayload.createdAt = serverTimestamp();
+    }
 
-    await setDoc(doc(db, 'users', uid), profilePayload, { merge: true });
+    await setDoc(profileRef, profilePayload, { merge: true });
+    const roleChanged = existingProfile.role && existingProfile.role !== profilePayload.role;
+    const permissionsChanged = JSON.stringify(existingProfile.permissions || {}) !== JSON.stringify(profilePayload.permissions || {});
+    await logAudit(
+      roleChanged ? 'user_role_changed' : (permissionsChanged ? 'user_permissions_changed' : 'user_profile_saved'),
+      'user',
+      uid,
+      existingProfile,
+      profilePayload,
+      'Dashboard access updated'
+    );
 
     toast('User profile saved.');
     els.userProfileForm?.reset();
@@ -3695,6 +4083,7 @@ function clearTimesheetListenerOnly() {
     attachManagerLiveViews();
     attachTimesheetView();
     attachUsersViewIfAdmin();
+    attachPendingUsersViewIfAdmin();
   }
 }
 
@@ -3703,16 +4092,18 @@ const PUNCH_EDIT_ROLES = new Set([
   'manager',
   'supervisor',
   'super_admin',
+  'superadmin',
   'owner',
   'agency_admin',
 ]);
 
-const ADMIN_ROLES = new Set(['admin', 'super_admin', 'owner']);
-const PUNCH_DELETE_ROLES = new Set(['admin', 'manager', 'super_admin', 'owner']);
+const ADMIN_ROLES = new Set(['admin', 'super_admin', 'superadmin', 'owner']);
+const PUNCH_DELETE_ROLES = new Set(['admin', 'manager', 'super_admin', 'superadmin', 'owner']);
 
 function normalizeRole(value) {
   return String(value || '')
     .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .toLowerCase()
     .replace(/[\s-]+/g, '_');
 }
@@ -3721,20 +4112,64 @@ function normalizedRole() {
   return normalizeRole(state.profile?.role);
 }
 
+function currentRole() {
+  return normalizedRole();
+}
+
+function hasAnyRole(roles) {
+  const role = normalizedRole();
+  return roles.map(normalizeRole).includes(role);
+}
+
+function hasPermission(permissionName) {
+  return state.profile?.permissions?.[permissionName] === true;
+}
+
+function defaultPermissionsForRole(role) {
+  const normalized = normalizeRole(role);
+  const fullAccess = isOwnerOrSuperAdminRole(normalized);
+  return {
+    canEditPunches: fullAccess || ['admin', 'agency_admin', 'manager', 'supervisor'].includes(normalized),
+    canDeletePunches: fullAccess || normalized === 'admin',
+    canMergeWorkers: fullAccess || normalized === 'admin',
+    manageUsers: fullAccess || normalized === 'admin',
+  };
+}
+
+function isOwnerOrSuperAdminRole(role) {
+  return ['owner', 'super_admin', 'superadmin'].includes(normalizeRole(role));
+}
+
+function isOwnerOrSuperAdmin() {
+  return isOwnerOrSuperAdminRole(state.profile?.role);
+}
+
 function canEditPunches() {
-  return PUNCH_EDIT_ROLES.has(normalizedRole());
+  if (isOwnerOrSuperAdmin()) return true;
+  return PUNCH_EDIT_ROLES.has(normalizedRole()) && hasPermission('canEditPunches');
 }
 
 function canManageEmployees() {
-  return PUNCH_EDIT_ROLES.has(normalizedRole());
+  return canEditPunches();
 }
 
 function canDeletePunches() {
-  return PUNCH_DELETE_ROLES.has(normalizedRole());
+  if (isOwnerOrSuperAdmin()) return true;
+  return PUNCH_DELETE_ROLES.has(normalizedRole()) && hasPermission('canDeletePunches');
+}
+
+function canMergeWorkers() {
+  if (isOwnerOrSuperAdmin()) return true;
+  return isAdmin() && hasPermission('canMergeWorkers');
+}
+
+function canManageUsers() {
+  if (isOwnerOrSuperAdmin()) return true;
+  return isAdmin() && hasPermission('manageUsers');
 }
 
 function isManager() {
-  return canEditPunches();
+  return PUNCH_EDIT_ROLES.has(normalizedRole());
 }
 
 function isAdmin() {
@@ -3845,6 +4280,308 @@ function normalizeName(value) {
     .replace(/\s+/g, ' ')
     .replace(/[^a-z0-9 ]/g, '')
     .replaceAll(' ', '_');
+}
+
+function normalizeWorkerNumber(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[^a-z0-9_-]/g, '');
+}
+
+function normalizeScopeId(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function buildStableEmployeeId(employeeNumber, agencyId, siteId) {
+  const numberKey = normalizeWorkerNumber(employeeNumber);
+  const agencyKey = normalizeScopeId(agencyId || 'direct');
+  const siteKey = normalizeScopeId(siteId || 'site');
+  return `employee_${agencyKey}_${siteKey}_${numberKey || normalizeScopeId(crypto.randomUUID())}`;
+}
+
+function isActiveEmployeeRecord(record) {
+  if (!record || typeof record !== 'object') return false;
+  if (record.active === false) return false;
+  const status = String(record.status || 'active').trim().toLowerCase();
+  return !['inactive', 'removed', 'terminated', 'disabled', 'archived', 'merged'].includes(status);
+}
+
+function isActivePunchRecord(record) {
+  if (!record || typeof record !== 'object') return false;
+  if (record.active === false) return false;
+  const status = String(record.status || '').trim().toLowerCase();
+  return status !== 'deleted';
+}
+
+function normalizeUserProfile(profile = {}, authUser = null) {
+  const status = String(profile.status || '').trim().toLowerCase();
+  const role = profile.role === 'worker' ? 'worker' : (profile.role || 'manager');
+  const defaultPermissions = defaultPermissionsForRole(role);
+  const active = typeof profile.active === 'boolean' ? profile.active : status !== 'inactive';
+  const displayName = prettifyHumanName(
+    profile.displayName
+    || profile.name
+    || [profile.firstName, profile.lastName].filter(Boolean).join(' ')
+    || authUser?.displayName
+    || profile.email
+    || authUser?.email
+    || ''
+  );
+
+  return {
+    ...profile,
+    uid: profile.uid || authUser?.uid || '',
+    name: displayName || profile.email || authUser?.email || 'Signed in',
+    displayName: profile.displayName || displayName || profile.email || authUser?.email || 'Signed in',
+    email: String(profile.email || authUser?.email || '').trim().toLowerCase(),
+    role,
+    active,
+    companyId: profile.companyId || '',
+    agencyId: profile.agencyId || '',
+    siteId: profile.siteId || profile.assignedSiteId || '',
+    siteIds: parseSiteIds(profile.siteIds || profile.siteId || profile.assignedSiteId || '', false),
+    permissions: {
+      canEditPunches: defaultPermissions.canEditPunches || profile.permissions?.canEditPunches === true,
+      canDeletePunches: defaultPermissions.canDeletePunches || profile.permissions?.canDeletePunches === true,
+      canMergeWorkers: defaultPermissions.canMergeWorkers || profile.permissions?.canMergeWorkers === true,
+      manageUsers: defaultPermissions.manageUsers || profile.permissions?.manageUsers === true
+    },
+    employeeId: profile.employeeId || profile.workerId || '',
+    workerId: profile.workerId || profile.employeeId || ''
+  };
+}
+
+async function findExistingEmployeeForUpsert({ employeeNumber, nameKey, companyId = '', agencyId = '', siteId = '' }) {
+  const employeesRef = collection(db, 'employees');
+  const matches = [];
+  const employeeNumberKey = normalizeWorkerNumber(employeeNumber);
+  const normalizedSiteId = String(siteId || '').trim();
+  const normalizedAgencyId = String(agencyId || '').trim();
+  const normalizedCompanyId = String(companyId || '').trim();
+
+  const addMatches = (snap) => {
+    snap.docs.forEach((record) => {
+      const row = { id: record.id, ...record.data() };
+      if (!isActiveEmployeeRecord(row)) return;
+      const sameCompany = String(row.companyId || '').trim() === normalizedCompanyId;
+      const sameAgency = String(row.agencyId || '').trim() === normalizedAgencyId;
+      const sameSite = String(row.assignedSiteId || row.siteId || '').trim() === normalizedSiteId;
+      if (sameCompany && sameAgency && sameSite) matches.push(row);
+    });
+  };
+
+  if (employeeNumberKey) {
+    addMatches(await getDocs(query(
+      employeesRef,
+      where('companyId', '==', normalizedCompanyId),
+      where('agencyId', '==', normalizedAgencyId),
+      where('assignedSiteId', '==', normalizedSiteId),
+      where('status', '==', 'active'),
+      where('employeeNumberKey', '==', employeeNumberKey)
+    )));
+    if (!matches.length) {
+      addMatches(await getDocs(query(
+        employeesRef,
+        where('companyId', '==', normalizedCompanyId),
+        where('agencyId', '==', normalizedAgencyId),
+        where('assignedSiteId', '==', normalizedSiteId),
+        where('status', '==', 'active'),
+        where('employeeNumber', '==', employeeNumber)
+      )));
+    }
+  }
+
+  if (!matches.length && nameKey) {
+    addMatches(await getDocs(query(
+      employeesRef,
+      where('companyId', '==', normalizedCompanyId),
+      where('agencyId', '==', normalizedAgencyId),
+      where('assignedSiteId', '==', normalizedSiteId),
+      where('status', '==', 'active'),
+      where('nameKey', '==', nameKey)
+    )));
+  }
+
+  return matches[0] || null;
+}
+
+async function logAudit(action, entityType, entityId, oldValue = {}, newValue = {}, reason = '') {
+  if (!state.me) return;
+  try {
+    await addDoc(collection(db, 'auditLogs'), {
+      ...branchPayload(),
+      agencyId: state.agencyId || '',
+      userId: state.me.uid || '',
+      actorId: state.me.uid || '',
+      actorRole: state.profile?.role || '',
+      role: state.profile?.role || '',
+      action,
+      eventType: action,
+      entityType,
+      entityId,
+      affectedRecord: entityId,
+      oldValue,
+      newValue,
+      reason,
+      timestamp: serverTimestamp(),
+      createdAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.warn('Audit log write failed:', error.message);
+  }
+}
+
+async function loadPunchesForEmployee(employee) {
+  const ids = [...new Set([employee?.id, employee?.employeeId, employee?.workerId].filter(Boolean))];
+  const snapshots = [];
+  for (const id of ids) {
+    snapshots.push(await getDocs(query(collection(db, 'punches'), ...branchConstraints(), where('employeeId', '==', id))));
+    snapshots.push(await getDocs(query(collection(db, 'punches'), ...branchConstraints(), where('workerId', '==', id))));
+  }
+  const rows = new Map();
+  snapshots.forEach((snap) => {
+    snap.docs.forEach((record) => {
+      rows.set(record.id, { id: record.id, ...record.data() });
+    });
+  });
+  return [...rows.values()];
+}
+
+async function previewDuplicateEmployeeMerge(primaryEmployeeId, duplicateEmployeeIds, options = {}) {
+  const [primarySnap, ...duplicateSnaps] = await Promise.all([
+    getDoc(doc(db, 'employees', primaryEmployeeId)),
+    ...duplicateEmployeeIds.map((id) => getDoc(doc(db, 'employees', id)))
+  ]);
+  if (!primarySnap.exists()) throw new Error('Primary employee not found.');
+  const primary = { id: primarySnap.id, ...primarySnap.data() };
+  const duplicates = duplicateSnaps.map((snap) => {
+    if (!snap.exists()) throw new Error('One or more duplicate employees were not found.');
+    return { id: snap.id, ...snap.data() };
+  });
+
+  const conflicts = [];
+  duplicates.forEach((duplicate) => {
+    if (normalizeWorkerNumber(primary.employeeNumber) && normalizeWorkerNumber(duplicate.employeeNumber) && normalizeWorkerNumber(primary.employeeNumber) !== normalizeWorkerNumber(duplicate.employeeNumber)) {
+      conflicts.push(`employeeNumber: ${duplicate.id}`);
+    }
+    if (String(primary.agencyId || '') !== String(duplicate.agencyId || '')) {
+      conflicts.push(`agencyId: ${duplicate.id}`);
+    }
+    if (String(primary.assignedSiteId || primary.siteId || '') !== String(duplicate.assignedSiteId || duplicate.siteId || '')) {
+      conflicts.push(`siteId: ${duplicate.id}`);
+    }
+  });
+
+  if (conflicts.length && !(options.overrideConflicts === true && isOwnerOrSuperAdmin())) {
+    return { ok: false, blocked: true, conflicts, primary, duplicates, punchCount: 0, dateRange: null };
+  }
+
+  const punchRows = (await Promise.all(duplicates.map(loadPunchesForEmployee))).flat();
+  const uniquePunches = [...new Map(punchRows.map((row) => [row.id, row])).values()];
+  const timestamps = uniquePunches.map((row) => Number(row.timestampMs || 0)).filter(Boolean).sort((a, b) => a - b);
+
+  return {
+    ok: true,
+    dryRun: true,
+    primary,
+    duplicates,
+    punchCount: uniquePunches.length,
+    dateRange: timestamps.length ? { start: formatDateKey(new Date(timestamps[0])), end: formatDateKey(new Date(timestamps[timestamps.length - 1])) } : null,
+    agency: primary.agencyId || '',
+    site: primary.assignedSiteId || primary.siteId || '',
+    employeeNumber: primary.employeeNumber || '',
+    punches: uniquePunches
+  };
+}
+
+async function mergeDuplicateEmployees(primaryEmployeeId, duplicateEmployeeIds, options = {}) {
+  if (!canMergeWorkers()) throw new Error('You do not have permission to merge workers.');
+  const preview = await previewDuplicateEmployeeMerge(primaryEmployeeId, duplicateEmployeeIds, options);
+  if (!preview.ok) return preview;
+  if (options.dryRun !== false) return preview;
+
+  const now = serverTimestamp();
+  const batches = [];
+  let batch = writeBatch(db);
+  let writes = 0;
+  const commitWhenFull = () => {
+    if (writes < 450) return;
+    batches.push(batch.commit());
+    batch = writeBatch(db);
+    writes = 0;
+  };
+
+  preview.punches.forEach((punch) => {
+    batch.update(doc(db, 'punches', punch.id), {
+      employeeId: preview.primary.id,
+      workerId: preview.primary.workerId || preview.primary.employeeId || preview.primary.id,
+      name: preview.primary.name || punch.name || '',
+      nameKey: preview.primary.nameKey || normalizeName(preview.primary.name || punch.name || ''),
+      employeeNumber: preview.primary.employeeNumber || punch.employeeNumber || '',
+      mergedFromEmployeeId: punch.employeeId || punch.workerId || '',
+      mergePreservedOriginal: {
+        employeeId: punch.employeeId || '',
+        workerId: punch.workerId || '',
+        name: punch.name || '',
+        nameKey: punch.nameKey || '',
+        employeeNumber: punch.employeeNumber || ''
+      },
+      updatedAt: now
+    });
+    writes += 1;
+    commitWhenFull();
+  });
+
+  preview.duplicates.forEach((duplicate) => {
+    batch.update(doc(db, 'employees', duplicate.id), {
+      active: false,
+      status: 'merged',
+      mergedInto: preview.primary.id,
+      mergedAt: now,
+      mergedBy: state.me.uid || '',
+      updatedAt: now
+    });
+    writes += 1;
+    commitWhenFull();
+  });
+
+  const mergeLogRef = doc(collection(db, 'mergeLogs'));
+  batch.set(mergeLogRef, {
+    ...branchPayload(preview.site || getCurrentSiteId()),
+    primaryWorkerId: preview.primary.id,
+    duplicateWorkerIds: preview.duplicates.map((worker) => worker.id),
+    punchCount: preview.punchCount,
+    dateRange: preview.dateRange,
+    agencyId: preview.agency,
+    siteId: preview.site || getCurrentSiteId(),
+    employeeNumber: preview.employeeNumber,
+    mergedBy: state.me.uid || '',
+    mergedByName: state.profile?.name || state.me?.email || '',
+    overrideConflicts: options.overrideConflicts === true,
+    timestamp: now,
+    createdAt: now
+  });
+  writes += 1;
+
+  if (writes) batches.push(batch.commit());
+  await Promise.all(batches);
+  await logAudit('worker_merge_completed', 'worker', preview.primary.id, {
+    duplicateWorkerIds: preview.duplicates.map((worker) => worker.id)
+  }, {
+    primaryWorkerId: preview.primary.id,
+    movedPunches: preview.punchCount,
+    mergeLogId: mergeLogRef.id
+  }, 'Safe duplicate employee merge');
+
+  return { ...preview, dryRun: false, mergeLogId: mergeLogRef.id };
 }
 
 function toLocalEditString(ms) {
@@ -3982,3 +4719,8 @@ function debounce(fn, ms) {
     timer = setTimeout(() => fn(...args), ms);
   };
 }
+
+window.QRTimeClockAdminTools = {
+  previewDuplicateEmployeeMerge,
+  mergeDuplicateEmployees
+};
