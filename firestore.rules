@@ -46,6 +46,10 @@ service cloud.firestore {
       return isOwnerOrSuperAdmin() || role().matches('^ *(admin|agency_admin|agency admin|agency-admin) *$');
     }
 
+    function isAgencyAdmin() {
+      return role().matches('^ *(agency_admin|agency admin|agency-admin) *$');
+    }
+
     function isManager() {
       return isAdmin() || role().matches('^ *(manager|supervisor) *$');
     }
@@ -80,13 +84,17 @@ service cloud.firestore {
     }
 
     function myCompanyId() {
-      return activeProfile() ? myProfile().companyId : null;
+      return activeProfile() && myProfile().companyId is string ? myProfile().companyId : 'chadwell';
     }
 
     function mySiteIds() {
-      return activeProfile() && myProfile().siteIds is list && myProfile().siteIds.size() > 0
-        ? myProfile().siteIds
-        : (activeProfile() && myProfile().siteId is string ? [myProfile().siteId] : []);
+      return activeProfile() && myProfile().branches is list && myProfile().branches.size() > 0
+        ? myProfile().branches
+        : (activeProfile() && myProfile().branch is string
+          ? [myProfile().branch]
+          : (activeProfile() && myProfile().siteIds is list && myProfile().siteIds.size() > 0
+            ? myProfile().siteIds
+            : (activeProfile() && myProfile().siteId is string ? [myProfile().siteId] : [])));
     }
 
     function validCompanySite(data) {
@@ -102,10 +110,12 @@ service cloud.firestore {
     }
 
     function sameAgency(data) {
-      return !('agencyId' in data)
-        || data.agencyId == null
-        || data.agencyId == ''
-        || myProfile().agencyId == data.agencyId;
+      return isAgencyAdmin()
+        ? (data.agencyId is string && data.agencyId != '' && myProfile().agencyId == data.agencyId)
+        : (!('agencyId' in data)
+          || data.agencyId == null
+          || data.agencyId == ''
+          || myProfile().agencyId == data.agencyId);
     }
 
     function inScope(data) {
@@ -118,6 +128,8 @@ service cloud.firestore {
         && (
           (data.siteIds is list && data.siteIds.hasAny(mySiteIds()))
           || (data.siteId is string && mySiteIds().hasAny([data.siteId]))
+          || (data.branches is list && data.branches.hasAny(mySiteIds()))
+          || (data.branch is string && mySiteIds().hasAny([data.branch]))
         );
     }
 
@@ -164,18 +176,24 @@ service cloud.firestore {
         );
     }
 
-    function pendingSelfProfileCreate(userId) {
+    function pendingSelfProfileWrite(userId) {
       return signedIn()
         && request.auth.uid == userId
         && request.resource.data.uid == userId
         && request.resource.data.active == false
         && request.resource.data.approvalStatus == 'pending'
         && request.resource.data.role == 'worker'
-        && request.resource.data.requestedRole in ['manager', 'admin', 'worker']
+        && request.resource.data.requestedRole in ['manager', 'supervisor', 'agency_admin']
         && validCompanySite(request.resource.data)
         && request.resource.data.siteIds is list
         && request.resource.data.siteIds.hasAny([request.resource.data.siteId])
-        && request.resource.data.email is string;
+        && request.resource.data.email is string
+        && request.resource.data.requestedAdminEmail == 'brandon.evanshine@chadwellsupply.com'
+        && request.resource.data.permissions is map
+        && request.resource.data.permissions.canEditPunches == false
+        && request.resource.data.permissions.canDeletePunches == false
+        && request.resource.data.permissions.canMergeWorkers == false
+        && request.resource.data.permissions.manageUsers == false;
     }
 
     function softPunchDelete() {
@@ -246,7 +264,7 @@ service cloud.firestore {
         || (hasManageUsersPermission() && targetUserInScope(resource.data))
       );
 
-      allow create: if pendingSelfProfileCreate(userId)
+      allow create: if pendingSelfProfileWrite(userId)
         || (activeProfile()
           && hasManageUsersPermission()
           && request.resource.data.uid == userId
@@ -256,10 +274,16 @@ service cloud.firestore {
           && request.resource.data.permissions is map
           && targetUserInScope(request.resource.data));
 
-      allow update: if activeProfile()
+      allow update: if (
+        pendingSelfProfileWrite(userId)
+        && request.auth.uid == userId
+      ) || (
+        activeProfile()
         && hasManageUsersPermission()
+        && request.auth.uid != userId
         && targetUserInScope(resource.data)
-        && targetUserInScope(request.resource.data);
+        && targetUserInScope(request.resource.data)
+      );
 
       allow delete: if false;
     }
