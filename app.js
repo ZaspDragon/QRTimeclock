@@ -475,6 +475,16 @@ function getPublicSiteId() {
   return BRANCH_OPTIONS.some((branch) => branch.siteId === selected) ? selected : CURRENT_SITE_ID;
 }
 
+function normalizeSiteId(value, fallback = CURRENT_SITE_ID) {
+  const siteId = String(value || '').trim();
+  if (BRANCH_OPTIONS.some((branch) => branch.siteId === siteId)) return siteId;
+  return BRANCH_OPTIONS.some((branch) => branch.siteId === fallback) ? fallback : CURRENT_SITE_ID;
+}
+
+function firstPresent(...values) {
+  return values.find((value) => String(value || '').trim()) || '';
+}
+
 function getCurrentCompanyId() {
   return CURRENT_COMPANY_ID;
 }
@@ -521,7 +531,7 @@ function branchConstraints(siteId = getCurrentSiteId()) {
 function branchPayload(siteId = getCurrentSiteId()) {
   return {
     companyId: getCurrentCompanyId(),
-    siteId,
+    siteId: normalizeSiteId(siteId),
   };
 }
 
@@ -926,9 +936,10 @@ function buildVerifiedLocation(coords) {
   };
 }
 
-function buildPunchLocationPayload(employee) {
+function buildPunchLocationPayload(employee, preferredSiteId = '') {
   const location = state.workerLocation || { locationStatus: 'not_requested' };
-  const siteId = state.siteContext.siteId || employee?.assignedSiteId || employee?.siteId || '';
+  const siteId = normalizeSiteId(firstPresent(preferredSiteId, employee?.assignedSiteId, employee?.siteId, state.siteContext.siteId), getPublicSiteId());
+  const employeeSiteIds = Array.isArray(employee?.siteIds) ? parseSiteIds(employee.siteIds, false) : [];
   const capturedAtMs = Number(location.locationCapturedAtMs || 0);
   return {
     latitude: finiteNumberOrNull(location.latitude),
@@ -938,9 +949,7 @@ function buildPunchLocationPayload(employee) {
     locationStatus: location.locationStatus || 'not_requested',
     locationCapturedAt: capturedAtMs ? Timestamp.fromMillis(capturedAtMs) : null,
     siteId,
-    siteIds: Array.isArray(employee?.siteIds)
-      ? employee.siteIds
-      : (siteId ? [siteId] : []),
+    siteIds: employeeSiteIds.length ? employeeSiteIds : (siteId ? [siteId] : []),
     distanceFromSiteMeters: finiteNumberOrNull(location.distanceFromSiteMeters),
     withinAllowedRadius: typeof location.withinAllowedRadius === 'boolean'
       ? location.withinAllowedRadius
@@ -1036,12 +1045,13 @@ async function handleWorkerPunch(action) {
   if (emp._isNew) {
     try {
       const empNumber = await generateNextPublicEmployeeNumber();
+      const employeeSiteId = normalizeSiteId(publicSiteId, publicSiteId);
       const scope = {
         employeeNumber: empNumber,
         nameKey: normalizeName(emp.name),
         companyId: getCurrentCompanyId(),
         agencyId: '',
-        siteId: publicSiteId
+        siteId: employeeSiteId
       };
       const existingEmployee = await findExistingEmployeeForUpsert(scope);
       const employeeId = existingEmployee?.id || buildStableEmployeeId(empNumber, scope.agencyId, scope.siteId || scope.companyId);
@@ -1053,9 +1063,9 @@ async function handleWorkerPunch(action) {
         employeeNumberKey: normalizeWorkerNumber(existingEmployee?.employeeNumber || empNumber),
         companyId: scope.companyId,
         agencyId: '',
-        assignedSiteId: publicSiteId,
-        siteId: publicSiteId,
-        siteIds: [publicSiteId],
+        assignedSiteId: employeeSiteId,
+        siteId: employeeSiteId,
+        siteIds: [employeeSiteId],
         qrSlug: state.siteContext.qrSlug || '',
         status: 'active',
         active: true,
@@ -1099,6 +1109,7 @@ async function handleWorkerPunch(action) {
   const nowMs = Date.now();
   const dateKey = formatDateKey(now);
   const weekKey = formatDateKey(getMondayDate(now));
+  const punchSiteId = normalizeSiteId(firstPresent(emp.siteId, emp.assignedSiteId, publicSiteId), publicSiteId);
 
   state.workerPunchSaving = true;
   setWorkerPunchBusy(true);
@@ -1109,6 +1120,8 @@ async function handleWorkerPunch(action) {
       throw new Error('That punch was already saved. Please wait a few seconds.');
     }
     await addDoc(collection(db, 'punches'), {
+      ...buildPunchLocationPayload(emp, punchSiteId),
+      ...branchPayload(punchSiteId),
       name,
       nameKey,
       action,
@@ -1120,12 +1133,10 @@ async function handleWorkerPunch(action) {
       createdAt: serverTimestamp(),
       employeeId: emp.employeeId || emp.id || '',
       employeeNumber: emp.employeeNumber || '',
-      companyId: getCurrentCompanyId(),
-      siteId: emp.siteId || publicSiteId,
       agencyId: emp.agencyId || '',
-      assignedSiteId: emp.assignedSiteId || '',
+      assignedSiteId: normalizeSiteId(firstPresent(emp.assignedSiteId, emp.siteId, punchSiteId), punchSiteId),
+      siteIds: [punchSiteId],
       qrSlug: state.siteContext.qrSlug || '',
-      ...buildPunchLocationPayload(emp),
     });
 
     cacheWorkerPunch(emp, {
@@ -1643,12 +1654,15 @@ async function handlePublicTimeFixSubmit(event) {
   }
 
   try {
+    const requestSiteId = normalizeSiteId(firstPresent(employee.siteId, employee.assignedSiteId, getPublicSiteId()), getPublicSiteId());
     await addDoc(collection(db, 'missedPunchRequests'), {
+      ...branchPayload(requestSiteId),
       uid: '',
       employeeId: employee.employeeId || employee.id,
       employeeNumber: employee.employeeNumber || '',
-      ...branchPayload(employee.siteId || getPublicSiteId()),
       agencyId: employee.agencyId || '',
+      assignedSiteId: requestSiteId,
+      siteIds: [requestSiteId],
       name: employee.name,
       nameKey: normalizeName(employee.name),
       requestedAction,
@@ -2490,10 +2504,18 @@ function getDerivedTimesheetRows() {
   const rows = [];
 
   grouped.forEach((personPunches, nameKey) => {
-    const displayName = personPunches[0]?.name || nameKey;
+    const employee = findTimesheetEmployee(personPunches, nameKey);
+    const displayName = employee?.name || personPunches[0]?.name || nameKey;
     const totals = buildWeekTotals(personPunches);
     const timesheetId = `${weekKey}_${nameKey}`;
     const saved = state.selectedWeekTimesheetDocs[timesheetId] || null;
+    const siteId = normalizeSiteId(firstPresent(
+      personPunches[0]?.siteId,
+      personPunches[0]?.assignedSiteId,
+      employee?.siteId,
+      employee?.assignedSiteId,
+      getCurrentSiteId()
+    ));
 
     rows.push({
       id: timesheetId,
@@ -2501,8 +2523,9 @@ function getDerivedTimesheetRows() {
       nameKey,
       weekKey,
       companyId: personPunches[0]?.companyId || getCurrentCompanyId(),
-      agencyId: personPunches[0]?.agencyId || state.agencyId || '',
-      siteId: personPunches[0]?.siteId || personPunches[0]?.assignedSiteId || getCurrentSiteId(),
+      agencyId: firstPresent(personPunches[0]?.agencyId, employee?.agencyId, state.agencyId),
+      siteId,
+      employeeId: employee?.employeeId || employee?.id || personPunches[0]?.employeeId || '',
       weeklyHours: totals.weeklyHours,
       daysWorked: totals.daysWorked,
       dailyTotals: totals.dailyTotals,
@@ -2516,6 +2539,34 @@ function getDerivedTimesheetRows() {
 
   rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   return rows;
+}
+
+function findTimesheetEmployee(personPunches, nameKey) {
+  const source = [...new Map([
+    ...(state.allEmployees || []),
+    ...(state.publicEmployeeRecords || []),
+  ].map((employee) => [employee.id || employee.employeeId || `${employee.nameKey}:${employee.name}`, employee])).values()];
+  const ids = new Set();
+  personPunches.forEach((punch) => {
+    if (punch.employeeId) ids.add(String(punch.employeeId));
+    if (punch.workerId) ids.add(String(punch.workerId));
+  });
+
+  const byId = source.find((employee) =>
+    ids.has(String(employee.id || '')) || ids.has(String(employee.employeeId || '')) || ids.has(String(employee.workerId || ''))
+  );
+  if (byId) return byId;
+
+  const normalizedName = String(nameKey || '').trim().toLowerCase();
+  const byName = source.filter((employee) =>
+    normalizeName(employee.name || employee.nameKey || '') === normalizedName
+  );
+  if (!byName.length) return null;
+  return byName.sort((left, right) => {
+    const leftActive = isActiveEmployee(left) ? 1 : 0;
+    const rightActive = isActiveEmployee(right) ? 1 : 0;
+    return rightActive - leftActive || compareEmployeeRecords(left, right);
+  })[0];
 }
 
 async function signTimesheet(timesheetId) {
@@ -3921,9 +3972,12 @@ function populateAgencyWorkerSelect() {
   const rows = getDerivedTimesheetRows();
 
   els.agencyWorkerSelect.innerHTML = '<option value="">Select a worker</option>' +
-    rows.map((row) => `<option value="${escapeHtml(row.nameKey)}">${escapeHtml(row.name)}</option>`).join('');
+    rows.map((row) => {
+      const details = [agencyLabel(row.agencyId), row.siteId].filter(Boolean).join(' · ');
+      return `<option value="${escapeHtml(row.id)}">${escapeHtml(row.name)}${details ? ` (${escapeHtml(details)})` : ''}</option>`;
+    }).join('');
 
-  if (rows.some((row) => row.nameKey === current)) {
+  if (rows.some((row) => row.id === current)) {
     els.agencyWorkerSelect.value = current;
   }
 }
@@ -3931,14 +3985,14 @@ function populateAgencyWorkerSelect() {
 function renderAgencyPreview() {
   if (!els.agencyPreview || !els.agencyWorkerSelect) return;
 
-  const selectedNameKey = els.agencyWorkerSelect.value;
-  if (!selectedNameKey) {
+  const selectedRowId = els.agencyWorkerSelect.value;
+  if (!selectedRowId) {
     els.agencyPreview.innerHTML = '<div class="empty-state">Choose a worker and click Preview Sheet.</div>';
     return;
   }
 
   const weekKey = formatDateKey(state.selectedWeekStart);
-  const row = getDerivedTimesheetRows().find((r) => r.nameKey === selectedNameKey && r.weekKey === weekKey);
+  const row = getDerivedTimesheetRows().find((r) => r.id === selectedRowId && r.weekKey === weekKey);
 
   if (!row) {
     els.agencyPreview.innerHTML = '<div class="empty-state">No weekly sheet found for that worker.</div>';
@@ -3958,6 +4012,8 @@ function renderAgencyPreview() {
           <h2 style="margin:0 0 8px;font-size:28px;">Weekly Time Sheet</h2>
           <div style="font-size:15px;line-height:1.6;">
             <div><strong>Worker:</strong> ${escapeHtml(row.name)}</div>
+            <div><strong>Agency:</strong> ${escapeHtml(agencyLabel(row.agencyId))}</div>
+            <div><strong>Branch:</strong> ${escapeHtml(row.siteId || '-')}</div>
             <div><strong>Week Start:</strong> ${escapeHtml(row.weekKey)}</div>
             <div><strong>Status:</strong> ${escapeHtml(row.status)}</div>
           </div>
