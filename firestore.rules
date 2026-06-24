@@ -84,13 +84,17 @@ service cloud.firestore {
     }
 
     function myCompanyId() {
-      return activeProfile() ? myProfile().companyId : null;
+      return activeProfile() && myProfile().companyId is string ? myProfile().companyId : 'chadwell';
     }
 
     function mySiteIds() {
-      return activeProfile() && myProfile().siteIds is list && myProfile().siteIds.size() > 0
-        ? myProfile().siteIds
-        : (activeProfile() && myProfile().siteId is string ? [myProfile().siteId] : []);
+      return activeProfile() && myProfile().branches is list && myProfile().branches.size() > 0
+        ? myProfile().branches
+        : (activeProfile() && myProfile().branch is string
+          ? [myProfile().branch]
+          : (activeProfile() && myProfile().siteIds is list && myProfile().siteIds.size() > 0
+            ? myProfile().siteIds
+            : (activeProfile() && myProfile().siteId is string ? [myProfile().siteId] : [])));
     }
 
     function validCompanySite(data) {
@@ -124,6 +128,8 @@ service cloud.firestore {
         && (
           (data.siteIds is list && data.siteIds.hasAny(mySiteIds()))
           || (data.siteId is string && mySiteIds().hasAny([data.siteId]))
+          || (data.branches is list && data.branches.hasAny(mySiteIds()))
+          || (data.branch is string && mySiteIds().hasAny([data.branch]))
         );
     }
 

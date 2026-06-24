@@ -46,6 +46,7 @@ const state = {
   profile: null,
   companyId: CURRENT_COMPANY_ID,
   siteId: CURRENT_SITE_ID,
+  allowedBranches: [],
   agencyId: null,         // from user profile (null = direct company user)
   companyDoc: null,       // loaded from companies/{companyId}
   unsubscribers: [],
@@ -324,8 +325,9 @@ async function init() {
       }
       state.companyId = CURRENT_COMPANY_ID;
       state.siteId = CURRENT_SITE_ID;
+      state.allowedBranches = [];
       state.agencyId = state.profile.agencyId || null;
-      if (state.profile.companyId !== CURRENT_COMPANY_ID) {
+      if (state.profile.companyId && state.profile.companyId !== CURRENT_COMPANY_ID) {
         await signOut(auth);
         toast('You do not have access to this company.', true);
         return;
@@ -343,11 +345,23 @@ async function init() {
         return;
       }
 
-      if (!profileCanAccessSite(state.profile, CURRENT_SITE_ID)) {
-        await signOut(auth);
-        toast('You do not have access to this branch.', true);
+      if (!isAllowedDashboardRole(state.profile)) {
+        showAccessRequestOnly(`Role "${normalizeRole(state.profile.role) || 'unknown'}" has no dashboard permissions.`);
         return;
       }
+
+      const branchAccess = resolveUserBranchAccess(state.profile);
+      logBranchDebug(state.me?.email || state.profile?.email, state.profile.role, branchAccess.allowedBranches, branchAccess.activeBranch, branchAccess.valid);
+      if (!branchAccess.allowedBranches.length) {
+        showAccessRequestOnly('Your account does not have a branch assigned. Contact an admin.');
+        return;
+      }
+      if (!branchAccess.valid) {
+        showAccessRequestOnly('Your account does not have a branch assigned. Contact an admin.');
+        return;
+      }
+      state.allowedBranches = branchAccess.allowedBranches;
+      state.siteId = branchAccess.activeBranch;
 
       // Load company doc if companyId exists
       if (state.companyId) {
@@ -533,11 +547,17 @@ function getCurrentCompanyId() {
 }
 
 function getCurrentSiteId() {
-  return CURRENT_SITE_ID;
+  return state.siteId || CURRENT_SITE_ID;
 }
 
 function getAllowedSiteIds(profile = state.profile) {
   if (!profile) return [];
+  if (Array.isArray(profile.branches) && profile.branches.length) {
+    return parseSiteIds(profile.branches, false);
+  }
+  if (profile.branch) {
+    return parseSiteIds([profile.branch], false);
+  }
   if (Array.isArray(profile.siteIds) && profile.siteIds.length) {
     return parseSiteIds(profile.siteIds, false);
   }
@@ -557,6 +577,42 @@ function parseSiteIds(value, fallbackToCurrent = true) {
 function profileCanAccessSite(profile, siteId) {
   return String(profile?.companyId || '').trim() === CURRENT_COMPANY_ID
     && getAllowedSiteIds(profile).includes(siteId);
+}
+
+function isAllowedDashboardRole(profile = state.profile) {
+  return [
+    'manager',
+    'admin',
+    'supervisor',
+    'agency_admin',
+    'owner',
+    'superadmin',
+    'super_admin',
+  ].includes(normalizeRole(profile?.role));
+}
+
+function resolveUserBranchAccess(profile) {
+  const allowedBranches = getAllowedSiteIds(profile);
+  const storedBranch = sessionStorage.getItem(`managerActiveBranch:${profile?.uid || ''}`);
+  const requestedBranch = normalizeCleanupSiteId(storedBranch);
+  const activeBranch = allowedBranches.includes(requestedBranch)
+    ? requestedBranch
+    : allowedBranches[0];
+  return {
+    allowedBranches,
+    activeBranch,
+    valid: !!activeBranch && allowedBranches.includes(activeBranch),
+  };
+}
+
+function logBranchDebug(email, role, allowedBranches, activeBranch, valid) {
+  console.info('[QRTimeclock branch access]', {
+    signedInEmail: email || '',
+    role: normalizeRole(role),
+    allowedBranches,
+    activeBranch,
+    branchValidationResult: valid,
+  });
 }
 
 function canUseSite(siteId) {
@@ -2013,6 +2069,8 @@ async function handleSignedInAccessRequest(event) {
       approvalStatus: 'pending',
       requestedRole,
       role: 'worker',
+      branch: siteId,
+      branches: [siteId],
       siteId,
       siteIds: [siteId],
     };
@@ -2053,6 +2111,8 @@ async function submitAccessRequestForUser(authUser, request) {
     email: String(authUser.email || request.email || existingProfile.email || '').trim().toLowerCase(),
     requestedRole,
     companyId: getCurrentCompanyId(),
+    branch: siteId,
+    branches: [siteId],
     siteId,
     siteIds: [siteId],
     requestedAdminEmail: OWNER_ADMIN_EMAIL,
@@ -2122,8 +2182,10 @@ async function handlePasswordReset() {
 function showLoggedOut() {
   state.companyId = CURRENT_COMPANY_ID;
   state.siteId = CURRENT_SITE_ID;
+  state.allowedBranches = [];
   state.agencyId = null;
   state.companyDoc = null;
+  document.getElementById('managerBranchSelect')?.remove();
   els.authCard?.classList.remove('hidden');
   els.appShell?.classList.add('hidden');
   els.signedInAccessRequestCard?.classList.add('hidden');
@@ -2146,10 +2208,12 @@ function showLoggedIn() {
   if (els.sessionName) els.sessionName.textContent = state.profile?.name || state.me?.email || 'Signed in';
   if (els.sessionRole) {
     const roleParts = [state.profile?.role || 'manager'];
-    roleParts.push(CURRENT_SITE_ID);
+    roleParts.push(state.siteId || CURRENT_SITE_ID);
     if (state.agencyId) roleParts.push('agency');
     els.sessionRole.textContent = roleParts.join(' · ');
   }
+
+  renderManagerBranchSwitcher();
 
   // Show company name in header
   const companyDisplayName = state.companyDoc?.name || (state.companyId ? state.companyId : appSettings.companyName);
@@ -2164,6 +2228,54 @@ function showAccessRequestOnly(message) {
   document.querySelectorAll('.tab').forEach((tab) => tab.classList.remove('active'));
   renderSignedInAccessRequestCard();
   toast(message, true);
+}
+
+function renderManagerBranchSwitcher() {
+  const chip = els.sessionChip;
+  if (!chip) return;
+  let selector = document.getElementById('managerBranchSelect');
+  const branches = state.allowedBranches || [];
+  if (branches.length <= 1 || !isAllowedDashboardRole(state.profile)) {
+    selector?.remove();
+    return;
+  }
+  if (!selector) {
+    selector = document.createElement('select');
+    selector.id = 'managerBranchSelect';
+    selector.className = 'branch-switcher';
+    selector.addEventListener('change', () => {
+      const nextBranch = normalizeCleanupSiteId(selector.value);
+      if (!branches.includes(nextBranch)) {
+        toast('You do not have access to that branch.', true);
+        selector.value = state.siteId || CURRENT_SITE_ID;
+        return;
+      }
+      state.siteId = nextBranch;
+      sessionStorage.setItem(`managerActiveBranch:${state.profile?.uid || ''}`, nextBranch);
+      refreshManagerDashboardForBranch();
+    });
+    chip.insertBefore(selector, els.signOutBtn || null);
+  }
+  selector.innerHTML = branches.map((branch) => `<option value="${branch}">${branch}</option>`).join('');
+  selector.value = state.siteId || branches[0];
+}
+
+function refreshManagerDashboardForBranch() {
+  clearLiveListeners();
+  showLoggedIn();
+  attachRoleViews();
+  renderPermissionDebug();
+  renderSiteSettingsForm();
+  if (canEditPunches()) {
+    attachManagerLiveViews();
+    attachTimesheetView();
+    populateAgencyWorkerSelect();
+    renderAgencyPreview();
+  }
+  if (canManageUsers()) {
+    attachUsersViewIfAdmin();
+    attachPendingUsersViewIfAdmin();
+  }
 }
 
 function renderSignedInAccessRequestCard() {
@@ -4028,6 +4140,8 @@ async function approvePendingUser(uid, rows) {
     approvalStatus: 'approved',
     role,
     companyId: getCurrentCompanyId(),
+    branch: siteIds[0],
+    branches: siteIds,
     siteId: siteIds[0],
     siteIds,
     permissions: {
@@ -4227,6 +4341,8 @@ async function handleSaveProfile(event) {
       active: els.userActiveInput?.value === 'true',
       agencyId: existingProfile.agencyId || state.agencyId || '',
       companyId: getCurrentCompanyId(),
+      branch: requestedSiteIds[0] || CURRENT_SITE_ID,
+      branches: requestedSiteIds,
       siteId: requestedSiteIds[0] || CURRENT_SITE_ID,
       siteIds: requestedSiteIds,
       approvalStatus: els.userActiveInput?.value === 'true' ? 'approved' : (existingProfile.approvalStatus || 'pending'),
@@ -4733,10 +4849,12 @@ function normalizeUserProfile(profile = {}, authUser = null) {
     email: String(profile.email || authUser?.email || '').trim().toLowerCase(),
     role,
     active,
-    companyId: profile.companyId || '',
+    companyId: profile.companyId || CURRENT_COMPANY_ID,
     agencyId: profile.agencyId || '',
-    siteId: profile.siteId || profile.assignedSiteId || '',
-    siteIds: parseSiteIds(profile.siteIds || profile.siteId || profile.assignedSiteId || '', false),
+    branch: profile.branch || profile.siteId || profile.assignedSiteId || '',
+    branches: Array.isArray(profile.branches) ? parseSiteIds(profile.branches, false) : [],
+    siteId: profile.siteId || profile.branch || profile.assignedSiteId || '',
+    siteIds: parseSiteIds(profile.branches || profile.branch || profile.siteIds || profile.siteId || profile.assignedSiteId || '', false),
     permissions: {
       canEditPunches: defaultPermissions.canEditPunches || profile.permissions?.canEditPunches === true,
       canDeletePunches: defaultPermissions.canDeletePunches || profile.permissions?.canDeletePunches === true,
