@@ -678,6 +678,8 @@
               </label>
             </div>
 
+            <div id="duplicateWorkerWarning" class="status-box hidden" style="margin-bottom:12px;"></div>
+
             <div class="mini-table-wrap tall">
               <table>
                 <thead>
@@ -712,6 +714,33 @@
               <tbody id="inactiveWorkerListBody"><tr><td colspan="7">No removed or inactive workers.</td></tr></tbody>
             </table>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Worker Name Repair</h2>
+            <p>Employee profile names are the source of truth. Repairs update copied punch/timesheet names only and preserve all hours, signatures, and history.</p>
+          </div>
+          <div id="workerNameRepairStatus" class="status-box">Enter a worker ID to repair copied names or safely rename one worker profile.</div>
+          <form id="workerNameRepairForm" class="grid-form" style="margin-top:12px;">
+            <label>
+              <span>Worker ID</span>
+              <input id="repairWorkerIdInput" type="text" placeholder="employee_direct_oh01_1234" required />
+            </label>
+            <label>
+              <span>New profile name</span>
+              <input id="repairWorkerNameInput" type="text" placeholder="Ervin Wilson" />
+            </label>
+            <label>
+              <span>Week start for copied-name repair</span>
+              <input id="repairWeekStartInput" type="date" />
+            </label>
+            <div class="form-actions full-width">
+              <button id="repairRenameWorkerBtn" class="secondary-btn" type="button">Rename Worker Profile</button>
+              <button id="repairCopiedNamesBtn" class="primary-btn" type="button">Repair Copied Names</button>
+              <button id="repairKnownErvinBtn" class="ghost-btn" type="button">Prepare Ervin Wilson Rename</button>
+            </div>
+          </form>
         </div>
 
         <div class="card">

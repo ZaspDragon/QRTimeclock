@@ -59,12 +59,14 @@ const state = {
   selectedWeekPunchRows: [],
   selectedWeekTimesheetDocs: {},
   allEmployees: [],
+  allUsers: [],
   allMissedRequests: [],
   approvalFilter: 'pending',
   creatingPendingProfile: false,
   workerPunchSaving: false,
   employeeStatusFilter: 'active',
   duplicateGroups: [],
+  loggedWorkerNameDiagnostics: new Set(),
   managerTimeLookup: null,
   workerLocation: { locationStatus: 'not_requested' },
   siteContext: buildLegacySiteContext(),
@@ -206,6 +208,14 @@ const els = {
   empRosterStatusFilter: document.getElementById('empRosterStatusFilter'),
   employeeListBody: document.getElementById('employeeListBody'),
   inactiveWorkerListBody: document.getElementById('inactiveWorkerListBody'),
+  duplicateWorkerWarning: document.getElementById('duplicateWorkerWarning'),
+  workerNameRepairStatus: document.getElementById('workerNameRepairStatus'),
+  repairWorkerIdInput: document.getElementById('repairWorkerIdInput'),
+  repairWorkerNameInput: document.getElementById('repairWorkerNameInput'),
+  repairWeekStartInput: document.getElementById('repairWeekStartInput'),
+  repairRenameWorkerBtn: document.getElementById('repairRenameWorkerBtn'),
+  repairCopiedNamesBtn: document.getElementById('repairCopiedNamesBtn'),
+  repairKnownErvinBtn: document.getElementById('repairKnownErvinBtn'),
   exportBackupBtn: document.getElementById('exportBackupBtn'),
   refreshDuplicatesBtn: document.getElementById('refreshDuplicatesBtn'),
   duplicateWorkersList: document.getElementById('duplicateWorkersList'),
@@ -261,6 +271,9 @@ async function init() {
 
   if (els.weekPicker) {
     els.weekPicker.value = formatDateInput(state.selectedWeekStart);
+  }
+  if (els.repairWeekStartInput) {
+    els.repairWeekStartInput.value = formatDateInput(state.selectedWeekStart);
   }
 
   if (els.manualPunchDateInput) {
@@ -447,6 +460,7 @@ function wireEvents() {
 
   els.weekPicker?.addEventListener('change', () => {
     state.selectedWeekStart = new Date(`${els.weekPicker.value}T00:00:00`);
+    if (els.repairWeekStartInput) els.repairWeekStartInput.value = formatDateInput(state.selectedWeekStart);
     if (state.me && isManager()) {
       clearTimesheetListenerOnly();
       attachTimesheetView();
@@ -492,6 +506,9 @@ function wireEvents() {
     state.employeeStatusFilter = els.empRosterStatusFilter.value || 'active';
     renderEmployeeList(state.allEmployees || []);
   });
+  els.repairRenameWorkerBtn?.addEventListener('click', renameWorkerProfileFromRepairTool);
+  els.repairCopiedNamesBtn?.addEventListener('click', repairCopiedNamesFromWorkerProfile);
+  els.repairKnownErvinBtn?.addEventListener('click', prepareKnownErvinWilsonRepair);
   els.exportBackupBtn?.addEventListener('click', exportBackup);
   els.refreshDuplicatesBtn?.addEventListener('click', () => renderDuplicateWorkers(true));
   els.managerTimeLookupBtn?.addEventListener('click', lookupManagerTimeRange);
@@ -2701,6 +2718,26 @@ async function deletePunchRecord(punchId) {
 function attachTimesheetView() {
   const weekKey = formatDateKey(state.selectedWeekStart);
 
+  const employeeConstraints = [...branchConstraints()];
+  if (isAgencyUser()) employeeConstraints.push(where('agencyId', '==', agencyScopeId()));
+  employeeConstraints.push(orderBy('name', 'asc'));
+  const employeesQuery = query(collection(db, 'employees'), ...employeeConstraints);
+
+  getDocs(employeesQuery)
+    .then((snap) => {
+      state.allEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderEmployeeList(state.allEmployees);
+      renderManagerTimeWorkerOptions();
+      if (isAdmin()) renderDuplicateWorkers(false);
+      renderDerivedTimesheets();
+      populateAgencyWorkerSelect();
+      renderAgencyPreview();
+    })
+    .catch((error) => {
+      console.error(error);
+      toast(error.message || 'Could not load employee profiles for timesheets.', true);
+    });
+
   const punchConstraints = [
     ...branchConstraints(),
     where('weekKey', '==', weekKey),
@@ -2799,39 +2836,88 @@ function renderDerivedTimesheets() {
 function getDerivedTimesheetRows() {
   const weekKey = formatDateKey(state.selectedWeekStart);
   const grouped = new Map();
+  const profileIndex = buildWorkerProfileIndex();
 
   state.selectedWeekPunchRows.forEach((p) => {
-    const key = p.nameKey || normalizeName(p.name || '');
+    const key = getWorkerIdentityKey(p);
     if (!key) return;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(p);
   });
 
+  const copiedNameKeyCounts = new Map();
+  grouped.forEach((personPunches) => {
+    const copiedKey = normalizeName(getCopiedWorkerName(personPunches[0]));
+    if (copiedKey) copiedNameKeyCounts.set(copiedKey, (copiedNameKeyCounts.get(copiedKey) || 0) + 1);
+  });
+
   const rows = [];
 
-  grouped.forEach((personPunches, nameKey) => {
-    const employee = findTimesheetEmployee(personPunches, nameKey);
-    const displayName = employee?.name || personPunches[0]?.name || nameKey;
+  grouped.forEach((personPunches, identityKey) => {
+    const employee = findTimesheetEmployee(personPunches, identityKey, profileIndex);
+    const firstPunch = personPunches[0] || {};
+    const copiedPunchName = getCopiedWorkerName(firstPunch);
+    const displayName = getWorkerProfileName(employee) || copiedPunchName || identityKey.replace(/^(worker|name):/, '');
+    const nameKey = normalizeName(displayName);
+    const stableWorkerId = getRecordWorkerIds(firstPunch)[0] || employee?.id || employee?.employeeId || '';
     const totals = buildWeekTotals(personPunches);
-    const timesheetId = `${weekKey}_${nameKey}`;
-    const saved = state.selectedWeekTimesheetDocs[timesheetId] || null;
+    const timesheetId = `${weekKey}_${sanitizeTimesheetIdPart(stableWorkerId || nameKey)}`;
+    const saved = findSavedTimesheetForGroup({
+      fallbackTimesheetId: timesheetId,
+      workerId: stableWorkerId,
+      nameKey,
+      weekKey,
+      allowLegacyNameFallback: (copiedNameKeyCounts.get(normalizeName(copiedPunchName)) || 0) <= 1
+    });
+    const copiedTimesheetName = getCopiedWorkerName(saved || {});
     const siteId = normalizeSiteId(firstPresent(
-      personPunches[0]?.siteId,
-      personPunches[0]?.assignedSiteId,
+      firstPunch.siteId,
+      firstPunch.assignedSiteId,
       employee?.siteId,
       employee?.assignedSiteId,
       getCurrentSiteId()
     ));
+    logWorkerNameDiagnostic({
+      workerId: stableWorkerId,
+      profileName: displayName,
+      copiedName: copiedPunchName || copiedTimesheetName,
+      agencyId: firstPresent(firstPunch.agencyId, employee?.agencyId, saved?.agencyId, state.agencyId),
+      agencyName: agencyLabel(firstPresent(firstPunch.agencyId, employee?.agencyId, saved?.agencyId, state.agencyId)),
+      branchId: siteId,
+      branchName: siteId,
+      weekStart: weekKey,
+      source: copiedPunchName ? 'punch' : 'timesheet'
+    });
+    if (copiedTimesheetName) {
+      logWorkerNameDiagnostic({
+        workerId: stableWorkerId,
+        profileName: displayName,
+        copiedName: copiedTimesheetName,
+        agencyId: firstPresent(firstPunch.agencyId, employee?.agencyId, saved?.agencyId, state.agencyId),
+        agencyName: agencyLabel(firstPresent(firstPunch.agencyId, employee?.agencyId, saved?.agencyId, state.agencyId)),
+        branchId: siteId,
+        branchName: siteId,
+        weekStart: weekKey,
+        source: 'timesheet'
+      });
+    }
 
     rows.push({
-      id: timesheetId,
+      id: saved?.id || timesheetId,
+      identityKey,
       name: displayName,
+      workerName: displayName,
       nameKey,
       weekKey,
-      companyId: personPunches[0]?.companyId || getCurrentCompanyId(),
-      agencyId: firstPresent(personPunches[0]?.agencyId, employee?.agencyId, state.agencyId),
+      companyId: firstPunch.companyId || getCurrentCompanyId(),
+      agencyId: firstPresent(firstPunch.agencyId, employee?.agencyId, saved?.agencyId, state.agencyId),
       siteId,
-      employeeId: employee?.employeeId || employee?.id || personPunches[0]?.employeeId || '',
+      branchId: siteId,
+      branchName: siteId,
+      employeeId: employee?.employeeId || employee?.id || firstPunch.employeeId || stableWorkerId || '',
+      workerId: employee?.workerId || employee?.id || firstPunch.workerId || stableWorkerId || '',
+      copiedPunchName,
+      copiedTimesheetName,
       weeklyHours: totals.weeklyHours,
       daysWorked: totals.daysWorked,
       dailyTotals: totals.dailyTotals,
@@ -2847,7 +2933,23 @@ function getDerivedTimesheetRows() {
   return rows;
 }
 
-function findTimesheetEmployee(personPunches, nameKey) {
+function findSavedTimesheetForGroup({ fallbackTimesheetId, workerId, nameKey, weekKey, allowLegacyNameFallback = true }) {
+  const docs = Object.values(state.selectedWeekTimesheetDocs || {});
+  if (state.selectedWeekTimesheetDocs[fallbackTimesheetId]) return state.selectedWeekTimesheetDocs[fallbackTimesheetId];
+  if (workerId) {
+    const byId = docs.find((row) =>
+      row.weekKey === weekKey
+      && getRecordWorkerIds(row).some((id) => id === workerId)
+    );
+    if (byId) return byId;
+  }
+  if (!allowLegacyNameFallback) return null;
+  const legacyId = `${weekKey}_${nameKey}`;
+  if (state.selectedWeekTimesheetDocs[legacyId]) return state.selectedWeekTimesheetDocs[legacyId];
+  return docs.find((row) => row.weekKey === weekKey && normalizeName(row.nameKey || getCopiedWorkerName(row)) === nameKey) || null;
+}
+
+function findTimesheetEmployee(personPunches, identityKey, profileIndex = buildWorkerProfileIndex()) {
   const source = [...new Map([
     ...(state.allEmployees || []),
     ...(state.publicEmployeeRecords || []),
@@ -2858,11 +2960,16 @@ function findTimesheetEmployee(personPunches, nameKey) {
     if (punch.workerId) ids.add(String(punch.workerId));
   });
 
+  for (const id of ids) {
+    if (profileIndex.has(id)) return profileIndex.get(id);
+  }
+
   const byId = source.find((employee) =>
     ids.has(String(employee.id || '')) || ids.has(String(employee.employeeId || '')) || ids.has(String(employee.workerId || ''))
   );
   if (byId) return byId;
 
+  const nameKey = identityKey.startsWith('name:') ? identityKey.slice(5) : normalizeName(getCopiedWorkerName(personPunches[0]));
   const normalizedName = String(nameKey || '').trim().toLowerCase();
   const byName = source.filter((employee) =>
     normalizeName(employee.name || employee.nameKey || '') === normalizedName
@@ -2887,11 +2994,18 @@ async function signTimesheet(timesheetId) {
   try {
     await setDoc(doc(db, 'timesheets', timesheetId), {
       name: row.name,
+      workerName: row.name,
+      employeeName: row.name,
+      displayName: row.name,
       nameKey: row.nameKey,
       weekKey: row.weekKey,
       companyId: row.companyId || getCurrentCompanyId(),
       agencyId: row.agencyId || state.agencyId || '',
       siteId: row.siteId || getCurrentSiteId(),
+      branchId: row.branchId || row.siteId || getCurrentSiteId(),
+      branchName: row.branchName || row.siteId || getCurrentSiteId(),
+      employeeId: row.employeeId || '',
+      workerId: row.workerId || row.employeeId || '',
       dailyTotals: row.dailyTotals,
       weeklyHours: row.weeklyHours,
       daysWorked: row.daysWorked,
@@ -2922,11 +3036,18 @@ async function reopenTimesheet(timesheetId) {
   try {
     await setDoc(doc(db, 'timesheets', timesheetId), {
       name: row.name,
+      workerName: row.name,
+      employeeName: row.name,
+      displayName: row.name,
       nameKey: row.nameKey,
       weekKey: row.weekKey,
       companyId: row.companyId || getCurrentCompanyId(),
       agencyId: row.agencyId || state.agencyId || '',
       siteId: row.siteId || getCurrentSiteId(),
+      branchId: row.branchId || row.siteId || getCurrentSiteId(),
+      branchName: row.branchName || row.siteId || getCurrentSiteId(),
+      employeeId: row.employeeId || '',
+      workerId: row.workerId || row.employeeId || '',
       dailyTotals: row.dailyTotals,
       weeklyHours: row.weeklyHours,
       daysWorked: row.daysWorked,
@@ -3400,8 +3521,9 @@ function renderEmployeeList(employees) {
     const employeeStatus = String(e.status || 'active').toLowerCase();
     if (statusFilter !== 'all' && employeeStatus !== statusFilter) return false;
     if (!filter) return true;
+    const profileName = getWorkerProfileName(e);
     return (
-      String(e.name || '').toLowerCase().includes(filter) ||
+      String(profileName).toLowerCase().includes(filter) ||
       String(e.employeeNumber || '').toLowerCase().includes(filter)
     );
   });
@@ -3409,12 +3531,13 @@ function renderEmployeeList(employees) {
     ? collapseDuplicateEmployees(filtered)
     : filtered;
   const inactiveEmployees = employees.filter((employee) => !isActiveEmployee(employee));
+  renderDuplicateWorkerWarning(employees);
 
   els.inactiveWorkerListBody.innerHTML = inactiveEmployees.length
     ? inactiveEmployees.map((employee) => `
       <tr>
         <td>${escapeHtml(employee.employeeNumber || '-')}</td>
-        <td>${escapeHtml(employee.name || '-')}</td>
+        <td>${escapeHtml(getWorkerProfileName(employee) || '-')}</td>
         <td>${escapeHtml(employee.status || 'inactive')}</td>
         <td>${escapeHtml(formatRemovedAt(employee))}</td>
         <td>${escapeHtml(employee.removedBy || '-')}</td>
@@ -3438,9 +3561,9 @@ function renderEmployeeList(employees) {
   els.employeeListBody.innerHTML = rosterEmployees.map((emp) => `
     <tr>
       <td>${escapeHtml(emp.employeeNumber || '-')}</td>
-      <td>${escapeHtml(emp.name || '-')}</td>
+      <td>${escapeHtml(getWorkerProfileName(emp) || '-')}</td>
       <td>${escapeHtml(agencyLabel(emp.agencyId))}</td>
-      <td>${escapeHtml(emp.siteId || emp.assignedSiteId || '-')}</td>
+      <td>${escapeHtml(getWorkerBranchId(emp) || '-')}</td>
       <td><span class="tiny-flag">${escapeHtml(emp.status || 'active')}</span></td>
       <td>
         <button class="secondary-btn emp-edit-btn" data-id="${emp.id}" type="button">Edit</button>
@@ -3451,6 +3574,66 @@ function renderEmployeeList(employees) {
   els.employeeListBody.querySelectorAll('.emp-edit-btn').forEach((btn) => {
     btn.addEventListener('click', () => loadEmployeeForEdit(btn.dataset.id));
   });
+  els.duplicateWorkerWarning?.querySelectorAll('.repair-duplicate-worker-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (els.repairWorkerIdInput) els.repairWorkerIdInput.value = btn.dataset.workerId || '';
+      if (els.repairWorkerNameInput) els.repairWorkerNameInput.value = btn.dataset.suggestedName || '';
+      if (els.workerNameRepairStatus) {
+        els.workerNameRepairStatus.textContent = `Prepared worker ${btn.dataset.workerId || ''}. Review the worker ID before renaming or repairing copied names.`;
+      }
+    });
+  });
+}
+
+function getExactDuplicateWorkerGroups(workers = state.allEmployees || []) {
+  const groups = new Map();
+  (workers || []).filter(isActiveEmployee).forEach((worker) => {
+    const nameKey = normalizeName(getWorkerProfileName(worker));
+    if (!nameKey) return;
+    const agencyId = String(worker.agencyId || '').trim();
+    const branchId = getWorkerBranchId(worker);
+    const key = [nameKey, agencyId, branchId].join('|');
+    const group = groups.get(key) || {
+      nameKey,
+      name: getWorkerProfileName(worker),
+      agencyId,
+      agencyName: agencyLabel(agencyId),
+      branchId,
+      branchName: getWorkerBranchName(worker),
+      workers: []
+    };
+    group.workers.push(worker);
+    groups.set(key, group);
+  });
+  return Array.from(groups.values()).filter((group) => group.workers.length > 1);
+}
+
+function renderDuplicateWorkerWarning(workers = state.allEmployees || []) {
+  if (!els.duplicateWorkerWarning) return;
+  const duplicates = getExactDuplicateWorkerGroups(workers);
+  if (!duplicates.length || !isAdmin()) {
+    els.duplicateWorkerWarning.classList.add('hidden');
+    els.duplicateWorkerWarning.innerHTML = '';
+    return;
+  }
+
+  els.duplicateWorkerWarning.classList.remove('hidden');
+  els.duplicateWorkerWarning.innerHTML = `
+    <strong>Duplicate-looking worker profiles detected</strong>
+    <p>These workers share the same normalized name, agency, and branch. Review manually; QRTimeclock will not merge or delete them automatically.</p>
+    ${duplicates.map((group) => `
+      <div style="margin-top:8px;">
+        <strong>${escapeHtml(group.name)}</strong>
+        <span class="tiny">${escapeHtml(group.agencyName || group.agencyId || 'Direct')} / ${escapeHtml(group.branchName || group.branchId || '-')}</span>
+        <div class="tiny">Worker IDs: ${group.workers.map((worker) => escapeHtml(worker.id)).join(', ')}</div>
+        <div class="form-actions" style="margin-top:6px;">
+          ${group.workers.map((worker) => `
+            <button class="ghost-btn repair-duplicate-worker-btn" type="button" data-worker-id="${escapeHtml(worker.id)}" data-suggested-name="${normalizeName(group.name) === 'bashir_ahmed' ? 'Ervin Wilson' : escapeHtml(getWorkerProfileName(worker))}">Use ${escapeHtml(worker.id)}</button>
+          `).join('')}
+        </div>
+      </div>
+    `).join('')}
+  `;
 }
 
 function renderManagerTimeWorkerOptions() {
@@ -4046,6 +4229,196 @@ function downloadJson(filename, value) {
   URL.revokeObjectURL(url);
 }
 
+function setWorkerNameRepairStatus(message, isError = false) {
+  if (!els.workerNameRepairStatus) return;
+  els.workerNameRepairStatus.innerHTML = message;
+  els.workerNameRepairStatus.style.borderColor = isError ? 'rgba(255,92,92,0.5)' : '';
+}
+
+function getWorkerForRepair(workerId) {
+  const normalizedId = String(workerId || '').trim();
+  if (!normalizedId) return null;
+  return (state.allEmployees || []).find((employee) => getWorkerProfileIds(employee).includes(normalizedId)) || null;
+}
+
+function buildEmployeeNamePayload(name) {
+  const cleanName = prettifyHumanName(name);
+  const nameKey = normalizeName(cleanName);
+  const [firstName, ...lastParts] = cleanName.split(' ');
+  return {
+    name: cleanName,
+    workerName: cleanName,
+    employeeName: cleanName,
+    displayName: cleanName,
+    nameKey,
+    normalizedName: nameKey,
+    firstName: firstName || '',
+    lastName: lastParts.join(' '),
+    updatedAt: serverTimestamp()
+  };
+}
+
+async function renameWorkerProfileFromRepairTool() {
+  if (!isAdmin()) {
+    toast('Only admins can rename worker profiles.', true);
+    return;
+  }
+  const workerId = String(els.repairWorkerIdInput?.value || '').trim();
+  const newName = prettifyHumanName(els.repairWorkerNameInput?.value || '');
+  if (!workerId || !newName || normalizeName(newName).length < 2) {
+    setWorkerNameRepairStatus('Enter a worker ID and a valid new profile name.', true);
+    return;
+  }
+  const employee = getWorkerForRepair(workerId);
+  if (!employee) {
+    setWorkerNameRepairStatus(`Worker ${escapeHtml(workerId)} was not found in the loaded roster.`, true);
+    return;
+  }
+  const currentName = getWorkerProfileName(employee);
+  const reason = String(prompt(`Rename worker profile ${employee.id} from "${currentName}" to "${newName}"? Reason:`, 'Correct stale worker profile name') || '').trim();
+  if (!reason) {
+    toast('A reason is required to rename a worker profile.', true);
+    return;
+  }
+
+  const payload = buildEmployeeNamePayload(newName);
+  try {
+    await updateDoc(doc(db, 'employees', employee.id), payload);
+    await logAudit('worker_profile_renamed', 'employee', employee.id, employee, {
+      employeeId: employee.id,
+      previousName: currentName,
+      newName,
+      agencyId: employee.agencyId || '',
+      branchId: getWorkerBranchId(employee)
+    }, reason);
+    setWorkerNameRepairStatus(`Worker profile ${escapeHtml(employee.id)} renamed to ${escapeHtml(newName)}. Use Repair Copied Names to update punches/timesheets for the selected week.`);
+    toast('Worker profile renamed.');
+  } catch (error) {
+    console.error(error);
+    setWorkerNameRepairStatus(error.message || 'Could not rename worker profile.', true);
+  }
+}
+
+async function getDocsForCopiedNameRepair(collectionName, employee, weekKey) {
+  const seen = new Map();
+  const ids = getWorkerProfileIds(employee);
+  for (const fieldName of ['employeeId', 'workerId', 'userId']) {
+    for (const employeeId of ids) {
+      const constraints = [where(fieldName, '==', employeeId)];
+      if (weekKey) constraints.push(where('weekKey', '==', weekKey));
+      const snap = await getDocs(query(collection(db, collectionName), ...constraints));
+      snap.docs.forEach((record) => seen.set(record.id, { ref: record.ref, data: { id: record.id, ...record.data() } }));
+    }
+  }
+  return Array.from(seen.values());
+}
+
+async function repairCopiedNamesFromWorkerProfile() {
+  if (!isAdmin()) {
+    toast('Only admins can repair copied names.', true);
+    return;
+  }
+  const workerId = String(els.repairWorkerIdInput?.value || '').trim();
+  const employee = getWorkerForRepair(workerId);
+  if (!employee) {
+    setWorkerNameRepairStatus(`Worker ${escapeHtml(workerId)} was not found in the loaded roster.`, true);
+    return;
+  }
+  const profileName = getWorkerProfileName(employee);
+  if (!profileName) {
+    setWorkerNameRepairStatus('That worker profile does not have a usable name.', true);
+    return;
+  }
+  const weekValue = String(els.repairWeekStartInput?.value || '').trim();
+  const weekKey = weekValue ? formatDateKey(getMondayDate(new Date(`${weekValue}T12:00:00`))) : '';
+  const scopeText = weekKey ? `week ${weekKey}` : 'all weeks';
+  const reason = String(prompt(`Repair copied punch/timesheet names for ${profileName} (${employee.id}) for ${scopeText}? Reason:`, 'Sync copied names from employee profile') || '').trim();
+  if (!reason) {
+    toast('A reason is required to repair copied names.', true);
+    return;
+  }
+
+  const siteId = getWorkerBranchId(employee) || getCurrentSiteId();
+  const copiedNamePayload = {
+    name: profileName,
+    workerName: profileName,
+    employeeName: profileName,
+    displayName: profileName,
+    nameKey: normalizeName(profileName),
+    employeeId: employee.id,
+    workerId: employee.workerId || employee.employeeId || employee.id,
+    employeeNumber: employee.employeeNumber || '',
+    agencyId: employee.agencyId || '',
+    siteId,
+    assignedSiteId: siteId,
+    branchId: siteId,
+    branchName: getWorkerBranchName(employee) || siteId,
+    updatedAt: serverTimestamp()
+  };
+
+  try {
+    const [punchDocs, timesheetDocs] = await Promise.all([
+      getDocsForCopiedNameRepair('punches', employee, weekKey),
+      getDocsForCopiedNameRepair('timesheets', employee, weekKey)
+    ]);
+    await commitDocumentUpdates([
+      ...punchDocs.map((record) => ({ ref: record.ref, data: copiedNamePayload })),
+      ...timesheetDocs.map((record) => ({ ref: record.ref, data: copiedNamePayload }))
+    ]);
+    await logAudit('worker_copied_names_repaired', 'employee', employee.id, {
+      employeeId: employee.id,
+      weekKey,
+      punchCount: punchDocs.length,
+      timesheetCount: timesheetDocs.length
+    }, {
+      employeeId: employee.id,
+      profileName,
+      weekKey,
+      punchCount: punchDocs.length,
+      timesheetCount: timesheetDocs.length
+    }, reason);
+    setWorkerNameRepairStatus(`Repaired copied names for ${escapeHtml(profileName)}: ${punchDocs.length} punches and ${timesheetDocs.length} timesheets. No punch history, hours, or signatures were deleted.`);
+    toast('Copied names repaired.');
+  } catch (error) {
+    console.error(error);
+    setWorkerNameRepairStatus(error.message || 'Could not repair copied names.', true);
+  }
+}
+
+function prepareKnownErvinWilsonRepair() {
+  if (!isAdmin()) {
+    toast('Only admins can use repair tools.', true);
+    return;
+  }
+  if (els.repairWorkerNameInput) els.repairWorkerNameInput.value = 'Ervin Wilson';
+  const candidates = (state.allEmployees || []).filter((employee) => {
+    const nameMatch = normalizeName(getWorkerProfileName(employee)) === 'bashir_ahmed';
+    const agencyKey = normalizeScopeId(employee.agencyId || 'direct');
+    const agencyMatch = !agencyKey || agencyKey === 'direct';
+    const branchMatch = normalizeScopeId(getWorkerBranchId(employee)) === 'oh01';
+    return isActiveEmployee(employee) && nameMatch && agencyMatch && branchMatch;
+  });
+
+  if (!candidates.length) {
+    setWorkerNameRepairStatus('No active Direct / OH01 Bashir Ahmed duplicate candidates are loaded. Check the roster filters/scope, then try again.', true);
+    return;
+  }
+
+  setWorkerNameRepairStatus(`
+    <strong>Ervin Wilson correction prepared</strong>
+    <p>Choose the incorrect Bashir Ahmed worker ID, verify it against the worker details/hours, then click Rename Worker Profile. Nothing changes until you confirm.</p>
+    <div class="form-actions" style="margin-top:6px;">
+      ${candidates.map((employee) => `<button class="ghost-btn repair-duplicate-worker-btn" type="button" data-worker-id="${escapeHtml(employee.id)}" data-suggested-name="Ervin Wilson">Use ${escapeHtml(employee.id)}</button>`).join('')}
+    </div>
+  `);
+  els.workerNameRepairStatus?.querySelectorAll('.repair-duplicate-worker-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (els.repairWorkerIdInput) els.repairWorkerIdInput.value = btn.dataset.workerId || '';
+      if (els.repairWorkerNameInput) els.repairWorkerNameInput.value = 'Ervin Wilson';
+    });
+  });
+}
+
 async function generateNextEmployeeNumber() {
   // Find the highest existing employee number and increment
   const prefix = 'EMP-';
@@ -4294,7 +4667,8 @@ function attachUsersView() {
     onSnapshot(
       usersQuery,
       (snap) => {
-        const rows = snap.docs.map((d) => d.data());
+        const rows = snap.docs.map((d) => normalizeUserProfile({ id: d.id, uid: d.id, userId: d.id, ...d.data() }));
+        state.allUsers = rows;
 
         if (!rows.length) {
           els.userListBody.innerHTML = '<tr><td colspan="4">No users yet.</td></tr>';
@@ -4785,6 +5159,96 @@ function normalizeName(value) {
     .replace(/\s+/g, ' ')
     .replace(/[^a-z0-9 ]/g, '')
     .replaceAll(' ', '_');
+}
+
+function getWorkerProfileName(worker) {
+  if (!worker) return '';
+  const full = prettifyHumanName([worker.firstName, worker.lastName].filter(Boolean).join(' '));
+  return prettifyHumanName(worker.name || worker.displayName || worker.employeeName || worker.workerName || full || '');
+}
+
+function getWorkerBranchId(workerOrRow) {
+  return String(workerOrRow?.branchId || workerOrRow?.branchCode || workerOrRow?.siteId || workerOrRow?.assignedSiteId || '').trim();
+}
+
+function getWorkerBranchName(workerOrRow) {
+  return String(workerOrRow?.branchName || workerOrRow?.siteName || getWorkerBranchId(workerOrRow) || '').trim();
+}
+
+function getWorkerProfileIds(worker) {
+  return [
+    worker?.id,
+    worker?.employeeId,
+    worker?.workerId,
+    worker?.userId,
+    worker?.uid
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function getRecordWorkerIds(row) {
+  return [
+    row?.employeeId,
+    row?.workerId,
+    row?.userId,
+    row?.uid
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function buildWorkerProfileIndex(workers = state.allEmployees || [], users = state.allUsers || []) {
+  const byId = new Map();
+  (workers || []).forEach((worker) => {
+    getWorkerProfileIds(worker).forEach((id) => byId.set(id, worker));
+  });
+  (users || []).forEach((user) => {
+    getWorkerProfileIds(user).forEach((id) => {
+      if (!byId.has(id)) byId.set(id, user);
+    });
+  });
+  return byId;
+}
+
+function getCopiedWorkerName(row) {
+  return prettifyHumanName(row?.employeeName || row?.workerName || row?.displayName || row?.name || '');
+}
+
+function getWorkerIdentityKey(row) {
+  const stableId = getRecordWorkerIds(row)[0] || '';
+  if (stableId) return `worker:${stableId}`;
+  const fallbackNameKey = row?.nameKey || normalizeName(getCopiedWorkerName(row));
+  return fallbackNameKey ? `name:${fallbackNameKey}` : '';
+}
+
+function sanitizeTimesheetIdPart(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'worker';
+}
+
+function namesDiffer(left, right) {
+  const leftKey = normalizeName(left);
+  const rightKey = normalizeName(right);
+  return !!leftKey && !!rightKey && leftKey !== rightKey;
+}
+
+function logWorkerNameDiagnostic({ workerId, profileName, copiedName, agencyId, agencyName, branchId, branchName, weekStart, source }) {
+  if (!isAdmin() && !/^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname)) return;
+  if (!namesDiffer(profileName, copiedName)) return;
+  const key = [source, workerId, profileName, copiedName, agencyId, branchId, weekStart].join('|');
+  if (state.loggedWorkerNameDiagnostics.has(key)) return;
+  state.loggedWorkerNameDiagnostics.add(key);
+  console.warn('[QRTimeclock worker name mismatch]', {
+    workerId,
+    profileName,
+    copiedPunchOrTimesheetName: copiedName,
+    agencyId,
+    agencyName,
+    branchId,
+    branchName,
+    weekStart,
+    source
+  });
 }
 
 function normalizeWorkerNumber(value) {
