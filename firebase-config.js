@@ -11,3 +11,11 @@ export const appSettings = {
   companyName: "Chadwell",              // fallback if company doc not loaded
   defaultAppUrl: "https://qrtimeclock-42764.web.app"
 };
+
+if (typeof window !== 'undefined') {
+  queueMicrotask(() => {
+    import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
+      console.warn('Manual punch agency fix failed to load:', error.message);
+    });
+  });
+}
