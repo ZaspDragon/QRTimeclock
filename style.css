@@ -101,6 +101,16 @@ input, select {
   background: rgba(255,255,255,0.05);
   color: var(--text);
 }
+select option {
+  background: #ffffff;
+  color: #111827;
+}
+select option:checked,
+select option:hover,
+select option:focus {
+  background: #dbeafe;
+  color: #07121e;
+}
 input::placeholder { color: rgba(255,255,255,0.45); }
 
 button {

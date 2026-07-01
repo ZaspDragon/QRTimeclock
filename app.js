@@ -67,6 +67,7 @@ const state = {
   employeeStatusFilter: 'active',
   duplicateGroups: [],
   loggedWorkerNameDiagnostics: new Set(),
+  loggedPayrollCanonicalChecks: new Set(),
   managerTimeLookup: null,
   workerLocation: { locationStatus: 'not_requested' },
   siteContext: buildLegacySiteContext(),
@@ -2794,7 +2795,7 @@ function attachTimesheetView() {
 function renderDerivedTimesheets() {
   if (!els.timesheetBody) return;
 
-  const rows = getDerivedTimesheetRows();
+  const rows = getCanonicalPayrollWorkers().map((worker) => worker.row);
 
   if (!rows.length) {
     els.timesheetBody.innerHTML = '<tr><td colspan="6">No timesheets yet.</td></tr>';
@@ -2837,9 +2838,10 @@ function getDerivedTimesheetRows() {
   const weekKey = formatDateKey(state.selectedWeekStart);
   const grouped = new Map();
   const profileIndex = buildWorkerProfileIndex();
+  const canonicalDirectory = buildCanonicalWorkerDirectory();
 
   state.selectedWeekPunchRows.forEach((p) => {
-    const key = getWorkerIdentityKey(p);
+    const key = getWorkerIdentityKey(p, canonicalDirectory);
     if (!key) return;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(p);
@@ -2857,14 +2859,17 @@ function getDerivedTimesheetRows() {
     const employee = findTimesheetEmployee(personPunches, identityKey, profileIndex);
     const firstPunch = personPunches[0] || {};
     const copiedPunchName = getCopiedWorkerName(firstPunch);
-    const displayName = getWorkerProfileName(employee) || copiedPunchName || identityKey.replace(/^(worker|name):/, '');
+    const displayName = getWorkerProfileName(employee) || copiedPunchName || identityKey.replace(/^(worker|name|email|person):/, '').split('|')[0].replaceAll('_', ' ');
     const nameKey = normalizeName(displayName);
-    const stableWorkerId = getRecordWorkerIds(firstPunch)[0] || employee?.id || employee?.employeeId || '';
+    const canonicalWorkerId = identityKey.startsWith('worker:') ? identityKey.slice('worker:'.length) : '';
+    const workerIds = [...new Set(personPunches.flatMap((punch) => getRecordWorkerIds(punch)).concat(getWorkerProfileIds(employee)).filter(Boolean))];
+    const stableWorkerId = canonicalWorkerId || workerIds[0] || employee?.id || employee?.employeeId || '';
     const totals = buildWeekTotals(personPunches);
     const timesheetId = `${weekKey}_${sanitizeTimesheetIdPart(stableWorkerId || nameKey)}`;
     const saved = findSavedTimesheetForGroup({
       fallbackTimesheetId: timesheetId,
       workerId: stableWorkerId,
+      workerIds,
       nameKey,
       weekKey,
       allowLegacyNameFallback: (copiedNameKeyCounts.get(normalizeName(copiedPunchName)) || 0) <= 1
@@ -2905,6 +2910,8 @@ function getDerivedTimesheetRows() {
     rows.push({
       id: saved?.id || timesheetId,
       identityKey,
+      workerIds,
+      punchCount: personPunches.length,
       name: displayName,
       workerName: displayName,
       nameKey,
@@ -2933,13 +2940,14 @@ function getDerivedTimesheetRows() {
   return rows;
 }
 
-function findSavedTimesheetForGroup({ fallbackTimesheetId, workerId, nameKey, weekKey, allowLegacyNameFallback = true }) {
+function findSavedTimesheetForGroup({ fallbackTimesheetId, workerId, workerIds = [], nameKey, weekKey, allowLegacyNameFallback = true }) {
   const docs = Object.values(state.selectedWeekTimesheetDocs || {});
   if (state.selectedWeekTimesheetDocs[fallbackTimesheetId]) return state.selectedWeekTimesheetDocs[fallbackTimesheetId];
-  if (workerId) {
+  const workerIdSet = new Set([workerId, ...(workerIds || [])].filter(Boolean));
+  if (workerIdSet.size) {
     const byId = docs.find((row) =>
       row.weekKey === weekKey
-      && getRecordWorkerIds(row).some((id) => id === workerId)
+      && getRecordWorkerIds(row).some((id) => workerIdSet.has(id))
     );
     if (byId) return byId;
   }
@@ -2969,7 +2977,11 @@ function findTimesheetEmployee(personPunches, identityKey, profileIndex = buildW
   );
   if (byId) return byId;
 
-  const nameKey = identityKey.startsWith('name:') ? identityKey.slice(5) : normalizeName(getCopiedWorkerName(personPunches[0]));
+  const nameKey = identityKey.startsWith('name:')
+    ? identityKey.slice(5)
+    : identityKey.startsWith('person:')
+      ? identityKey.slice(7).split('|')[0]
+      : normalizeName(getCopiedWorkerName(personPunches[0]));
   const normalizedName = String(nameKey || '').trim().toLowerCase();
   const byName = source.filter((employee) =>
     normalizeName(employee.name || employee.nameKey || '') === normalizedName
@@ -3067,7 +3079,7 @@ async function reopenTimesheet(timesheetId) {
 }
 
 function buildCurrentTimesheetRow(timesheetId, weekKey) {
-  const rows = getDerivedTimesheetRows();
+  const rows = getCanonicalPayrollWorkers().map((worker) => worker.row);
   return rows.find((row) => row.id === timesheetId && row.weekKey === weekKey) || null;
 }
 
@@ -4756,30 +4768,34 @@ function populateAgencyWorkerSelect() {
   if (!els.agencyWorkerSelect) return;
 
   const current = els.agencyWorkerSelect.value;
-  const rows = getDerivedTimesheetRows();
+  const workers = getCanonicalPayrollWorkers();
 
   els.agencyWorkerSelect.innerHTML = '<option value="">Select a worker</option>' +
-    rows.map((row) => {
+    workers.map((worker) => {
+      const row = worker.row;
       const details = [agencyLabel(row.agencyId), row.siteId].filter(Boolean).join(' · ');
-      return `<option value="${escapeHtml(row.id)}">${escapeHtml(row.name)}${details ? ` (${escapeHtml(details)})` : ''}</option>`;
+      return `<option value="${escapeHtml(worker.identityKey)}">${escapeHtml(worker.name)}${details ? ` (${escapeHtml(details)})` : ''}</option>`;
     }).join('');
 
-  if (rows.some((row) => row.id === current)) {
+  if (workers.some((worker) => worker.identityKey === current)) {
     els.agencyWorkerSelect.value = current;
   }
+
+  runPayrollCanonicalConsoleChecks(workers);
 }
 
 function renderAgencyPreview() {
   if (!els.agencyPreview || !els.agencyWorkerSelect) return;
 
-  const selectedRowId = els.agencyWorkerSelect.value;
-  if (!selectedRowId) {
+  const selectedWorkerKey = els.agencyWorkerSelect.value;
+  if (!selectedWorkerKey) {
     els.agencyPreview.innerHTML = '<div class="empty-state">Choose a worker and click Preview Sheet.</div>';
     return;
   }
 
   const weekKey = formatDateKey(state.selectedWeekStart);
-  const row = getDerivedTimesheetRows().find((r) => r.id === selectedRowId && r.weekKey === weekKey);
+  const worker = getCanonicalPayrollWorkers().find((item) => item.identityKey === selectedWorkerKey);
+  const row = worker?.row && worker.row.weekKey === weekKey ? worker.row : null;
 
   if (!row) {
     els.agencyPreview.innerHTML = '<div class="empty-state">No weekly sheet found for that worker.</div>';
@@ -4840,6 +4856,60 @@ function renderAgencyPreview() {
       </div>
     </div>
   `;
+}
+
+function mergeDuplicatePayrollRowsInMemory(rows) {
+  const merged = new Map();
+  rows.forEach((row) => {
+    const identityKey = row.identityKey || row.workerId || row.employeeId || row.nameKey || normalizeName(row.name || '');
+    if (!identityKey) return;
+    const existing = merged.get(identityKey);
+    if (!existing) {
+      merged.set(identityKey, { ...row, duplicateDisplayRows: 1 });
+      return;
+    }
+    existing.duplicateDisplayRows = Number(existing.duplicateDisplayRows || 1) + 1;
+    existing.workerIds = [...new Set([...(existing.workerIds || []), ...(row.workerIds || []), row.workerId, row.employeeId].filter(Boolean))];
+    existing.punchCount = Number(existing.punchCount || 0) + Number(row.punchCount || 0);
+    existing.canonicalMergedInMemory = true;
+    if (!existing.name && row.name) existing.name = row.name;
+  });
+  return [...merged.values()].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+}
+
+function getCanonicalPayrollWorkers(rows = getDerivedTimesheetRows()) {
+  return mergeDuplicatePayrollRowsInMemory(rows).map((row) => ({
+    identityKey: row.identityKey || row.workerId || row.employeeId || row.nameKey,
+    name: row.name || row.workerName || '-',
+    agencyId: row.agencyId || '',
+    branchId: row.branchId || row.siteId || '',
+    row
+  })).filter((worker) => worker.identityKey);
+}
+
+function runPayrollCanonicalConsoleChecks(workers = getCanonicalPayrollWorkers()) {
+  const weekKey = formatDateKey(state.selectedWeekStart);
+  const logKey = `${weekKey}|${workers.map((worker) => worker.identityKey).join(',')}`;
+  if (state.loggedPayrollCanonicalChecks.has(logKey)) return;
+  state.loggedPayrollCanonicalChecks.add(logKey);
+
+  const namesToCheck = ['Emanuel Palmer', 'Al-Lee Mayo', 'Ervin Wilson'];
+  const checks = namesToCheck.map((name) => {
+    const nameKey = normalizeName(name);
+    const matches = workers.filter((worker) => normalizeName(worker.name) === nameKey);
+    return {
+      name,
+      dropdownOptions: matches.length,
+      selectedPunchesIncluded: matches.reduce((sum, worker) => sum + Number(worker.row?.punchCount || 0), 0),
+      canonicalKeys: matches.map((worker) => worker.identityKey)
+    };
+  });
+
+  console.info('[QR TimeClock Pro payroll canonical checks]', {
+    weekKey,
+    checks,
+    expected: 'Each listed worker should appear once when present; selectedPunchesIncluded should include all weekly punches for that canonical worker.'
+  });
 }
 
 function buildAgencyDailyRows(dailyTotals) {
@@ -5211,11 +5281,99 @@ function getCopiedWorkerName(row) {
   return prettifyHumanName(row?.employeeName || row?.workerName || row?.displayName || row?.name || '');
 }
 
-function getWorkerIdentityKey(row) {
-  const stableId = getRecordWorkerIds(row)[0] || '';
+function normalizeIdentityText(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function normalizeIdentityToken(value) {
+  return normalizeIdentityText(value)
+    .replace(/[^a-z0-9@._ -]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function normalizeEmail(value) {
+  const email = normalizeIdentityText(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
+}
+
+function getRecordEmail(row) {
+  return normalizeEmail(row?.email || row?.workerEmail || row?.employeeEmail || row?.userEmail);
+}
+
+function getRecordAgencyIdentity(row) {
+  return normalizeIdentityToken(row?.agencyId || row?.agencyName || row?.staffingAgency || state.agencyId || '');
+}
+
+function getRecordBranchIdentity(row) {
+  return normalizeIdentityToken(
+    row?.branchId
+    || row?.branchCode
+    || row?.branchName
+    || row?.siteId
+    || row?.assignedSiteId
+    || row?.siteName
+    || ''
+  );
+}
+
+function getWorkerSignature(row) {
+  const name = normalizeIdentityToken(getCopiedWorkerName(row));
+  const agency = getRecordAgencyIdentity(row);
+  const branch = getRecordBranchIdentity(row);
+  return name && (agency || branch) ? `${name}|${agency}|${branch}` : '';
+}
+
+function buildCanonicalWorkerDirectory(records = []) {
+  const sourceRows = [
+    ...(state.allEmployees || []),
+    ...(state.publicEmployeeRecords || []),
+    ...(state.allUsers || []),
+    ...(state.selectedWeekPunchRows || []),
+    ...Object.values(state.selectedWeekTimesheetDocs || {}),
+    ...(records || [])
+  ];
+  const signatureIds = new Map();
+  const emailIds = new Map();
+
+  sourceRows.forEach((row) => {
+    const ids = [...getWorkerProfileIds(row), ...getRecordWorkerIds(row)].filter(Boolean);
+    const email = getRecordEmail(row);
+    const signature = getWorkerSignature(row);
+    if (signature && ids.length) {
+      if (!signatureIds.has(signature)) signatureIds.set(signature, new Set());
+      ids.forEach((id) => signatureIds.get(signature).add(id));
+    }
+    if (email && ids.length) {
+      if (!emailIds.has(email)) emailIds.set(email, new Set());
+      ids.forEach((id) => emailIds.get(email).add(id));
+    }
+  });
+
+  const primaryFor = (ids) => [...ids].sort((left, right) => String(left).localeCompare(String(right)))[0];
+  const signaturePrimary = new Map();
+  signatureIds.forEach((ids, signature) => signaturePrimary.set(signature, primaryFor(ids)));
+  const emailPrimary = new Map();
+  emailIds.forEach((ids, email) => emailPrimary.set(email, primaryFor(ids)));
+  return { signaturePrimary, emailPrimary };
+}
+
+function getWorkerIdentityKey(row, directory = buildCanonicalWorkerDirectory()) {
+  const stableId = getRecordWorkerIds(row)[0] || getWorkerProfileIds(row)[0] || '';
+  const email = getRecordEmail(row);
+  const signature = getWorkerSignature(row);
+  const signaturePrimaryId = signature ? directory.signaturePrimary.get(signature) : '';
+  const emailPrimaryId = email ? directory.emailPrimary.get(email) : '';
+
+  if (signaturePrimaryId) return `worker:${signaturePrimaryId}`;
   if (stableId) return `worker:${stableId}`;
-  const fallbackNameKey = row?.nameKey || normalizeName(getCopiedWorkerName(row));
-  return fallbackNameKey ? `name:${fallbackNameKey}` : '';
+  if (emailPrimaryId) return `worker:${emailPrimaryId}`;
+  if (email) return `email:${email}`;
+  return signature ? `person:${signature}` : '';
 }
 
 function sanitizeTimesheetIdPart(value) {
