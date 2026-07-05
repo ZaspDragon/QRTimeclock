@@ -119,11 +119,30 @@ button {
   padding: 12px 15px;
   cursor: pointer;
   font-weight: 700;
+  transition: transform 0.16s ease, border-color 0.16s ease, opacity 0.16s ease, background 0.16s ease;
 }
 
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px) scale(0.99);
+}
+
+button[aria-busy="true"] {
+  position: relative;
+  color: transparent;
+}
+
+button[aria-busy="true"]::after {
+  content: "Saving...";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text);
 }
 
 .primary-btn {
@@ -240,6 +259,15 @@ button:disabled {
   margin: 0;
 }
 
+#appVersion {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 3px 8px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  color: #d3eeff;
+}
+
 .site-footer nav {
   display: flex;
   flex-wrap: wrap;
@@ -309,6 +337,16 @@ button:disabled {
   background: rgba(102, 184, 255, 0.16);
   color: var(--text);
   border-color: rgba(102, 184, 255, 0.3);
+}
+.tab.coming-soon::after {
+  content: attr(data-badge);
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 202, 87, 0.16);
+  color: #ffe7a8;
+  font-size: 0.72rem;
 }
 .tab-panel { display: block; }
 .hidden { display: none !important; }
@@ -770,28 +808,56 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
 /* ─── Employee mobile-first punch screen ─── */
 #workerCard .button-grid {
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 14px;
 }
 
 #workerCard .button-grid button {
-  min-height: 64px;
-  font-size: 1rem;
+  min-height: 68px;
+  font-size: 1.05rem;
   font-weight: 800;
   border-radius: 16px;
 }
 
+#workerCard {
+  overflow: hidden;
+}
+
+#workerCard .status-box {
+  line-height: 1.45;
+}
+
+#workerCard.is-saving {
+  border-color: rgba(102, 184, 255, 0.36);
+}
+
+.phase1-placeholder {
+  border-style: dashed;
+}
+
 @media (max-width: 480px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+    padding-top: 18px;
+  }
+
+  .card {
+    padding: 16px;
+    border-radius: 14px;
+  }
+
   #workerCard .button-grid {
     grid-template-columns: 1fr;
     gap: 10px;
   }
 
   #workerCard .button-grid button {
-    min-height: 72px;
+    min-height: 76px;
     font-size: 1.1rem;
   }
 
-  #workerCard input {
+  #workerCard input,
+  #workerCard select {
     font-size: 1.1rem;
     padding: 14px 16px;
   }
