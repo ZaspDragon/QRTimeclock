@@ -75,8 +75,8 @@
 
         <div class="button-grid">
           <button class="primary-btn worker-action-btn" data-action="clock_in" type="button">Clock In</button>
-          <button class="secondary-btn worker-action-btn" data-action="start_lunch" type="button">Start Lunch</button>
-          <button class="secondary-btn worker-action-btn" data-action="end_lunch" type="button">End Lunch</button>
+          <button class="secondary-btn worker-action-btn" data-action="start_lunch" type="button">Lunch Out</button>
+          <button class="secondary-btn worker-action-btn" data-action="end_lunch" type="button">Lunch In</button>
           <button class="danger-btn worker-action-btn" data-action="clock_out" type="button">Clock Out</button>
         </div>
 
@@ -304,7 +304,8 @@
         <button class="tab" data-tab="editPunchesTab" type="button" id="editPunchesTabBtn">Edit Punches</button>
         <button class="tab" data-tab="approvalsTab" type="button" id="approvalsTabBtn">Approvals</button>
         <button class="tab" data-tab="employeesTab" type="button" id="employeesTabBtn">Employees</button>
-        <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
+        <button class="tab hidden" data-tab="reportsTab" type="button" id="reportsTabBtn" disabled>Reports</button>
+        <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Settings</button>
         <button class="tab" data-tab="agencyTab" type="button" id="agencyTabBtn">Agency Export</button>
       </nav>
 
@@ -933,6 +934,16 @@
         </div>
       </section>
 
+      <section id="reportsTab" class="tab-panel hidden">
+        <div class="card phase1-placeholder">
+          <div class="card-head">
+            <h2>Reports</h2>
+            <p>Coming Soon. Payroll reports remain disabled until the payrollReports feature flag is enabled.</p>
+          </div>
+          <div class="status-box">Phase 1 does not load or calculate payroll report data.</div>
+        </div>
+      </section>
+
       <section id="agencyTab" class="tab-panel hidden">
         <div class="card">
           <div class="card-head">
@@ -965,7 +976,7 @@
   </main>
 
   <footer class="site-footer">
-    <p>&copy; 2026 QR TimeClock Pro. Built and owned by Brandon Evanshine. All rights reserved.</p>
+    <p>&copy; 2026 QR TimeClock Pro. Built and owned by Brandon Evanshine. All rights reserved. <span id="appVersion">v2026.07.05-phase1</span></p>
     <nav aria-label="Legal">
       <a href="terms.html">Terms of Use</a>
       <a href="privacy.html">Privacy Policy</a>

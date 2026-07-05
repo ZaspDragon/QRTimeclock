@@ -36,10 +36,20 @@ const db = getFirestore(app);
 const CURRENT_COMPANY_ID = 'chadwell';
 const CURRENT_SITE_ID = 'OH01';
 const OWNER_ADMIN_EMAIL = 'brandon.evanshine@chadwellsupply.com';
+const APP_VERSION = 'v2026.07.05-phase1';
+const featureFlags = Object.freeze({
+  newDashboard: false,
+  payrollReports: false,
+  employeeProfiles: false,
+  editPunchRequests: false,
+  aiSupervisor: false
+});
 const BRANCH_OPTIONS = [
   { siteId: 'OH01', label: 'OH01' },
   { siteId: 'OHC', label: 'OHC' },
 ];
+
+window.QRTimeClockFeatureFlags = featureFlags;
 
 const state = {
   me: null,
@@ -149,9 +159,11 @@ const els = {
   managerTabBtn: document.getElementById('managerTabBtn'),
   timesheetsTabBtn: document.getElementById('timesheetsTabBtn'),
   editPunchesTabBtn: document.getElementById('editPunchesTabBtn'),
+  reportsTabBtn: document.getElementById('reportsTabBtn'),
   adminTabBtn: document.getElementById('adminTabBtn'),
   agencyTabBtn: document.getElementById('agencyTabBtn'),
   tabBar: document.getElementById('tabBar'),
+  appVersion: document.getElementById('appVersion'),
 
   manualPunchForm: document.getElementById('manualPunchForm'),
   manualPunchNameInput: document.getElementById('manualPunchNameInput'),
@@ -251,7 +263,16 @@ const els = {
 
 init();
 
+function applyPhase1ShellPolish() {
+  if (els.appVersion) els.appVersion.textContent = APP_VERSION;
+  const topbarCopy = document.querySelector('.topbar p');
+  if (topbarCopy && !state.me) topbarCopy.textContent = 'Simple mobile time punches with live manager visibility.';
+  const workerIntro = document.querySelector('#workerCard .card-head p');
+  if (workerIntro) workerIntro.textContent = 'Choose your branch, enter your name, then tap one punch button.';
+}
+
 async function init() {
+  applyPhase1ShellPolish();
   wireEvents();
   setupBranchSelectors();
   loadSiteContext();
@@ -1265,27 +1286,40 @@ async function handleWorkerPunch(action) {
       employeeId: emp.employeeId || emp.id || '',
     });
 
-    if (els.workerLastActionValue) els.workerLastActionValue.textContent = prettyAction(action);
+    const savedActionLabel = prettyAction(action);
+    if (els.workerLastActionValue) els.workerLastActionValue.textContent = savedActionLabel;
     if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = formatDateTime(nowMs);
     if (els.workerStatusValue) els.workerStatusValue.textContent = statusLabelForAction(action);
     if (els.workerStatusMessage) {
-      els.workerStatusMessage.textContent = `${prettyAction(action)} saved for ${name} at ${formatDateTime(nowMs)}.`;
+      els.workerStatusMessage.textContent = `${savedActionLabel} saved for ${name} at ${formatDateTime(nowMs)}.`;
     }
 
     attachWorkerLiveView(name);
     localStorage.setItem('workerPunchName', name);
     localStorage.setItem(duplicateKey, String(nowMs));
-    toast(`${prettyAction(action)} saved.`);
+    toast(`${savedActionLabel} saved successfully.`);
   } catch (error) {
     console.error(error);
-    toast(error.message || 'Could not save punch.', true);
+    if (els.workerStatusMessage) {
+      els.workerStatusMessage.textContent = formatWorkerPunchError(error);
+    }
+    toast(formatWorkerPunchError(error), true);
   } finally {
     state.workerPunchSaving = false;
     setWorkerPunchBusy(false);
   }
 }
 
+function formatWorkerPunchError(error) {
+  const message = String(error?.message || '').trim();
+  if (/already saved/i.test(message)) return 'That punch was already saved. Please wait a few seconds before trying again.';
+  if (/select your/i.test(message)) return message;
+  if (/permission|missing or insufficient/i.test(message)) return 'Punch could not be saved because access was denied. Ask a manager to check setup.';
+  return message || 'Could not save punch. Check your connection and try again.';
+}
+
 function setWorkerPunchBusy(busy) {
+  document.getElementById('workerCard')?.classList.toggle('is-saving', busy);
   document.querySelectorAll('.worker-action-btn').forEach((button) => {
     button.disabled = busy;
     button.setAttribute('aria-busy', busy ? 'true' : 'false');
@@ -1334,8 +1368,9 @@ function getCachedWorkerPunches(employee) {
     const combined = [...(Array.isArray(legacyRows) ? legacyRows : []), ...(Array.isArray(nameRows) ? nameRows : [])];
     const unique = new Map();
     combined.forEach((row) => {
-      const key = `${row.timestampMs || 0}:${row.action || ''}:${row.nameKey || normalizeName(row.name || '')}`;
-      unique.set(key, row);
+      const normalized = normalizePunchRecordForDisplay(row);
+      const key = `${normalized.timestampMs || 0}:${normalized.action || ''}:${normalized.nameKey || normalizeName(normalized.name || '')}`;
+      unique.set(key, normalized);
     });
     return [...unique.values()].sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
   } catch (_) {
@@ -1601,12 +1636,12 @@ async function fetchPunchesWithRange(baseConstraints, fromMs, toMs) {
       where('timestampMs', '<=', toMs)
     );
     const snapshot = await getDocs(rangedQuery);
-    return snapshot.docs.map((record) => ({ id: record.id, ...record.data() }));
+    return snapshot.docs.map((record) => normalizePunchRecordForDisplay({ id: record.id, ...record.data() }));
   } catch (error) {
     if (!['failed-precondition', 'permission-denied'].includes(error.code)) throw error;
     const snapshot = await getDocs(query(collection(db, 'punches'), ...baseConstraints));
     return snapshot.docs
-      .map((record) => ({ id: record.id, ...record.data() }))
+      .map((record) => normalizePunchRecordForDisplay({ id: record.id, ...record.data() }))
       .filter((punch) => Number(punch.timestampMs || 0) >= fromMs && Number(punch.timestampMs || 0) <= toMs);
   }
 }
@@ -1927,7 +1962,7 @@ function attachWorkerLiveView(name) {
   );
 
   state.workerUnsub = onSnapshot(q, (snap) => {
-    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const rows = snap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() }));
 
     if (!rows.length) {
       if (els.workerLastActionValue) els.workerLastActionValue.textContent = '-';
@@ -2213,7 +2248,7 @@ function showLoggedOut() {
   if (workerCard) workerCard.classList.remove('hidden');
   // Reset header
   const headerP = document.querySelector('.topbar p');
-  if (headerP) headerP.textContent = 'Mobile punch tracking with live manager visibility and weekly signoff.';
+  if (headerP) headerP.textContent = 'Simple mobile time punches with live manager visibility.';
 }
 
 function showLoggedIn() {
@@ -2341,6 +2376,32 @@ function agencyLabel(agencyId) {
   return AGENCY_NAMES[agencyId] || agencyId;
 }
 
+function isFeatureEnabled(flagName) {
+  return featureFlags[flagName] === true;
+}
+
+function markFeatureTab(button, flagName, { visible = true, preserveCurrent = false } = {}) {
+  if (!button) return;
+  button.classList.toggle('hidden', !visible);
+  const enabled = isFeatureEnabled(flagName);
+  button.classList.toggle('coming-soon', visible && !enabled);
+  button.dataset.badge = visible && !enabled ? 'Soon' : '';
+  button.title = enabled
+    ? ''
+    : `${flagName} is off. This Phase 1 placeholder is not active yet.`;
+  if (!preserveCurrent) {
+    button.disabled = visible && !enabled;
+  }
+}
+
+function applyFeatureFlagNavigation() {
+  const adminVisible = isAdmin() || canManageUsers();
+  markFeatureTab(els.reportsTabBtn, 'payrollReports', { visible: adminVisible });
+  markFeatureTab(els.adminTabBtn, 'newDashboard', { visible: canManageUsers(), preserveCurrent: true });
+  markFeatureTab(els.employeesTabBtn, 'employeeProfiles', { visible: canManageEmployees(), preserveCurrent: true });
+  markFeatureTab(els.editPunchesTabBtn, 'editPunchRequests', { visible: canEditPunches(), preserveCurrent: true });
+}
+
 function attachRoleViews() {
   const emp = isEmployee();
   const canEdit = canEditPunches();
@@ -2358,6 +2419,7 @@ function attachRoleViews() {
   els.employeesTabBtn?.classList.toggle('hidden', !canManage);
   els.adminTabBtn?.classList.toggle('hidden', !canManageUsers());
   els.agencyTabBtn?.classList.toggle('hidden', !canEdit);
+  applyFeatureFlagNavigation();
 
   if (emp) {
     if (els.myTimecardWeekPicker) {
@@ -2401,6 +2463,7 @@ function canAccessTab(tabId) {
   if (['managerTab', 'timesheetsTab', 'editPunchesTab', 'approvalsTab', 'agencyTab'].includes(tabId)) {
     return canEditPunches();
   }
+  if (tabId === 'reportsTab') return isAdmin() && isFeatureEnabled('payrollReports');
   if (tabId === 'employeesTab') return canManageEmployees();
   if (tabId === 'adminTab') return canManageUsers();
   return false;
@@ -2421,7 +2484,7 @@ function attachManagerLiveViews() {
     onSnapshot(
       liveQuery,
       (snap) => {
-        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
+        const rows = snap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
         state.allPunchRows = rows;
         renderLivePunches(rows);
         renderActiveNow(rows);
@@ -2760,7 +2823,7 @@ function attachTimesheetView() {
     onSnapshot(
       punchesQuery,
       (snap) => {
-        state.selectedWeekPunchRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
+        state.selectedWeekPunchRows = snap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
         renderDerivedTimesheets();
         populateAgencyWorkerSelect();
         renderAgencyPreview();
@@ -3198,7 +3261,7 @@ function attachMyTimecardView() {
   const q = query(collection(db, 'punches'), ...constraints);
 
   state._myTcUnsub = onSnapshot(q, (snap) => {
-    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
+    const rows = snap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
     renderMyTimecard(rows);
   }, (error) => {
     console.error(error);
@@ -5198,20 +5261,66 @@ async function handleSaveSiteSettings(event) {
   }
 }
 
+function punchTimestampMs(row) {
+  const explicit = Number(row?.timestampMs || 0);
+  if (explicit) return explicit;
+  if (row?.timestamp?.toMillis instanceof Function) return row.timestamp.toMillis();
+  if (row?.createdAt?.toMillis instanceof Function) return row.createdAt.toMillis();
+  const parsed = Date.parse(String(row?.timestamp || row?.createdAt || ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizePunchAction(action) {
+  const value = String(action || '').trim();
+  const map = {
+    clockIn: 'clock_in',
+    clock_in: 'clock_in',
+    startLunch: 'start_lunch',
+    lunchStart: 'start_lunch',
+    start_lunch: 'start_lunch',
+    endLunch: 'end_lunch',
+    lunchEnd: 'end_lunch',
+    end_lunch: 'end_lunch',
+    clockOut: 'clock_out',
+    clock_out: 'clock_out'
+  };
+  return map[value] || value;
+}
+
+function normalizePunchRecordForDisplay(row = {}) {
+  const timestampMs = punchTimestampMs(row);
+  const name = row.name || row.workerName || row.employeeName || row.displayName || '';
+  const action = normalizePunchAction(row.action || row.type || row.punchType || '');
+  const dateKey = row.dateKey || row.localDate || (timestampMs ? formatDateKey(new Date(timestampMs)) : '');
+  return {
+    ...row,
+    name,
+    workerName: row.workerName || name,
+    employeeName: row.employeeName || name,
+    nameKey: row.nameKey || normalizeName(name),
+    action,
+    type: normalizePunchAction(row.type || action),
+    timestampMs,
+    dateKey,
+    weekKey: row.weekKey || (dateKey ? formatDateKey(getMondayDate(new Date(`${dateKey}T12:00:00`))) : '')
+  };
+}
+
 function prettyAction(action) {
-  return String(action || '-')
+  return String(normalizePunchAction(action) || '-')
     .replaceAll('_', ' ')
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function statusLabelForAction(action) {
+  const normalized = normalizePunchAction(action);
   const map = {
     clock_in: 'Clocked In',
     start_lunch: 'On Lunch',
     end_lunch: 'Back From Lunch',
     clock_out: 'Clocked Out'
   };
-  return map[action] || 'Saved';
+  return map[normalized] || 'Saved';
 }
 
 function prettifyHumanName(value) {
