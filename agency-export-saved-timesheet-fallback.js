@@ -65,6 +65,13 @@ function agencyLabel(agencyId) {
   return AGENCY_NAMES[agencyId] || agencyId;
 }
 
+function agencyIdFromLabel(label) {
+  const value = String(label || '').trim();
+  if (!value || value === 'Direct') return '';
+  const match = Object.entries(AGENCY_NAMES).find(([, agencyName]) => agencyName === value);
+  return match?.[0] || value;
+}
+
 function formatDateKey(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -129,7 +136,7 @@ function existingOptionSignatures(select) {
     const text = option.textContent || '';
     const name = text.replace(/\s*\([^)]*\)\s*$/, '');
     const details = (text.match(/\(([^)]*)\)/)?.[1] || '').split('·').map((part) => part.trim());
-    signatures.add([normalizeName(name), '', details[1] || details[0] || ''].join('|'));
+    signatures.add([normalizeName(name), agencyIdFromLabel(details[0]), details[1] || ''].join('|'));
   });
   return signatures;
 }
