@@ -24,6 +24,7 @@ import {
   where,
   orderBy,
   limit,
+  startAfter,
   onSnapshot,
   Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
@@ -79,6 +80,27 @@ const state = {
   loggedWorkerNameDiagnostics: new Set(),
   loggedPayrollCanonicalChecks: new Set(),
   managerTimeLookup: null,
+  agencyReview: {
+    page: 1,
+    pageSize: 25,
+    sortBy: 'name',
+    sortDir: 'asc',
+    selectedKey: '',
+    activeTab: 'overview',
+    filteredRows: [],
+    rangePunchRows: null,
+    auditRows: [],
+    auditLoadingFor: '',
+    visibleColumns: null,
+    deletedPunchRows: [],
+  },
+  agencyEmployeeRows: [],
+  agencyWorkerProfileRows: [],
+  agencyEmployeeCursor: null,
+  agencyWorkerCursor: null,
+  agencyEmployeesExhausted: false,
+  agencyWorkersExhausted: false,
+  agencyEmployeesLoading: false,
   workerLocation: { locationStatus: 'not_requested' },
   siteContext: buildLegacySiteContext(),
 };
@@ -254,9 +276,50 @@ const els = {
   managerTimeRangeResults: document.getElementById('managerTimeRangeResults'),
 
   agencyWorkerSelect: document.getElementById('agencyWorkerSelect'),
+  agencyLegacyWorkerSelect: document.getElementById('agencyLegacyWorkerSelect'),
   agencyPreviewBtn: document.getElementById('agencyPreviewBtn'),
   agencyPrintBtn: document.getElementById('agencyPrintBtn'),
+  agencyLegacyPrintBtn: document.getElementById('agencyLegacyPrintBtn'),
   agencyPreview: document.getElementById('agencyPreview'),
+  agencySearchInput: document.getElementById('agencySearchInput'),
+  agencyDateFilter: document.getElementById('agencyDateFilter'),
+  agencyFromDateFilter: document.getElementById('agencyFromDateFilter'),
+  agencyToDateFilter: document.getElementById('agencyToDateFilter'),
+  agencyAgencyFilter: document.getElementById('agencyAgencyFilter'),
+  agencyBranchFilter: document.getElementById('agencyBranchFilter'),
+  agencyDepartmentFilter: document.getElementById('agencyDepartmentFilter'),
+  agencyStatusFilter: document.getElementById('agencyStatusFilter'),
+  agencyMissingClockOutFilter: document.getElementById('agencyMissingClockOutFilter'),
+  agencyMissingLunchFilter: document.getElementById('agencyMissingLunchFilter'),
+  agencyOvertimeFilter: document.getElementById('agencyOvertimeFilter'),
+  agencyRemovedFilter: document.getElementById('agencyRemovedFilter'),
+  agencyPageSizeSelect: document.getElementById('agencyPageSizeSelect'),
+  agencyColumnChooser: document.getElementById('agencyColumnChooser'),
+  agencyReviewTable: document.getElementById('agencyReviewTable'),
+  agencyReviewBody: document.getElementById('agencyReviewBody'),
+  agencyPrevPageBtn: document.getElementById('agencyPrevPageBtn'),
+  agencyNextPageBtn: document.getElementById('agencyNextPageBtn'),
+  agencyPageInfo: document.getElementById('agencyPageInfo'),
+  agencyLoadMoreEmployeesBtn: document.getElementById('agencyLoadMoreEmployeesBtn'),
+  agencyRosterPageStatus: document.getElementById('agencyRosterPageStatus'),
+  agencyEmployeePanel: document.getElementById('agencyEmployeePanel'),
+  agencyPanelTitle: document.getElementById('agencyPanelTitle'),
+  agencyPanelMeta: document.getElementById('agencyPanelMeta'),
+  agencyPanelCloseBtn: document.getElementById('agencyPanelCloseBtn'),
+  agencyPanelContent: document.getElementById('agencyPanelContent'),
+  agencyExportCsvBtn: document.getElementById('agencyExportCsvBtn'),
+  agencyExportExcelBtn: document.getElementById('agencyExportExcelBtn'),
+  agencyStatsEmployees: document.getElementById('agencyStatsEmployees'),
+  agencyStatsWeekHours: document.getElementById('agencyStatsWeekHours'),
+  agencyStatsMissedClockOuts: document.getElementById('agencyStatsMissedClockOuts'),
+  agencyStatsMissedLunches: document.getElementById('agencyStatsMissedLunches'),
+  agencyStatsLateArrivals: document.getElementById('agencyStatsLateArrivals'),
+  agencyStatsAttendance: document.getElementById('agencyStatsAttendance'),
+  agencyStatsMonthHours: document.getElementById('agencyStatsMonthHours'),
+  agencyStatsPayPeriodHours: document.getElementById('agencyStatsPayPeriodHours'),
+  agencyCoverageStatus: document.getElementById('agencyCoverageStatus'),
+  agencyRestoreDeletedBtn: document.getElementById('agencyRestoreDeletedBtn'),
+  agencyRecoveryStatus: document.getElementById('agencyRecoveryStatus'),
 
   toast: document.getElementById('toast'),
 };
@@ -417,6 +480,8 @@ async function init() {
         attachTimesheetView();
         populateAgencyWorkerSelect();
         renderAgencyPreview();
+        renderAgencyWorkbench();
+        loadAgencyEmployeePage({ reset: true });
       }
       if (canManageUsers()) {
         attachUsersViewIfAdmin();
@@ -543,8 +608,57 @@ function wireEvents() {
   });
 
   els.agencyPreviewBtn?.addEventListener('click', () => renderAgencyPreview());
-  els.agencyPrintBtn?.addEventListener('click', () => printAgencyPreview());
-  els.agencyWorkerSelect?.addEventListener('change', () => renderAgencyPreview());
+  els.agencyPrintBtn?.addEventListener('click', () => exportAgencyReviewPdf());
+  els.agencyLegacyPrintBtn?.addEventListener('click', () => printAgencyPreview());
+  els.agencyLegacyWorkerSelect?.addEventListener('change', () => renderAgencyPreview());
+  els.agencySearchInput?.addEventListener('input', () => {
+    state.agencyReview.page = 1;
+    renderAgencyWorkbench();
+  });
+  [
+    els.agencyDateFilter,
+    els.agencyFromDateFilter,
+    els.agencyToDateFilter,
+    els.agencyWorkerSelect,
+    els.agencyAgencyFilter,
+    els.agencyBranchFilter,
+    els.agencyDepartmentFilter,
+    els.agencyStatusFilter,
+    els.agencyMissingClockOutFilter,
+    els.agencyMissingLunchFilter,
+    els.agencyOvertimeFilter,
+    els.agencyRemovedFilter,
+  ].forEach((control) => {
+    control?.addEventListener('change', () => {
+      state.agencyReview.page = 1;
+      handleAgencyDateRangeChange();
+    });
+  });
+  els.agencyPageSizeSelect?.addEventListener('change', () => {
+    state.agencyReview.pageSize = Number(els.agencyPageSizeSelect.value || 25);
+    state.agencyReview.page = 1;
+    renderAgencyWorkbench();
+  });
+  els.agencyPrevPageBtn?.addEventListener('click', () => {
+    state.agencyReview.page = Math.max(1, state.agencyReview.page - 1);
+    renderAgencyWorkbench();
+  });
+  els.agencyNextPageBtn?.addEventListener('click', () => {
+    state.agencyReview.page += 1;
+    renderAgencyWorkbench();
+  });
+  els.agencyLoadMoreEmployeesBtn?.addEventListener('click', () => loadAgencyEmployeePage());
+  els.agencyReviewTable?.querySelectorAll('th[data-sort]').forEach((header) => {
+    header.addEventListener('click', () => sortAgencyReview(header.dataset.sort));
+  });
+  els.agencyPanelCloseBtn?.addEventListener('click', closeAgencyPanel);
+  document.querySelectorAll('[data-agency-panel-tab]').forEach((button) => {
+    button.addEventListener('click', () => switchAgencyPanelTab(button.dataset.agencyPanelTab));
+  });
+  els.agencyExportCsvBtn?.addEventListener('click', () => exportAgencyReviewCsv());
+  els.agencyExportExcelBtn?.addEventListener('click', () => exportAgencyReviewExcel());
+  els.agencyRestoreDeletedBtn?.addEventListener('click', restoreAgencySoftDeletedPunches);
+  document.addEventListener('keydown', handleAgencyKeyboardShortcuts);
   els.fixUserBranchDataBtn?.addEventListener('click', previewUserBranchCleanup);
 }
 
@@ -1627,7 +1741,9 @@ function getCompatibleWorkerRecords(employee) {
   );
 }
 
-async function fetchPunchesWithRange(baseConstraints, fromMs, toMs) {
+async function fetchPunchesWithRange(baseConstraints, fromMs, toMs, options = {}) {
+  const includeLegacyTimestampFallback = options.includeLegacyTimestampFallback !== false;
+  const rows = [];
   try {
     const rangedQuery = query(
       collection(db, 'punches'),
@@ -1636,14 +1752,23 @@ async function fetchPunchesWithRange(baseConstraints, fromMs, toMs) {
       where('timestampMs', '<=', toMs)
     );
     const snapshot = await getDocs(rangedQuery);
-    return snapshot.docs.map((record) => normalizePunchRecordForDisplay({ id: record.id, ...record.data() }));
+    rows.push(...snapshot.docs.map((record) => normalizePunchRecordForDisplay({ id: record.id, ...record.data() })));
   } catch (error) {
     if (!['failed-precondition', 'permission-denied'].includes(error.code)) throw error;
-    const snapshot = await getDocs(query(collection(db, 'punches'), ...baseConstraints));
-    return snapshot.docs
-      .map((record) => normalizePunchRecordForDisplay({ id: record.id, ...record.data() }))
-      .filter((punch) => Number(punch.timestampMs || 0) >= fromMs && Number(punch.timestampMs || 0) <= toMs);
   }
+
+  if (includeLegacyTimestampFallback && baseConstraints.length) {
+    try {
+      const snapshot = await getDocs(query(collection(db, 'punches'), ...baseConstraints));
+      rows.push(...snapshot.docs
+        .map((record) => normalizePunchRecordForDisplay({ id: record.id, ...record.data() }))
+        .filter((punch) => Number(punch.timestampMs || 0) >= fromMs && Number(punch.timestampMs || 0) <= toMs));
+    } catch (error) {
+      console.warn('Legacy punch timestamp fallback failed:', error.message);
+    }
+  }
+
+  return dedupePunches(rows);
 }
 
 function dedupePunches(punches) {
@@ -2796,6 +2921,7 @@ function attachTimesheetView() {
       renderDerivedTimesheets();
       populateAgencyWorkerSelect();
       renderAgencyPreview();
+      renderAgencyWorkbench();
     })
     .catch((error) => {
       console.error(error);
@@ -2822,11 +2948,17 @@ function attachTimesheetView() {
   state.unsubscribers.push(
     onSnapshot(
       punchesQuery,
-      (snap) => {
-        state.selectedWeekPunchRows = snap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
+      async (snap) => {
+        const snapshotRows = snap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() }));
+        const compatibleRows = await loadCompatibleWeeklyPunchRows(state.selectedWeekStart);
+        const mergedRows = dedupePunches([...snapshotRows, ...compatibleRows]);
+        state.agencyReview.deletedPunchRows = mergedRows.filter((row) => !isActivePunchRecord(row));
+        state.selectedWeekPunchRows = mergedRows.filter(isActivePunchRecord);
+        state.agencyReview.rangePunchRows = null;
         renderDerivedTimesheets();
         populateAgencyWorkerSelect();
         renderAgencyPreview();
+        renderAgencyWorkbench();
       },
       (error) => {
         console.error(error);
@@ -2846,6 +2978,7 @@ function attachTimesheetView() {
         state.selectedWeekTimesheetDocs = map;
         renderDerivedTimesheets();
         renderAgencyPreview();
+        renderAgencyWorkbench();
       },
       (error) => {
         console.error(error);
@@ -2853,6 +2986,20 @@ function attachTimesheetView() {
       }
     )
   );
+}
+
+async function loadCompatibleWeeklyPunchRows(weekStartDate) {
+  const weekStart = startOfLocalDay(weekStartDate);
+  const weekEnd = addLocalDays(weekStart, 6);
+  weekEnd.setHours(23, 59, 59, 999);
+  const constraints = [...branchConstraints()];
+  if (isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()));
+  try {
+    return await fetchPunchesWithRange(constraints, weekStart.getTime(), weekEnd.getTime());
+  } catch (error) {
+    console.warn('Compatible weekly punch lookup failed:', error.message);
+    return [];
+  }
 }
 
 function renderDerivedTimesheets() {
@@ -4827,37 +4974,1272 @@ async function handleSaveProfile(event) {
   }
 }
 
+const AGENCY_REVIEW_COLUMNS = [
+  ['name', 'Employee'],
+  ['employeeNumber', 'Emp #'],
+  ['agency', 'Agency'],
+  ['branch', 'Branch'],
+  ['department', 'Department'],
+  ['weeklyHours', 'Hours'],
+  ['punchCount', 'Punches'],
+  ['overtimeHours', 'OT'],
+  ['status', 'Status'],
+  ['lastPunch', 'Last punch'],
+  ['warnings', 'Warnings'],
+];
+const AGENCY_ROSTER_PAGE_SIZE = 75;
+
+async function loadAgencyEmployeePage({ reset = false } = {}) {
+  if (!canEditPunches() || state.agencyEmployeesLoading) return;
+  if (!reset && state.agencyEmployeesExhausted && state.agencyWorkersExhausted) return;
+  state.agencyEmployeesLoading = true;
+  if (els.agencyLoadMoreEmployeesBtn) els.agencyLoadMoreEmployeesBtn.disabled = true;
+  if (els.agencyRosterPageStatus) els.agencyRosterPageStatus.textContent = reset ? 'Loading roster page...' : 'Loading more employees and workers...';
+
+  try {
+    if (reset) {
+      state.agencyEmployeeRows = [];
+      state.agencyWorkerProfileRows = [];
+      state.agencyEmployeeCursor = { siteId: null, assignedSiteId: null };
+      state.agencyWorkerCursor = { siteId: null, assignedSiteId: null };
+      state.agencyEmployeesExhausted = false;
+      state.agencyWorkersExhausted = false;
+    }
+    if (!state.agencyEmployeeCursor || !('siteId' in state.agencyEmployeeCursor)) {
+      state.agencyEmployeeCursor = { siteId: null, assignedSiteId: null };
+    }
+    if (!state.agencyWorkerCursor || !('siteId' in state.agencyWorkerCursor)) {
+      state.agencyWorkerCursor = { siteId: null, assignedSiteId: null };
+    }
+
+    const pageSize = Math.ceil(AGENCY_ROSTER_PAGE_SIZE / 4);
+    const queries = [
+      ['employees', 'siteId', state.agencyEmployeeCursor.siteId],
+      ['employees', 'assignedSiteId', state.agencyEmployeeCursor.assignedSiteId],
+      ['workers', 'siteId', state.agencyWorkerCursor.siteId],
+      ['workers', 'assignedSiteId', state.agencyWorkerCursor.assignedSiteId],
+    ];
+    const results = await Promise.allSettled(
+      queries.map(([collectionName, siteField, cursor]) => loadAgencyRosterPagePart(collectionName, siteField, cursor, pageSize))
+    );
+    const successful = results.filter((result) => result.status === 'fulfilled');
+    if (!successful.length) throw results[0]?.reason || new Error('Roster page query failed.');
+
+    const [employeeSite, employeeAssigned, workerSite, workerAssigned] = results.map((result, index) => {
+      const [, , cursor] = queries[index];
+      return result.status === 'fulfilled' ? result.value : { rows: [], cursor, exhausted: true };
+    });
+
+    const employeeRows = [...employeeSite.rows, ...employeeAssigned.rows];
+    const existingEmployees = new Map(state.agencyEmployeeRows.map((row) => [agencyRosterRecordKey(row), row]));
+    employeeRows.forEach((row) => existingEmployees.set(agencyRosterRecordKey(row), row));
+    state.agencyEmployeeRows = [...existingEmployees.values()];
+    state.agencyEmployeeCursor = { siteId: employeeSite.cursor, assignedSiteId: employeeAssigned.cursor };
+    state.agencyEmployeesExhausted = employeeSite.exhausted && employeeAssigned.exhausted;
+
+    const workerRows = [...workerSite.rows, ...workerAssigned.rows];
+    const existingWorkers = new Map(state.agencyWorkerProfileRows.map((row) => [agencyRosterRecordKey(row), row]));
+    workerRows.forEach((row) => existingWorkers.set(agencyRosterRecordKey(row), row));
+    state.agencyWorkerProfileRows = [...existingWorkers.values()];
+    state.agencyWorkerCursor = { siteId: workerSite.cursor, assignedSiteId: workerAssigned.cursor };
+    state.agencyWorkersExhausted = workerSite.exhausted && workerAssigned.exhausted;
+
+    if (els.agencyRosterPageStatus) {
+      const partial = results.some((result) => result.status === 'rejected') ? ' Partial roster page loaded.' : '';
+      const loadedCount = state.agencyEmployeeRows.length + state.agencyWorkerProfileRows.length;
+      const exhausted = state.agencyEmployeesExhausted && state.agencyWorkersExhausted;
+      els.agencyRosterPageStatus.textContent = exhausted
+        ? `Loaded ${loadedCount} employee/worker record(s). End of roster.${partial}`
+        : `Loaded ${loadedCount} employee/worker record(s). More available.${partial}`;
+    }
+    renderAgencyWorkbench();
+  } catch (error) {
+    console.error(error);
+    if (els.agencyRosterPageStatus) els.agencyRosterPageStatus.textContent = 'Could not load roster page.';
+    toast(error.message || 'Could not load Agency Export roster page.', true);
+  } finally {
+    state.agencyEmployeesLoading = false;
+    if (els.agencyLoadMoreEmployeesBtn) {
+      const exhausted = state.agencyEmployeesExhausted && state.agencyWorkersExhausted;
+      els.agencyLoadMoreEmployeesBtn.disabled = exhausted;
+      els.agencyLoadMoreEmployeesBtn.textContent = exhausted ? 'Roster Loaded' : 'Load More Roster';
+    }
+  }
+}
+
+async function loadAgencyRosterPagePart(collectionName, siteField, cursor, pageSize) {
+  const constraints = [
+    where('companyId', '==', getCurrentCompanyId()),
+    where(siteField, '==', getCurrentSiteId()),
+  ];
+  if (isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()));
+  constraints.push(orderBy('name', 'asc'));
+  if (cursor) constraints.push(startAfter(cursor));
+  constraints.push(limit(pageSize));
+
+  const snap = await getDocs(query(collection(db, collectionName), ...constraints));
+  return {
+    rows: snap.docs.map((record) => ({ id: record.id, sourceCollection: collectionName, ...record.data() })),
+    cursor: snap.docs.at(-1) || cursor || null,
+    exhausted: snap.docs.length < pageSize,
+  };
+}
+
+function agencyRosterRecordKey(row) {
+  return [
+    row?.sourceCollection || 'employees',
+    row?.id || row?.employeeId || row?.workerId || row?.uid || normalizeName(row?.name || row?.displayName || row?.nameKey || '')
+  ].join(':');
+}
+function renderAgencyWorkbench() {
+  if (!els.agencyReviewBody) return;
+  ensureAgencyColumnChooser();
+  populateAgencyFilterOptions();
+
+  const allRows = buildAgencyReviewRows();
+  logAgencyPunchCoverage(allRows, getAgencySourcePunches());
+  const rows = sortAgencyRows(filterAgencyRows(allRows));
+  state.agencyReview.filteredRows = rows;
+  renderAgencyStats(rows);
+
+  const pageSize = Number(state.agencyReview.pageSize || els.agencyPageSizeSelect?.value || 25);
+  state.agencyReview.pageSize = pageSize;
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  state.agencyReview.page = Math.min(Math.max(1, state.agencyReview.page || 1), totalPages);
+  const start = (state.agencyReview.page - 1) * pageSize;
+  const pageRows = rows.slice(start, start + pageSize);
+
+  if (!pageRows.length) {
+    els.agencyReviewBody.innerHTML = '<tr><td colspan="11">No employees match the current filters.</td></tr>';
+  } else {
+    els.agencyReviewBody.innerHTML = pageRows.map((row) => `
+      <tr data-worker-key="${escapeHtml(row.identityKey)}" class="${row.identityKey === state.agencyReview.selectedKey ? 'selected-row' : ''}" tabindex="0">
+        <td data-col="name"><strong>${escapeHtml(row.name || '-')}</strong><br><span class="tiny">${escapeHtml(row.pin ? `PIN ${row.pin}` : row.identityKey)}</span></td>
+        <td data-col="employeeNumber">${escapeHtml(row.employeeNumber || '-')}</td>
+        <td data-col="agency">${escapeHtml(row.agency || '-')}</td>
+        <td data-col="branch">${escapeHtml(row.branch || '-')}</td>
+        <td data-col="department">${escapeHtml(row.department || '-')}</td>
+        <td data-col="weeklyHours">${Number(row.weeklyHours || 0).toFixed(2)}</td>
+        <td data-col="punchCount">${Number(row.punchCount || 0)}</td>
+        <td data-col="overtimeHours">${Number(row.overtimeHours || 0).toFixed(2)}</td>
+        <td data-col="status"><span class="pill">${escapeHtml(row.statusLabel)}</span></td>
+        <td data-col="lastPunch">${escapeHtml(row.lastPunchText || '-')}</td>
+        <td data-col="warnings">${renderAgencyWarningBadges(row.warnings)}</td>
+      </tr>
+    `).join('');
+  }
+
+  els.agencyReviewBody.querySelectorAll('tr[data-worker-key]').forEach((tr) => {
+    tr.addEventListener('click', () => openAgencyEmployeePanel(tr.dataset.workerKey));
+    tr.addEventListener('dblclick', () => openAgencyQuickEdit(tr.dataset.workerKey));
+    tr.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') openAgencyEmployeePanel(tr.dataset.workerKey);
+    });
+  });
+
+  if (els.agencyPageInfo) els.agencyPageInfo.textContent = `Page ${state.agencyReview.page} of ${totalPages} (${rows.length} employees)`;
+  if (els.agencyPrevPageBtn) els.agencyPrevPageBtn.disabled = state.agencyReview.page <= 1;
+  if (els.agencyNextPageBtn) els.agencyNextPageBtn.disabled = state.agencyReview.page >= totalPages;
+  if (els.agencyLoadMoreEmployeesBtn) {
+    els.agencyLoadMoreEmployeesBtn.disabled = state.agencyEmployeesLoading || state.agencyEmployeesExhausted;
+    els.agencyLoadMoreEmployeesBtn.textContent = state.agencyEmployeesExhausted ? 'Roster Loaded' : 'Load More Roster';
+  }
+  if (els.agencyRosterPageStatus && !state.agencyEmployeesLoading && !state.agencyEmployeeRows.length) {
+    els.agencyRosterPageStatus.textContent = 'Roster loads in safe pages. Punches load on demand.';
+  }
+  renderAgencyRecoveryStatus();
+  applyAgencyColumnVisibility();
+  if (state.agencyReview.selectedKey) renderAgencyPanel();
+}
+
+function renderAgencyRecoveryStatus() {
+  const deletedRows = state.agencyReview.deletedPunchRows || [];
+  if (els.agencyRestoreDeletedBtn) {
+    els.agencyRestoreDeletedBtn.disabled = !deletedRows.length || !canEditPunches();
+  }
+  if (els.agencyRecoveryStatus) {
+    els.agencyRecoveryStatus.textContent = deletedRows.length
+      ? `${deletedRows.length} soft-deleted punch(es) found in this range. Review before restoring.`
+      : 'No soft-deleted punches loaded for this range.';
+  }
+}
+
+function buildAgencyReviewRows() {
+  const punches = getAgencySourcePunches();
+  const employeeRows = getAgencyEmployeeRowsForReview();
+  const directory = buildAgencyWorkerDirectory([...punches, ...employeeRows, ...(state.allUsers || [])]);
+  const profileIndex = buildWorkerProfileIndex(employeeRows, state.allUsers || []);
+  const grouped = new Map();
+
+  punches.forEach((punch) => {
+    const normalized = normalizePunchRecordForDisplay(punch);
+    const key = getWorkerIdentityKey(normalized, directory);
+    if (!key) return;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(normalized);
+  });
+
+  const rows = new Map();
+  grouped.forEach((personPunches, identityKey) => {
+    const employee = findAgencyReviewEmployee(personPunches, identityKey, profileIndex, employeeRows);
+    rows.set(identityKey, buildAgencyReviewRow(identityKey, employee, personPunches));
+  });
+
+  employeeRows.forEach((employee) => {
+    const rowAgency = getRecordAgencyIdentity(employee);
+    const allowedAgency = normalizeIdentityToken(agencyScopeId());
+    if (isAgencyUser() && rowAgency && rowAgency !== allowedAgency) return;
+    const workerBranch = getWorkerBranchId(employee) || getCurrentSiteId();
+    if (!canUseSite(workerBranch)) return;
+    const key = getWorkerIdentityKey(employee, directory) || `employee:${employee.id || employee.employeeId || employee.workerId || normalizeName(employee.name || employee.displayName)}`;
+    if (!key || rows.has(key)) return;
+    rows.set(key, buildAgencyReviewRow(key, employee, []));
+  });
+
+  return [...rows.values()];
+}
+
+function getAgencyEmployeeRowsForReview() {
+  const rows = [
+    ...(state.allEmployees || []),
+    ...(state.agencyEmployeeRows || []),
+    ...(state.agencyWorkerProfileRows || []),
+    ...(state.publicEmployeeRecords || []),
+  ];
+  const unique = new Map();
+  rows.forEach((row) => {
+    const key = agencyRosterRecordKey(row);
+    if (key && !unique.has(key)) unique.set(key, row);
+  });
+  return [...unique.values()];
+}
+
+function findAgencyReviewEmployee(personPunches, identityKey, profileIndex, employeeRows) {
+  const ids = new Set();
+  personPunches.forEach((punch) => {
+    getRecordWorkerIds(punch).forEach((id) => ids.add(id));
+  });
+  for (const id of ids) {
+    if (profileIndex.has(id)) return profileIndex.get(id);
+  }
+  const normalizedName = normalizeName(getCopiedWorkerName(personPunches[0]) || identityKey.replace(/^(worker|email|person):/, ''));
+  return employeeRows.find((employee) =>
+    getWorkerProfileIds(employee).some((id) => ids.has(id))
+    || normalizeName(getWorkerProfileName(employee) || employee.nameKey || '') === normalizedName
+  ) || null;
+}
+
+function buildAgencyWorkerDirectory(sourceRows = []) {
+  const signatureIds = new Map();
+  const emailIds = new Map();
+
+  sourceRows.forEach((row) => {
+    const ids = [...getWorkerProfileIds(row), ...getRecordWorkerIds(row)].filter(Boolean);
+    const email = getRecordEmail(row);
+    const signature = getWorkerSignature(row);
+    if (signature && ids.length) {
+      if (!signatureIds.has(signature)) signatureIds.set(signature, new Set());
+      ids.forEach((id) => signatureIds.get(signature).add(id));
+    }
+    if (email && ids.length) {
+      if (!emailIds.has(email)) emailIds.set(email, new Set());
+      ids.forEach((id) => emailIds.get(email).add(id));
+    }
+  });
+
+  const primaryFor = (ids) => [...ids].sort((left, right) => String(left).localeCompare(String(right)))[0];
+  const signaturePrimary = new Map();
+  const emailPrimary = new Map();
+  signatureIds.forEach((ids, signature) => signaturePrimary.set(signature, primaryFor(ids)));
+  emailIds.forEach((ids, email) => emailPrimary.set(email, primaryFor(ids)));
+  return { signaturePrimary, emailPrimary };
+}
+
+function buildAgencyReviewRow(identityKey, employee, punches) {
+  const sortedPunches = dedupePunches(punches).sort((a, b) => Number(a.timestampMs || 0) - Number(b.timestampMs || 0));
+  const firstPunch = sortedPunches[0] || {};
+  const displayName = getWorkerProfileName(employee) || getCopiedWorkerName(firstPunch) || identityKey.replace(/^(worker|email|person|employee):/, '');
+  const totals = buildAgencyPunchTotals(sortedPunches);
+  const saved = findSavedTimesheetForGroup({
+    fallbackTimesheetId: `${formatDateKey(state.selectedWeekStart)}_${sanitizeTimesheetIdPart(employee?.id || employee?.employeeId || normalizeName(displayName))}`,
+    workerId: employee?.id || employee?.employeeId || employee?.workerId || firstPunch.employeeId || firstPunch.workerId || '',
+    workerIds: [...new Set([...(getWorkerProfileIds(employee) || []), ...sortedPunches.flatMap(getRecordWorkerIds)].filter(Boolean))],
+    nameKey: normalizeName(displayName),
+    weekKey: formatDateKey(state.selectedWeekStart),
+    allowLegacyNameFallback: true
+  });
+  const removed = !isActiveEmployeeRecord(employee || {}) && !!employee;
+  const missing = totals.warnings.some((warning) => /^Missing/.test(warning));
+  const statusLabel = removed
+    ? 'Removed'
+    : saved?.status === 'signed'
+      ? 'Signed'
+      : missing
+        ? 'Missing'
+        : sortedPunches.length
+          ? 'Complete'
+          : 'Open';
+
+  return {
+    identityKey,
+    employee,
+    punches: sortedPunches,
+    name: prettifyHumanName(displayName),
+    employeeNumber: firstPresent(employee?.employeeNumber, employee?.workerNumber, employee?.employeeNo, firstPunch.employeeNumber, firstPunch.workerNumber),
+    agencyId: firstPresent(employee?.agencyId, firstPunch.agencyId, state.agencyId),
+    agency: agencyLabel(firstPresent(employee?.agencyId, firstPunch.agencyId, state.agencyId)),
+    branch: firstPresent(employee?.branchName, employee?.branchId, employee?.branchCode, employee?.assignedSiteId, employee?.siteId, firstPunch.branchName, firstPunch.branchId, firstPunch.branchCode, firstPunch.assignedSiteId, firstPunch.siteId, getCurrentSiteId()),
+    department: firstPresent(employee?.department, employee?.dept, firstPunch.department, firstPunch.dept),
+    pin: firstPresent(employee?.pin, employee?.workerPin, firstPunch.pin),
+    notes: [employee?.notes, employee?.managerNotes, firstPunch.notes, firstPunch.managerNote].flat().filter(Boolean).join(' '),
+    weeklyHours: totals.workedHours,
+    punchCount: sortedPunches.length,
+    regularHours: Math.min(40, totals.workedHours),
+    overtimeHours: Math.max(0, totals.workedHours - 40),
+    lunchMinutes: totals.lunchMinutes,
+    warnings: totals.warnings,
+    missingClockOut: totals.warnings.includes('Missing Clock Out'),
+    missingLunch: totals.warnings.includes('Missing Lunch'),
+    lateArrivals: totals.lateArrivals,
+    daysWorked: totals.daysWorked,
+    statusLabel,
+    rawStatus: String(saved?.status || employee?.status || '').toLowerCase(),
+    removed,
+    lastPunch: sortedPunches.at(-1)?.timestampMs || 0,
+    lastPunchText: sortedPunches.length ? `${prettyAction(sortedPunches.at(-1).action)} ${formatDateTime(sortedPunches.at(-1).timestampMs)}` : '',
+    daySummaries: totals.daySummaries,
+    searchable: '',
+  };
+}
+
+function buildAgencyPunchTotals(punches) {
+  const byDay = new Map();
+  punches.forEach((punch) => {
+    const dateKey = punch.dateKey || formatDateKey(new Date(Number(punch.timestampMs || 0)));
+    if (!byDay.has(dateKey)) byDay.set(dateKey, []);
+    byDay.get(dateKey).push(punch);
+  });
+
+  let workedMinutes = 0;
+  let lunchMinutes = 0;
+  let lateArrivals = 0;
+  const warnings = new Set();
+  const daySummaries = [];
+
+  byDay.forEach((dayPunches, dateKey) => {
+    const sorted = [...dayPunches].sort((a, b) => Number(a.timestampMs || 0) - Number(b.timestampMs || 0));
+    let activeStart = null;
+    let lunchStart = null;
+    let dayWorked = 0;
+    let dayLunch = 0;
+    const actionTimes = { clock_in: [], start_lunch: [], end_lunch: [], clock_out: [] };
+
+    sorted.forEach((punch) => {
+      if (actionTimes[punch.action]) actionTimes[punch.action].push(punch.timestampMs);
+      if (punch.action === 'clock_in') activeStart = punch.timestampMs;
+      if (punch.action === 'start_lunch') {
+        if (activeStart) {
+          const diff = Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
+          dayWorked += diff;
+          workedMinutes += diff;
+        }
+        activeStart = null;
+        lunchStart = punch.timestampMs;
+      }
+      if (punch.action === 'end_lunch') {
+        if (lunchStart) {
+          const diff = Math.max(0, Math.round((punch.timestampMs - lunchStart) / 60000));
+          dayLunch += diff;
+          lunchMinutes += diff;
+        }
+        lunchStart = null;
+        activeStart = punch.timestampMs;
+      }
+      if (punch.action === 'clock_out') {
+        if (activeStart) {
+          const diff = Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
+          dayWorked += diff;
+          workedMinutes += diff;
+        }
+        activeStart = null;
+      }
+    });
+
+    const dayWarnings = [];
+    if (activeStart) dayWarnings.push('Missing Clock Out');
+    if (lunchStart) dayWarnings.push('Missing Lunch In');
+    if (actionTimes.clock_in.length && !actionTimes.clock_out.length) dayWarnings.push('Missing Clock Out');
+    if (dayWorked >= 360 && (!actionTimes.start_lunch.length || !actionTimes.end_lunch.length)) dayWarnings.push('Missing Lunch');
+    const firstClockIn = actionTimes.clock_in[0];
+    if (firstClockIn) {
+      const d = new Date(firstClockIn);
+      if (d.getHours() > 8 || (d.getHours() === 8 && d.getMinutes() > 5)) lateArrivals += 1;
+    }
+    dayWarnings.forEach((warning) => warnings.add(warning));
+    daySummaries.push({
+      dateKey,
+      punches: sorted,
+      actionTimes,
+      workedHours: Number((dayWorked / 60).toFixed(2)),
+      lunchMinutes: dayLunch,
+      overtimeHours: Number((Math.max(0, dayWorked - 480) / 60).toFixed(2)),
+      warnings: [...new Set(dayWarnings)],
+    });
+  });
+
+  if (workedMinutes > 2400) warnings.add('Overtime');
+  return {
+    workedHours: Number((workedMinutes / 60).toFixed(2)),
+    lunchMinutes,
+    daysWorked: byDay.size,
+    lateArrivals,
+    warnings: [...warnings],
+    daySummaries: daySummaries.sort((a, b) => a.dateKey.localeCompare(b.dateKey)),
+  };
+}
+
+function getAgencySourcePunches() {
+  return Array.isArray(state.agencyReview.rangePunchRows)
+    ? state.agencyReview.rangePunchRows
+    : state.selectedWeekPunchRows;
+}
+
+function logAgencyPunchCoverage(rows, punches) {
+  const sourcePunches = dedupePunches((punches || []).map(normalizePunchRecordForDisplay)).filter(isActivePunchRecord);
+  const sourceKeys = new Set(sourcePunches.map(agencyPunchCoverageKey));
+  const representedKeys = new Set(
+    rows.flatMap((row) => row.punches || []).map(agencyPunchCoverageKey)
+  );
+  const missing = sourcePunches.filter((punch) => !representedKeys.has(agencyPunchCoverageKey(punch)));
+  const logKey = [
+    formatDateKey(state.selectedWeekStart),
+    sourceKeys.size,
+    representedKeys.size,
+    missing.map((punch) => punch.id || agencyPunchCoverageKey(punch)).join(',')
+  ].join('|');
+  if (state.agencyReview.coverageLogKey === logKey) return;
+  state.agencyReview.coverageLogKey = logKey;
+
+  if (missing.length) {
+    if (els.agencyCoverageStatus) {
+      els.agencyCoverageStatus.textContent = `${missing.length} loaded punch(es) are not represented in the Agency Export rows. Do not use this export for payroll until reviewed.`;
+      els.agencyCoverageStatus.style.borderColor = 'rgba(255,92,92,0.5)';
+    }
+    console.error('[QRTimeclock Agency Export coverage warning]', {
+      message: 'Some loaded punches are not represented in Agency Export rows. Do not use this export for payroll until this is resolved.',
+      loadedPunches: sourceKeys.size,
+      representedPunches: representedKeys.size,
+      missingPunches: missing.map((punch) => ({
+        id: punch.id || '',
+        name: punch.name || punch.workerName || '',
+        employeeId: punch.employeeId || '',
+        workerId: punch.workerId || '',
+        agencyId: punch.agencyId || '',
+        siteId: punch.siteId || '',
+        action: punch.action || '',
+        timestamp: formatDateTime(punch.timestampMs)
+      }))
+    });
+  } else {
+    if (els.agencyCoverageStatus) {
+      els.agencyCoverageStatus.textContent = `Coverage OK: ${sourceKeys.size} loaded punch(es) represented across ${rows.filter((row) => Number(row.punchCount || 0) > 0).length} employee row(s).`;
+      els.agencyCoverageStatus.style.borderColor = 'rgba(43,213,118,0.4)';
+    }
+    console.info('[QRTimeclock Agency Export coverage OK]', {
+      loadedPunches: sourceKeys.size,
+      representedPunches: representedKeys.size,
+      employeesWithPunches: rows.filter((row) => Number(row.punchCount || 0) > 0).length
+    });
+  }
+}
+
+function agencyPunchCoverageKey(punch) {
+  return punch.id || [
+    punch.employeeId || punch.workerId || punch.nameKey || normalizeName(punch.name || punch.workerName || ''),
+    punch.timestampMs || 0,
+    punch.action || '',
+    punch.siteId || '',
+    punch.agencyId || ''
+  ].join('|');
+}
+
+function filterAgencyRows(rows) {
+  const filters = getAgencyFilters();
+  return rows.filter((row) => {
+    if (row.removed && !filters.removed && filters.status !== 'removed') return false;
+    if (filters.employee && row.identityKey !== filters.employee) return false;
+    if (filters.agency && normalizeIdentityToken(row.agencyId || row.agency) !== filters.agency) return false;
+    if (filters.branch && normalizeIdentityToken(row.branch) !== filters.branch) return false;
+    if (filters.department && normalizeIdentityToken(row.department) !== filters.department) return false;
+    if (filters.status && !agencyStatusMatches(row, filters.status)) return false;
+    if (filters.missingClockOut && !row.missingClockOut) return false;
+    if (filters.missingLunch && !row.missingLunch) return false;
+    if (filters.overtime && Number(row.overtimeHours || 0) <= 0) return false;
+    if (filters.removed && !row.removed) return false;
+    if (filters.date && !row.daySummaries.some((day) => day.dateKey === filters.date)) return false;
+    if (filters.search && !agencySearchText(row).includes(filters.search)) return false;
+    return true;
+  });
+}
+
+function getAgencyFilters() {
+  return {
+    search: normalizeIdentityText(els.agencySearchInput?.value || ''),
+    date: els.agencyDateFilter?.value || '',
+    from: els.agencyFromDateFilter?.value || '',
+    to: els.agencyToDateFilter?.value || '',
+    employee: els.agencyWorkerSelect?.value || '',
+    agency: normalizeIdentityToken(els.agencyAgencyFilter?.value || ''),
+    branch: normalizeIdentityToken(els.agencyBranchFilter?.value || ''),
+    department: normalizeIdentityToken(els.agencyDepartmentFilter?.value || ''),
+    status: els.agencyStatusFilter?.value || '',
+    missingClockOut: els.agencyMissingClockOutFilter?.checked === true,
+    missingLunch: els.agencyMissingLunchFilter?.checked === true,
+    overtime: els.agencyOvertimeFilter?.checked === true,
+    removed: els.agencyRemovedFilter?.checked === true,
+  };
+}
+
+function agencyStatusMatches(row, status) {
+  if (status === 'complete') return row.statusLabel === 'Complete';
+  if (status === 'missing') return row.warnings.length > 0;
+  if (status === 'open') return row.statusLabel === 'Open' || row.rawStatus === 'open';
+  if (status === 'signed') return row.statusLabel === 'Signed' || row.rawStatus === 'signed';
+  if (status === 'removed') return row.removed;
+  return true;
+}
+
+function agencySearchText(row) {
+  return normalizeIdentityText([
+    row.name,
+    row.employeeNumber,
+    row.agency,
+    row.agencyId,
+    row.branch,
+    row.department,
+    row.pin,
+    row.notes,
+    row.employee?.siteId,
+    row.employee?.assignedSiteId,
+    row.employee?.email,
+    ...row.punches.flatMap((punch) => [punch.notes, punch.managerNote, punch.source, punch.siteId, punch.department])
+  ].filter(Boolean).join(' '));
+}
+
+function sortAgencyRows(rows) {
+  const { sortBy, sortDir } = state.agencyReview;
+  const direction = sortDir === 'desc' ? -1 : 1;
+  return [...rows].sort((left, right) => {
+    const a = left[sortBy] ?? '';
+    const b = right[sortBy] ?? '';
+    if (typeof a === 'number' || typeof b === 'number') return (Number(a || 0) - Number(b || 0)) * direction;
+    return String(a).localeCompare(String(b)) * direction;
+  });
+}
+
+function sortAgencyReview(sortBy) {
+  if (!sortBy) return;
+  if (state.agencyReview.sortBy === sortBy) {
+    state.agencyReview.sortDir = state.agencyReview.sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    state.agencyReview.sortBy = sortBy;
+    state.agencyReview.sortDir = 'asc';
+  }
+  renderAgencyWorkbench();
+}
+
+function populateAgencyFilterOptions() {
+  const rows = buildAgencyReviewRows();
+  setSelectOptions(els.agencyWorkerSelect, rows.map((row) => [row.identityKey, `${row.name || '-'}${row.employeeNumber ? ` | ${row.employeeNumber}` : ''}`]), 'All employees');
+  setSelectOptions(els.agencyAgencyFilter, rows.map((row) => [normalizeIdentityToken(row.agencyId || row.agency), row.agency || row.agencyId || 'Direct']), 'All agencies');
+  setSelectOptions(els.agencyBranchFilter, rows.map((row) => [normalizeIdentityToken(row.branch), row.branch || '-']), 'All branches');
+  setSelectOptions(els.agencyDepartmentFilter, rows.map((row) => [normalizeIdentityToken(row.department), row.department || '-']).filter(([value]) => value), 'All departments');
+}
+
+function setSelectOptions(select, entries, allLabel) {
+  if (!select) return;
+  const current = select.value;
+  const unique = new Map();
+  entries.forEach(([value, label]) => {
+    if (value && !unique.has(value)) unique.set(value, label);
+  });
+  select.innerHTML = `<option value="">${escapeHtml(allLabel)}</option>` +
+    [...unique.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])))
+      .map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('');
+  if ([...unique.keys()].includes(current)) select.value = current;
+}
+
+function renderAgencyStats(rows) {
+  const totalHours = rows.reduce((sum, row) => sum + Number(row.weeklyHours || 0), 0);
+  const activeRows = rows.filter((row) => !row.removed);
+  const attendedRows = activeRows.filter((row) => row.punches.length);
+  if (els.agencyStatsEmployees) els.agencyStatsEmployees.textContent = String(rows.length);
+  if (els.agencyStatsWeekHours) els.agencyStatsWeekHours.textContent = totalHours.toFixed(2);
+  if (els.agencyStatsMissedClockOuts) els.agencyStatsMissedClockOuts.textContent = String(rows.filter((row) => row.missingClockOut).length);
+  if (els.agencyStatsMissedLunches) els.agencyStatsMissedLunches.textContent = String(rows.filter((row) => row.missingLunch).length);
+  if (els.agencyStatsLateArrivals) els.agencyStatsLateArrivals.textContent = String(rows.reduce((sum, row) => sum + Number(row.lateArrivals || 0), 0));
+  if (els.agencyStatsAttendance) els.agencyStatsAttendance.textContent = activeRows.length ? `${Math.round((attendedRows.length / activeRows.length) * 100)}%` : '0%';
+  if (els.agencyStatsMonthHours) els.agencyStatsMonthHours.textContent = totalHours.toFixed(2);
+  if (els.agencyStatsPayPeriodHours) els.agencyStatsPayPeriodHours.textContent = totalHours.toFixed(2);
+}
+
+function renderAgencyWarningBadges(warnings = []) {
+  if (!warnings.length) return '<span class="gps-badge verified">OK</span>';
+  return warnings.map((warning) => `<span class="gps-badge warning">${escapeHtml(warning)}</span>`).join(' ');
+}
+
+function ensureAgencyColumnChooser() {
+  if (!els.agencyColumnChooser) return;
+  if (!state.agencyReview.visibleColumns) {
+    state.agencyReview.visibleColumns = Object.fromEntries(AGENCY_REVIEW_COLUMNS.map(([key]) => [key, true]));
+  }
+  if (els.agencyColumnChooser.dataset.ready === 'true') return;
+  els.agencyColumnChooser.innerHTML = AGENCY_REVIEW_COLUMNS.map(([key, label]) => `
+    <label><input type="checkbox" data-agency-column="${escapeHtml(key)}" checked /> ${escapeHtml(label)}</label>
+  `).join('');
+  els.agencyColumnChooser.querySelectorAll('[data-agency-column]').forEach((input) => {
+    input.addEventListener('change', () => {
+      state.agencyReview.visibleColumns[input.dataset.agencyColumn] = input.checked;
+      applyAgencyColumnVisibility();
+    });
+  });
+  els.agencyColumnChooser.dataset.ready = 'true';
+}
+
+function applyAgencyColumnVisibility() {
+  const visible = state.agencyReview.visibleColumns || {};
+  AGENCY_REVIEW_COLUMNS.forEach(([key]) => {
+    const hide = visible[key] === false;
+    els.agencyReviewTable?.querySelectorAll(`[data-col="${CSS.escape(key)}"]`).forEach((cell) => {
+      cell.classList.toggle('column-hidden', hide);
+    });
+  });
+}
+
+async function handleAgencyDateRangeChange() {
+  const filters = getAgencyFilters();
+  if (!filters.from && !filters.to && !filters.date) {
+    state.agencyReview.rangePunchRows = null;
+    renderAgencyWorkbench();
+    return;
+  }
+  const fromValue = filters.date || filters.from;
+  const toValue = filters.date || filters.to || filters.from;
+  if (!fromValue || !toValue) {
+    renderAgencyWorkbench();
+    return;
+  }
+  const fromMs = new Date(`${fromValue}T00:00:00`).getTime();
+  const toMs = new Date(`${toValue}T23:59:59`).getTime();
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs > toMs) {
+    toast('Choose a valid Agency Export date range.', true);
+    return;
+  }
+  try {
+    const constraints = [...branchConstraints()];
+    if (isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()));
+    const rows = await fetchPunchesWithRange(constraints, fromMs, toMs);
+    state.agencyReview.deletedPunchRows = rows.filter((row) => !isActivePunchRecord(row));
+    state.agencyReview.rangePunchRows = rows.filter(isActivePunchRecord);
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not load Agency Export date range.', true);
+  }
+  renderAgencyWorkbench();
+}
+
+function openAgencyEmployeePanel(identityKey) {
+  state.agencyReview.selectedKey = identityKey;
+  state.agencyReview.activeTab = state.agencyReview.activeTab || 'overview';
+  els.agencyEmployeePanel?.classList.remove('hidden');
+  renderAgencyWorkbench();
+}
+
+function closeAgencyPanel() {
+  state.agencyReview.selectedKey = '';
+  els.agencyEmployeePanel?.classList.add('hidden');
+  renderAgencyWorkbench();
+}
+
+function switchAgencyPanelTab(tabName) {
+  state.agencyReview.activeTab = tabName || 'overview';
+  document.querySelectorAll('[data-agency-panel-tab]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.agencyPanelTab === state.agencyReview.activeTab);
+  });
+  renderAgencyPanel();
+}
+
+function getSelectedAgencyRow() {
+  const rows = state.agencyReview.filteredRows.length ? state.agencyReview.filteredRows : buildAgencyReviewRows();
+  return rows.find((row) => row.identityKey === state.agencyReview.selectedKey) || null;
+}
+
+function renderAgencyPanel() {
+  const row = getSelectedAgencyRow();
+  if (!row || !els.agencyPanelContent) return;
+  if (els.agencyPanelTitle) els.agencyPanelTitle.textContent = row.name || 'Employee';
+  if (els.agencyPanelMeta) {
+    els.agencyPanelMeta.textContent = `${row.employeeNumber || 'No employee #'} | ${row.agency || 'Direct'} | ${row.branch || '-'}`;
+  }
+  const tab = state.agencyReview.activeTab || 'overview';
+  if (tab === 'timecard') els.agencyPanelContent.innerHTML = renderAgencyTimecard(row);
+  else if (tab === 'punches') els.agencyPanelContent.innerHTML = renderAgencyTimeline(row);
+  else if (tab === 'approvals') els.agencyPanelContent.innerHTML = renderAgencyApprovals(row);
+  else if (tab === 'notes') els.agencyPanelContent.innerHTML = renderAgencyNotes(row);
+  else if (tab === 'audit') renderAgencyAudit(row);
+  else els.agencyPanelContent.innerHTML = renderAgencyOverview(row);
+  wireAgencyPanelActions(row);
+}
+
+function renderAgencyOverview(row) {
+  return `
+    <div class="stats-grid">
+      <div class="stat-card"><span>Total Hours</span><strong>${Number(row.weeklyHours || 0).toFixed(2)}</strong></div>
+      <div class="stat-card"><span>Lunch Length</span><strong>${formatMinutes(row.lunchMinutes)}</strong></div>
+      <div class="stat-card"><span>Worked Hours</span><strong>${Number(row.regularHours || 0).toFixed(2)}</strong></div>
+      <div class="stat-card"><span>Overtime</span><strong>${Number(row.overtimeHours || 0).toFixed(2)}</strong></div>
+    </div>
+    <div class="status-box">${renderAgencyWarningBadges(row.warnings)}</div>
+    ${renderAgencyTimeline(row)}
+  `;
+}
+
+function renderAgencyTimecard(row) {
+  const days = row.daySummaries.length ? row.daySummaries : buildEmptyWeekDays();
+  return `
+    <div class="mini-table-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Clock In</th><th>Lunch Out</th><th>Lunch In</th><th>Clock Out</th><th>Regular Hours</th><th>OT Hours</th><th>Status</th><th>Manager Notes</th></tr></thead>
+        <tbody>
+          ${days.map((day) => `
+            <tr>
+              <td>${escapeHtml(day.dateKey)}</td>
+              <td>${formatAgencyActionTimes(day, 'clock_in')}</td>
+              <td>${formatAgencyActionTimes(day, 'start_lunch')}</td>
+              <td>${formatAgencyActionTimes(day, 'end_lunch')}</td>
+              <td>${formatAgencyActionTimes(day, 'clock_out')}</td>
+              <td>${Number(Math.min(day.workedHours || 0, 8)).toFixed(2)}</td>
+              <td>${Number(day.overtimeHours || 0).toFixed(2)}</td>
+              <td>${renderAgencyWarningBadges(day.warnings || [])}</td>
+              <td>${escapeHtml(row.notes || '-')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAgencyTimeline(row) {
+  const groups = row.daySummaries.length ? row.daySummaries : [];
+  return `
+    <div class="form-actions">
+      <button class="primary-btn agency-add-punch-btn" type="button">Add Missing Punch</button>
+    </div>
+    <div class="agency-timeline">
+      ${groups.length ? groups.map((day) => `
+        <section class="agency-day">
+          <h4>${escapeHtml(formatLongDate(day.dateKey))}</h4>
+          ${day.punches.map((punch) => `
+            <div class="agency-punch-row">
+              <div><strong>${formatTime(punch.timestampMs)}</strong><span>${prettyAction(punch.action)}${punch.inserted ? ' | Inserted' : ''}</span></div>
+              <div class="form-actions">
+                <button class="ghost-btn agency-note-punch-btn" data-punch-id="${escapeHtml(punch.id)}" type="button">Add Note</button>
+                <button class="secondary-btn agency-edit-punch-btn" data-punch-id="${escapeHtml(punch.id)}" type="button">Edit</button>
+                <button class="danger-btn agency-delete-punch-btn" data-punch-id="${escapeHtml(punch.id)}" type="button" ${canDeletePunches() ? '' : 'disabled'}>Delete</button>
+              </div>
+            </div>
+          `).join('')}
+          <div class="tiny">Worked ${Number(day.workedHours || 0).toFixed(2)} hrs | Lunch ${formatMinutes(day.lunchMinutes || 0)} | ${renderAgencyWarningBadges(day.warnings || [])}</div>
+        </section>
+      `).join('') : '<div class="empty-state">No punches for this employee in the selected range.</div>'}
+    </div>
+  `;
+}
+
+function renderAgencyApprovals(row) {
+  const requests = (state.allMissedRequests || []).filter((request) => {
+    const ids = new Set([row.employee?.id, row.employee?.employeeId, row.employee?.workerId, row.identityKey].filter(Boolean));
+    return ids.has(request.employeeId) || normalizeName(request.name || request.employeeName || '') === normalizeName(row.name);
+  });
+  return requests.length
+    ? requests.map((request) => `<div class="person-row"><div class="person-meta"><strong>${escapeHtml(prettyAction(request.requestedAction))}</strong><span>${escapeHtml(request.reason || '-')}</span></div><span class="pill">${escapeHtml(request.status || 'pending')}</span></div>`).join('')
+    : '<div class="empty-state">No missed punch approvals found for this employee.</div>';
+}
+
+function renderAgencyNotes(row) {
+  return `
+    <div class="status-box">${escapeHtml(row.notes || 'No manager notes yet.')}</div>
+    <div class="form-actions"><button class="primary-btn agency-add-employee-note-btn" type="button">Add Employee Note</button></div>
+  `;
+}
+
+async function renderAgencyAudit(row) {
+  els.agencyPanelContent.innerHTML = '<div class="empty-state">Loading audit history...</div>';
+  const punchIds = row.punches.map((punch) => punch.id).filter(Boolean);
+  const auditRows = [];
+  try {
+    for (const punchId of punchIds) {
+      const snap = await getDocs(query(collection(db, 'punch_edits'), where('punchId', '==', punchId)));
+      snap.docs.forEach((record) => auditRows.push({ id: record.id, ...record.data() }));
+    }
+    auditRows.sort((a, b) => Number(b.editedAt?.seconds || 0) - Number(a.editedAt?.seconds || 0));
+    els.agencyPanelContent.innerHTML = auditRows.length
+      ? auditRows.map((audit) => `<div class="person-row"><div class="person-meta"><strong>${escapeHtml(audit.type || audit.action || 'edit')}</strong><span>${escapeHtml(audit.reason || audit.editReason || '-')}</span></div><span class="tiny">${escapeHtml(audit.editedBy || audit.managerName || '-')}</span></div>`).join('')
+      : '<div class="empty-state">No audit history found for this selected range.</div>';
+  } catch (error) {
+    console.error(error);
+    els.agencyPanelContent.innerHTML = '<div class="empty-state">Could not load audit history.</div>';
+  }
+}
+
+function wireAgencyPanelActions(row) {
+  els.agencyPanelContent?.querySelectorAll('.agency-edit-punch-btn').forEach((button) => {
+    button.addEventListener('click', () => editAgencyPunch(button.dataset.punchId));
+  });
+  els.agencyPanelContent?.querySelectorAll('.agency-delete-punch-btn').forEach((button) => {
+    button.addEventListener('click', () => deleteAgencyPunch(button.dataset.punchId));
+  });
+  els.agencyPanelContent?.querySelectorAll('.agency-note-punch-btn').forEach((button) => {
+    button.addEventListener('click', () => addAgencyPunchNote(button.dataset.punchId));
+  });
+  els.agencyPanelContent?.querySelector('.agency-add-punch-btn')?.addEventListener('click', () => addMissingAgencyPunch(row));
+  els.agencyPanelContent?.querySelector('.agency-add-employee-note-btn')?.addEventListener('click', () => addAgencyEmployeeNote(row));
+}
+
+async function editAgencyPunch(punchId) {
+  if (!canEditPunches()) return toast('You need edit-punch permission to edit punches.', true);
+  const punch = findAgencyPunch(punchId);
+  if (!punch) return toast('Punch not found.', true);
+  const reason = prompt('Reason required for this punch edit:');
+  if (!String(reason || '').trim()) return toast('A reason is required.', true);
+  const newDateTime = prompt('Correct time (YYYY-MM-DD HH:MM):', toLocalEditString(punch.timestampMs));
+  if (newDateTime === null) return;
+  const parsedMs = parseLocalEditString(newDateTime);
+  if (!parsedMs) return toast('Invalid date/time format.', true);
+  const newAction = normalizePunchAction(prompt('Correct punch type (clock_in, start_lunch, end_lunch, clock_out):', punch.action) || '');
+  if (!['clock_in', 'start_lunch', 'end_lunch', 'clock_out'].includes(newAction)) return toast('Invalid punch type.', true);
+  const date = new Date(parsedMs);
+  const payload = {
+    action: newAction,
+    type: newAction,
+    timestampMs: parsedMs,
+    dateKey: formatDateKey(date),
+    weekKey: formatDateKey(getMondayDate(date)),
+    editedAt: serverTimestamp(),
+    editedBy: state.profile?.name || state.me?.email || 'Manager',
+    editedByUid: state.me?.uid || '',
+    editReason: String(reason).trim(),
+    updatedAt: serverTimestamp(),
+  };
+  await writeAgencyPunchChange(punch, payload, 'edit', reason);
+}
+
+async function addAgencyPunchNote(punchId) {
+  if (!canEditPunches()) return toast('You need edit-punch permission to add notes.', true);
+  const punch = findAgencyPunch(punchId);
+  if (!punch) return toast('Punch not found.', true);
+  const note = prompt('Manager note to add:');
+  if (!String(note || '').trim()) return;
+  const notes = Array.isArray(punch.managerNotes) ? punch.managerNotes : [];
+  const payload = {
+    managerNote: String(note).trim(),
+    managerNotes: [...notes, { note: String(note).trim(), by: state.profile?.name || state.me?.email || 'Manager', atMs: Date.now() }],
+    editedAt: serverTimestamp(),
+    editedBy: state.profile?.name || state.me?.email || 'Manager',
+    updatedAt: serverTimestamp(),
+  };
+  await writeAgencyPunchChange(punch, payload, 'note', note);
+}
+
+async function deleteAgencyPunch(punchId) {
+  if (!canDeletePunches()) return toast('You need delete-punch permission to delete punches.', true);
+  const punch = findAgencyPunch(punchId);
+  if (!punch) return toast('Punch not found.', true);
+  const reason = prompt('Reason required for deleting this punch:');
+  if (!String(reason || '').trim()) return toast('A reason is required.', true);
+  if (!confirm('This will mark the punch deleted without removing history. Continue?')) return;
+  const payload = {
+    status: 'deleted',
+    active: false,
+    deletedAt: serverTimestamp(),
+    deletedBy: state.profile?.name || state.me?.email || 'Manager',
+    deletedByUid: state.me?.uid || '',
+    deleteReason: String(reason).trim(),
+    updatedAt: serverTimestamp(),
+  };
+  await writeAgencyPunchChange(punch, payload, 'delete', reason);
+}
+
+async function restoreAgencySoftDeletedPunches() {
+  const deletedRows = dedupePunches(state.agencyReview.deletedPunchRows || []);
+  if (!deletedRows.length) return toast('No soft-deleted punches are loaded for this range.', true);
+  if (!canEditPunches()) return toast('You need edit-punch permission to restore punches.', true);
+  const reason = prompt(`Restore ${deletedRows.length} soft-deleted punch(es) for this Agency Export range? Reason required:`, 'Recover soft-deleted punch for payroll review');
+  if (!String(reason || '').trim()) return toast('A reason is required to restore punches.', true);
+  if (!confirm(`Restore ${deletedRows.length} soft-deleted punch(es)? This does not delete or recreate data.`)) return;
+
+  let restored = 0;
+  for (const punch of deletedRows) {
+    const payload = {
+      active: true,
+      status: 'restored',
+      restoredAt: serverTimestamp(),
+      restoredBy: state.profile?.name || state.me?.email || 'Manager',
+      restoredByUid: state.me?.uid || '',
+      restoreReason: String(reason).trim(),
+      updatedAt: serverTimestamp(),
+    };
+    try {
+      await addDoc(collection(db, 'punch_edits'), {
+        ...branchPayload(punch.siteId || getCurrentSiteId()),
+        punchId: punch.id,
+        type: 'restore',
+        original: punch,
+        updated: payload,
+        reason: String(reason).trim(),
+        editedBy: state.profile?.name || state.me?.email || 'Manager',
+        managerName: state.profile?.name || state.me?.email || 'Manager',
+        editedAt: serverTimestamp(),
+      });
+      await updateDoc(doc(db, 'punches', punch.id), payload);
+      await logAudit('punch_restored', 'punch', punch.id, punch, payload, String(reason).trim());
+      restored += 1;
+    } catch (error) {
+      console.error('Could not restore punch', punch.id, error);
+    }
+  }
+
+  state.agencyReview.deletedPunchRows = [];
+  toast(`Restored ${restored} soft-deleted punch(es).`);
+  await refreshAgencyPunchRangeAfterRecovery();
+}
+
+async function refreshAgencyPunchRangeAfterRecovery() {
+  const filters = getAgencyFilters();
+  if (filters.date || filters.from || filters.to) {
+    await handleAgencyDateRangeChange();
+    return;
+  }
+  const rows = await loadCompatibleWeeklyPunchRows(state.selectedWeekStart);
+  state.agencyReview.deletedPunchRows = rows.filter((row) => !isActivePunchRecord(row));
+  state.selectedWeekPunchRows = rows.filter(isActivePunchRecord);
+  renderDerivedTimesheets();
+  populateAgencyWorkerSelect();
+  renderAgencyPreview();
+  renderAgencyWorkbench();
+}
+
+async function addMissingAgencyPunch(row) {
+  if (!canEditPunches()) return toast('You need edit-punch permission to insert punches.', true);
+  const action = normalizePunchAction(prompt('Missing punch type (clock_in, start_lunch, end_lunch, clock_out):', 'clock_in') || '');
+  if (!['clock_in', 'start_lunch', 'end_lunch', 'clock_out'].includes(action)) return toast('Invalid punch type.', true);
+  const dateTime = prompt('Missing punch time (YYYY-MM-DD HH:MM):', toLocalEditString(Date.now()));
+  if (dateTime === null) return;
+  const timestampMs = parseLocalEditString(dateTime);
+  if (!timestampMs) return toast('Invalid date/time format.', true);
+  const reason = prompt('Reason required for inserted punch:', `Forgot ${prettyAction(action)}`);
+  if (!String(reason || '').trim()) return toast('A reason is required.', true);
+  const date = new Date(timestampMs);
+  const employee = row.employee || {};
+  const payload = {
+    ...branchPayload(employee.assignedSiteId || employee.siteId || getCurrentSiteId()),
+    companyId: getCurrentCompanyId(),
+    agencyId: row.agencyId || employee.agencyId || state.agencyId || '',
+    employeeId: employee.employeeId || employee.id || row.employeeId || '',
+    workerId: employee.workerId || employee.id || row.workerId || '',
+    employeeNumber: row.employeeNumber || employee.employeeNumber || '',
+    name: row.name,
+    workerName: row.name,
+    employeeName: row.name,
+    nameKey: normalizeName(row.name),
+    action,
+    type: action,
+    timestampMs,
+    dateKey: formatDateKey(date),
+    weekKey: formatDateKey(getMondayDate(date)),
+    source: 'manager_inserted',
+    inserted: true,
+    insertedReason: String(reason).trim(),
+    managerName: state.profile?.name || state.me?.email || 'Manager',
+    createdBy: state.me?.uid || '',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  try {
+    const ref = await addDoc(collection(db, 'punches'), payload);
+    await addDoc(collection(db, 'punch_edits'), {
+      ...branchPayload(payload.siteId),
+      punchId: ref.id,
+      type: 'insert',
+      original: null,
+      updated: payload,
+      reason: String(reason).trim(),
+      editedBy: state.profile?.name || state.me?.email || 'Manager',
+      managerName: state.profile?.name || state.me?.email || 'Manager',
+      editedAt: serverTimestamp(),
+    });
+    await logAudit('punch_inserted', 'punch', ref.id, {}, payload, String(reason).trim());
+    toast('Missing punch inserted.');
+    if (Array.isArray(state.agencyReview.rangePunchRows)) {
+      state.agencyReview.rangePunchRows.push(normalizePunchRecordForDisplay({ id: ref.id, ...payload, timestampMs }));
+    }
+    renderAgencyWorkbench();
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not insert punch.', true);
+  }
+}
+
+async function addAgencyEmployeeNote(row) {
+  if (!canEditPunches()) return toast('You need edit-punch permission to add employee notes.', true);
+  const employee = row.employee;
+  if (!employee?.id) return toast('No employee profile found for this note.', true);
+  const note = prompt('Employee manager note:');
+  if (!String(note || '').trim()) return;
+  const notes = Array.isArray(employee.managerNotes) ? employee.managerNotes : [];
+  const payload = {
+    managerNotes: [...notes, { note: String(note).trim(), by: state.profile?.name || state.me?.email || 'Manager', atMs: Date.now() }],
+    notes: [employee.notes, String(note).trim()].filter(Boolean).join('\n'),
+    updatedAt: serverTimestamp(),
+  };
+  try {
+    await updateDoc(doc(db, 'employees', employee.id), payload);
+    await logAudit('employee_note_added', 'employee', employee.id, employee, payload, String(note).trim());
+    toast('Employee note added.');
+    Object.assign(employee, payload);
+    renderAgencyWorkbench();
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not add employee note.', true);
+  }
+}
+
+async function writeAgencyPunchChange(punch, payload, type, reason) {
+  try {
+    await addDoc(collection(db, 'punch_edits'), {
+      ...branchPayload(punch.siteId || getCurrentSiteId()),
+      punchId: punch.id,
+      type,
+      original: punch,
+      updated: payload,
+      reason: String(reason || '').trim(),
+      editedBy: state.profile?.name || state.me?.email || 'Manager',
+      managerName: state.profile?.name || state.me?.email || 'Manager',
+      editedAt: serverTimestamp(),
+    });
+    await updateDoc(doc(db, 'punches', punch.id), payload);
+    await logAudit(`punch_${type === 'delete' ? 'deleted' : type === 'note' ? 'note_added' : 'edited'}`, 'punch', punch.id, punch, payload, String(reason || '').trim());
+    replaceAgencyRangePunch(punch.id, { ...punch, ...payload });
+    toast(type === 'delete' ? 'Punch marked deleted.' : 'Punch updated.');
+    renderAgencyWorkbench();
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'Could not update punch.', true);
+  }
+}
+
+function replaceAgencyRangePunch(punchId, updated) {
+  if (!Array.isArray(state.agencyReview.rangePunchRows)) return;
+  state.agencyReview.rangePunchRows = state.agencyReview.rangePunchRows
+    .map((punch) => punch.id === punchId ? normalizePunchRecordForDisplay(updated) : punch)
+    .filter(isActivePunchRecord);
+}
+
+function findAgencyPunch(punchId) {
+  return getAgencySourcePunches().find((punch) => punch.id === punchId)
+    || state.selectedWeekPunchRows.find((punch) => punch.id === punchId)
+    || null;
+}
+
+function openAgencyQuickEdit(identityKey) {
+  openAgencyEmployeePanel(identityKey);
+  state.agencyReview.activeTab = 'punches';
+  switchAgencyPanelTab('punches');
+}
+
+function exportAgencyReviewCsv() {
+  const rows = agencyExportRows();
+  downloadCsv(`agency-export-${formatDateKey(new Date())}.csv`, rows);
+}
+
+function exportAgencyReviewExcel() {
+  const rows = agencyExportRows();
+  const html = `<table>${rows.map((row) => `<tr>${row.map((value) => `<td>${escapeHtml(value)}</td>`).join('')}</tr>`).join('')}</table>`;
+  downloadBlob(`agency-export-${formatDateKey(new Date())}.xls`, html, 'application/vnd.ms-excel;charset=utf-8');
+}
+
+function exportAgencyReviewPdf() {
+  const rows = agencyExportRows();
+  const win = window.open('', '_blank', 'width=1100,height=800');
+  if (!win) return toast('Pop-up blocked. Allow pop-ups to export PDF.', true);
+  win.document.write(`<!doctype html><html><head><title>Agency Export</title><style>body{font-family:Arial,sans-serif;margin:24px;color:#111}table{border-collapse:collapse;width:100%}td,th{border:1px solid #bbb;padding:7px;text-align:left}th{background:#f1f4f8}</style></head><body><h1>Agency Export</h1><table>${rows.map((row, index) => `<tr>${row.map((value) => index ? `<td>${escapeHtml(value)}</td>` : `<th>${escapeHtml(value)}</th>`).join('')}</tr>`).join('')}</table><script>window.print();</script></body></html>`);
+  win.document.close();
+}
+
+function agencyExportRows() {
+  const headers = ['Employee', 'Employee Number', 'Agency', 'Branch', 'Department', 'Punches', 'Regular Hours', 'OT Hours', 'Status', 'Warnings', 'Last Punch'];
+  return [headers, ...state.agencyReview.filteredRows.map((row) => [
+    row.name,
+    row.employeeNumber,
+    row.agency,
+    row.branch,
+    row.department,
+    Number(row.punchCount || 0),
+    Number(row.regularHours || 0).toFixed(2),
+    Number(row.overtimeHours || 0).toFixed(2),
+    row.statusLabel,
+    row.warnings.join(' | '),
+    row.lastPunchText,
+  ])];
+}
+
+function downloadBlob(filename, content, type) {
+  const url = URL.createObjectURL(new Blob([`\uFEFF${content}`], { type }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function handleAgencyKeyboardShortcuts(event) {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && !document.querySelector('#agencyTab.hidden')) {
+    event.preventDefault();
+    els.agencySearchInput?.focus();
+  }
+  if (event.key === 'Escape' && !els.agencyEmployeePanel?.classList.contains('hidden')) {
+    closeAgencyPanel();
+  }
+}
+
+function buildEmptyWeekDays() {
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(state.selectedWeekStart);
+    date.setDate(date.getDate() + index);
+    return { dateKey: formatDateKey(date), actionTimes: {}, workedHours: 0, overtimeHours: 0, lunchMinutes: 0, warnings: [] };
+  });
+}
+
+function formatAgencyActionTimes(day, action) {
+  const values = day.actionTimes?.[action] || [];
+  return values.length ? values.map(formatTime).join('<br>') : '-';
+}
+
+function formatMinutes(minutes) {
+  const total = Number(minutes || 0);
+  const hours = Math.floor(total / 60);
+  const mins = total % 60;
+  return hours ? `${hours}h ${mins}m` : `${mins}m`;
+}
+
+function formatLongDate(dateKey) {
+  const date = new Date(`${dateKey}T12:00:00`);
+  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+}
+
+function getAgencySelectableWorkers() {
+  const merged = new Map();
+  const addWorker = (worker) => {
+    if (!worker?.identityKey) return;
+    const existing = merged.get(worker.identityKey);
+    if (!existing) {
+      merged.set(worker.identityKey, worker);
+      return;
+    }
+    existing.row = {
+      ...worker.row,
+      ...existing.row,
+      punchCount: Number(existing.row?.punchCount || 0) + Number(worker.row?.punchCount || 0),
+      weeklyHours: Math.max(Number(existing.row?.weeklyHours || 0), Number(worker.row?.weeklyHours || 0)),
+      dailyTotals: existing.row?.dailyTotals || worker.row?.dailyTotals || {},
+    };
+  };
+
+  getCanonicalPayrollWorkers().forEach(addWorker);
+  buildAgencyReviewRows().forEach((row) => {
+    addWorker({
+      identityKey: row.identityKey,
+      name: row.name || row.workerName || '-',
+      agencyId: row.agencyId || '',
+      branchId: row.branch || row.branchId || row.siteId || '',
+      row: agencyReviewRowToLegacySheetRow(row),
+    });
+  });
+
+  return [...merged.values()].sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
+}
+
+function agencyReviewRowToLegacySheetRow(row) {
+  const dailyTotals = {};
+  (row.daySummaries || []).forEach((day) => {
+    dailyTotals[day.dateKey] = {
+      clock_in: formatAgencyActionTimesText(day, 'clock_in'),
+      start_lunch: formatAgencyActionTimesText(day, 'start_lunch'),
+      end_lunch: formatAgencyActionTimesText(day, 'end_lunch'),
+      clock_out: formatAgencyActionTimesText(day, 'clock_out'),
+      hours: Number(day.workedHours || 0),
+    };
+  });
+  return {
+    id: row.identityKey,
+    identityKey: row.identityKey,
+    name: row.name || '-',
+    workerName: row.name || '-',
+    agencyId: row.agencyId || '',
+    siteId: row.branch || getCurrentSiteId(),
+    branchId: row.branch || getCurrentSiteId(),
+    weekKey: formatDateKey(state.selectedWeekStart),
+    status: row.statusLabel || 'open',
+    weeklyHours: Number(row.weeklyHours || 0),
+    daysWorked: Number(row.daysWorked || 0),
+    dailyTotals,
+    punchCount: Number(row.punches?.length || 0),
+    managerSignedBy: '',
+    managerSignedAt: null,
+  };
+}
+
+function formatAgencyActionTimesText(day, action) {
+  const values = day.actionTimes?.[action] || [];
+  return values.length ? values.map(formatTime).join(' | ') : '';
+}
+
 function populateAgencyWorkerSelect() {
-  if (!els.agencyWorkerSelect) return;
+  if (!els.agencyWorkerSelect && !els.agencyLegacyWorkerSelect) return;
 
-  const current = els.agencyWorkerSelect.value;
-  const workers = getCanonicalPayrollWorkers();
+  const current = els.agencyWorkerSelect?.value || '';
+  const legacyCurrent = els.agencyLegacyWorkerSelect?.value || '';
+  const workers = getAgencySelectableWorkers();
+  const options = workers.map((worker) => {
+    const row = worker.row;
+    const details = [agencyLabel(row.agencyId), row.siteId].filter(Boolean).join(' · ');
+    return `<option value="${escapeHtml(worker.identityKey)}">${escapeHtml(worker.name)}${details ? ` (${escapeHtml(details)})` : ''}</option>`;
+  }).join('');
 
-  els.agencyWorkerSelect.innerHTML = '<option value="">Select a worker</option>' +
-    workers.map((worker) => {
-      const row = worker.row;
-      const details = [agencyLabel(row.agencyId), row.siteId].filter(Boolean).join(' · ');
-      return `<option value="${escapeHtml(worker.identityKey)}">${escapeHtml(worker.name)}${details ? ` (${escapeHtml(details)})` : ''}</option>`;
-    }).join('');
-
-  if (workers.some((worker) => worker.identityKey === current)) {
-    els.agencyWorkerSelect.value = current;
+  if (els.agencyWorkerSelect) {
+    els.agencyWorkerSelect.innerHTML = '<option value="">All employees</option>' + options;
+    if (workers.some((worker) => worker.identityKey === current)) els.agencyWorkerSelect.value = current;
+  }
+  if (els.agencyLegacyWorkerSelect) {
+    els.agencyLegacyWorkerSelect.innerHTML = '<option value="">Select a worker</option>' + options;
+    if (workers.some((worker) => worker.identityKey === legacyCurrent)) els.agencyLegacyWorkerSelect.value = legacyCurrent;
   }
 
   runPayrollCanonicalConsoleChecks(workers);
 }
 
 function renderAgencyPreview() {
-  if (!els.agencyPreview || !els.agencyWorkerSelect) return;
+  if (!els.agencyPreview || !els.agencyLegacyWorkerSelect) return;
 
-  const selectedWorkerKey = els.agencyWorkerSelect.value;
+  const selectedWorkerKey = els.agencyLegacyWorkerSelect.value;
   if (!selectedWorkerKey) {
     els.agencyPreview.innerHTML = '<div class="empty-state">Choose a worker and click Preview Sheet.</div>';
     return;
   }
 
   const weekKey = formatDateKey(state.selectedWeekStart);
-  const worker = getCanonicalPayrollWorkers().find((item) => item.identityKey === selectedWorkerKey);
+  const worker = getAgencySelectableWorkers().find((item) => item.identityKey === selectedWorkerKey);
   const row = worker?.row && worker.row.weekKey === weekKey ? worker.row : null;
 
   if (!row) {

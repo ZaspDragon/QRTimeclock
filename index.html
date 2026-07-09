@@ -945,31 +945,153 @@
       </section>
 
       <section id="agencyTab" class="tab-panel hidden">
-        <div class="card">
-          <div class="card-head">
-            <h2>Temp Agency Export</h2>
-            <p>Preview exactly what the agency will receive, then print or save it as a PDF.</p>
+        <div class="card agency-workbench-card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Agency Export</h2>
+              <p>Search, review, edit, and export employee time without leaving this page.</p>
+            </div>
+            <div class="form-actions">
+              <button id="agencyExportCsvBtn" class="secondary-btn" type="button">CSV</button>
+              <button id="agencyExportExcelBtn" class="secondary-btn" type="button">Excel</button>
+              <button id="agencyPrintBtn" class="secondary-btn" type="button">PDF</button>
+            </div>
           </div>
 
-          <div class="grid-form compact-form" style="margin-bottom:16px;">
+          <div class="agency-sticky-tools">
             <label>
-              <span>Worker</span>
-              <select id="agencyWorkerSelect">
-                <option value="">Select a worker</option>
-              </select>
+              <span>Instant search</span>
+              <input id="agencySearchInput" type="search" placeholder="Name, number, agency, branch, department, PIN, site, notes" autocomplete="off" />
             </label>
-
-            <div class="form-actions full-width">
-              <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
-              <button id="agencyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
+            <div class="agency-filter-grid">
+              <label><span>Date</span><input id="agencyDateFilter" type="date" /></label>
+              <label><span>From</span><input id="agencyFromDateFilter" type="date" /></label>
+              <label><span>To</span><input id="agencyToDateFilter" type="date" /></label>
+              <label>
+                <span>Employee</span>
+                <select id="agencyWorkerSelect">
+                  <option value="">All employees</option>
+                </select>
+              </label>
+              <label><span>Agency</span><select id="agencyAgencyFilter"><option value="">All agencies</option></select></label>
+              <label><span>Branch</span><select id="agencyBranchFilter"><option value="">All branches</option></select></label>
+              <label><span>Department</span><select id="agencyDepartmentFilter"><option value="">All departments</option></select></label>
+              <label>
+                <span>Status</span>
+                <select id="agencyStatusFilter">
+                  <option value="">All statuses</option>
+                  <option value="complete">Complete</option>
+                  <option value="missing">Missing punches</option>
+                  <option value="open">Open</option>
+                  <option value="signed">Signed</option>
+                  <option value="removed">Removed workers</option>
+                </select>
+              </label>
+              <label><span>Page size</span><select id="agencyPageSizeSelect"><option>10</option><option selected>25</option><option>50</option><option>100</option></select></label>
             </div>
+            <div class="agency-toggle-row">
+              <label><input id="agencyMissingClockOutFilter" type="checkbox" /> Missing Clock Out</label>
+              <label><input id="agencyMissingLunchFilter" type="checkbox" /> Missing Lunch</label>
+              <label><input id="agencyOvertimeFilter" type="checkbox" /> Overtime</label>
+              <label><input id="agencyRemovedFilter" type="checkbox" /> Removed Workers</label>
+            </div>
+            <details class="agency-column-chooser">
+              <summary>Columns</summary>
+              <div id="agencyColumnChooser" class="agency-toggle-row"></div>
+            </details>
           </div>
 
-          <div id="agencyPreviewWrap" class="mini-table-wrap">
-            <div id="agencyPreview" style="padding:18px;">
-              <div class="empty-state">Choose a worker and click Preview Sheet.</div>
-            </div>
+          <div class="stats-grid agency-stats-grid">
+            <div class="stat-card"><span>Filtered employees</span><strong id="agencyStatsEmployees">0</strong></div>
+            <div class="stat-card"><span>Hours this week</span><strong id="agencyStatsWeekHours">0.00</strong></div>
+            <div class="stat-card"><span>Missed clock outs</span><strong id="agencyStatsMissedClockOuts">0</strong></div>
+            <div class="stat-card"><span>Missed lunches</span><strong id="agencyStatsMissedLunches">0</strong></div>
+            <div class="stat-card"><span>Late arrivals</span><strong id="agencyStatsLateArrivals">0</strong></div>
+            <div class="stat-card"><span>Attendance %</span><strong id="agencyStatsAttendance">0%</strong></div>
+            <div class="stat-card"><span>This month</span><strong id="agencyStatsMonthHours">0.00</strong></div>
+            <div class="stat-card"><span>Pay period</span><strong id="agencyStatsPayPeriodHours">0.00</strong></div>
           </div>
+          <div id="agencyCoverageStatus" class="status-box">Payroll coverage check will run after punches load.</div>
+          <div class="form-actions agency-recovery-actions">
+            <button id="agencyRestoreDeletedBtn" class="danger-btn" type="button" disabled>Restore Soft-Deleted Punches</button>
+            <span id="agencyRecoveryStatus" class="tiny">No soft-deleted punches loaded for this range.</span>
+          </div>
+
+          <div class="agency-layout">
+            <div>
+              <div class="mini-table-wrap tall agency-table-wrap">
+                <table id="agencyReviewTable" class="agency-review-table">
+                  <thead>
+                    <tr>
+                      <th data-col="name" data-sort="name">Employee</th>
+                      <th data-col="employeeNumber" data-sort="employeeNumber">Emp #</th>
+                      <th data-col="agency" data-sort="agency">Agency</th>
+                      <th data-col="branch" data-sort="branch">Branch</th>
+                      <th data-col="department" data-sort="department">Department</th>
+                      <th data-col="weeklyHours" data-sort="weeklyHours">Hours</th>
+                      <th data-col="punchCount" data-sort="punchCount">Punches</th>
+                      <th data-col="overtimeHours" data-sort="overtimeHours">OT</th>
+                      <th data-col="status" data-sort="status">Status</th>
+                      <th data-col="lastPunch" data-sort="lastPunch">Last punch</th>
+                      <th data-col="warnings">Warnings</th>
+                    </tr>
+                  </thead>
+                  <tbody id="agencyReviewBody">
+                    <tr><td colspan="11">No employees loaded.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="agency-pagination">
+                <button id="agencyPrevPageBtn" class="ghost-btn" type="button">Prev</button>
+                <span id="agencyPageInfo" class="tiny">Page 1 of 1</span>
+                <button id="agencyNextPageBtn" class="ghost-btn" type="button">Next</button>
+                <button id="agencyLoadMoreEmployeesBtn" class="secondary-btn" type="button">Load More Roster</button>
+              </div>
+              <div id="agencyRosterPageStatus" class="tiny">Roster loads in safe pages.</div>
+            </div>
+
+            <aside id="agencyEmployeePanel" class="agency-employee-panel hidden">
+              <div class="agency-panel-head">
+                <div>
+                  <h3 id="agencyPanelTitle">Employee</h3>
+                  <p id="agencyPanelMeta">Select an employee to review time.</p>
+                </div>
+                <button id="agencyPanelCloseBtn" class="ghost-btn" type="button">Close</button>
+              </div>
+              <div class="agency-panel-tabs">
+                <button class="tab active" data-agency-panel-tab="overview" type="button">Overview</button>
+                <button class="tab" data-agency-panel-tab="timecard" type="button">Timecard</button>
+                <button class="tab" data-agency-panel-tab="punches" type="button">Punches</button>
+                <button class="tab" data-agency-panel-tab="approvals" type="button">Approvals</button>
+                <button class="tab" data-agency-panel-tab="notes" type="button">Notes</button>
+                <button class="tab" data-agency-panel-tab="audit" type="button">Audit History</button>
+              </div>
+              <div id="agencyPanelContent" class="agency-panel-content"></div>
+            </aside>
+          </div>
+
+          <details class="agency-print-preview">
+            <summary>Legacy agency sheet preview</summary>
+            <div class="grid-form compact-form" style="margin:16px 0;">
+              <label>
+                <span>Worker</span>
+                <select id="agencyLegacyWorkerSelect">
+                  <option value="">Select a worker</option>
+                </select>
+              </label>
+
+              <div class="form-actions full-width">
+                <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
+                <button id="agencyLegacyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
+              </div>
+            </div>
+
+            <div id="agencyPreviewWrap" class="mini-table-wrap">
+              <div id="agencyPreview" style="padding:18px;">
+                <div class="empty-state">Choose a worker and click Preview Sheet.</div>
+              </div>
+            </div>
+          </details>
         </div>
       </section>
     </section>
