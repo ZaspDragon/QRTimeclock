@@ -79,6 +79,10 @@ const state = {
   duplicateGroups: [],
   loggedWorkerNameDiagnostics: new Set(),
   loggedPayrollCanonicalChecks: new Set(),
+  firestoreReadCounters: {},
+  employeeListCache: new Map(),
+  weeklyDataCache: new Map(),
+  loadedTabs: new Set(),
   managerTimeLookup: null,
   agencyReview: {
     page: 1,
@@ -104,6 +108,39 @@ const state = {
   workerLocation: { locationStatus: 'not_requested' },
   siteContext: buildLegacySiteContext(),
 };
+
+const EMPLOYEE_CACHE_TTL_MS = 10 * 60 * 1000;
+const WEEKLY_CACHE_TTL_MS = 2 * 60 * 1000;
+const DEV_READ_COUNTERS_ENABLED = location.hostname === 'localhost'
+  || location.hostname === '127.0.0.1'
+  || location.hostname.endsWith('.github.io');
+
+function resetFirestoreReadCounter(scope) {
+  if (!DEV_READ_COUNTERS_ENABLED || !scope) return;
+  state.firestoreReadCounters[scope] = 0;
+  console.info(`[QRTimeclock Firestore reads] ${scope}: start`);
+}
+
+function countFirestoreReads(scope, snapshotOrCount) {
+  if (!DEV_READ_COUNTERS_ENABLED || !scope) return;
+  const count = typeof snapshotOrCount === 'number'
+    ? snapshotOrCount
+    : Number(snapshotOrCount?.docs?.length || 0);
+  state.firestoreReadCounters[scope] = Number(state.firestoreReadCounters[scope] || 0) + count;
+  console.info(`[QRTimeclock Firestore reads] ${scope}: +${count}, total ${state.firestoreReadCounters[scope]}`);
+}
+
+async function getDocsCounted(queryRef, scope) {
+  const snap = await getDocs(queryRef);
+  countFirestoreReads(scope, snap);
+  return snap;
+}
+
+async function getDocCounted(docRef, scope) {
+  const snap = await getDoc(docRef);
+  countFirestoreReads(scope, snap.exists() ? 1 : 0);
+  return snap;
+}
 
 const els = {
   workerNameInput: document.getElementById('workerNameInput'),
@@ -335,6 +372,7 @@ function applyPhase1ShellPolish() {
 }
 
 async function init() {
+  resetFirestoreReadCounter('startup');
   applyPhase1ShellPolish();
   wireEvents();
   setupBranchSelectors();
@@ -385,6 +423,7 @@ async function init() {
     if (!user) {
       state.me = null;
       state.profile = null;
+      state.loadedTabs.clear();
       showLoggedOut();
       return;
     }
@@ -392,7 +431,7 @@ async function init() {
     try {
       if (state.creatingPendingProfile) return;
       state.me = user;
-      const profileSnap = await getDoc(doc(db, 'users', user.uid));
+      const profileSnap = await getDocCounted(doc(db, 'users', user.uid), 'startup');
 
       if (!profileSnap.exists()) {
         state.profile = normalizeUserProfile({
@@ -464,7 +503,7 @@ async function init() {
       // Load company doc if companyId exists
       if (state.companyId) {
         try {
-          const compSnap = await getDoc(doc(db, 'companies', state.companyId));
+          const compSnap = await getDocCounted(doc(db, 'companies', state.companyId), 'startup');
           state.companyDoc = compSnap.exists() ? compSnap.data() : null;
         } catch (_) {
           state.companyDoc = null;
@@ -477,11 +516,6 @@ async function init() {
       renderSiteSettingsForm();
       if (canEditPunches()) {
         attachManagerLiveViews();
-        attachTimesheetView();
-        populateAgencyWorkerSelect();
-        renderAgencyPreview();
-        renderAgencyWorkbench();
-        loadAgencyEmployeePage({ reset: true });
       }
       if (canManageUsers()) {
         attachUsersViewIfAdmin();
@@ -786,18 +820,81 @@ function branchPayload(siteId = getCurrentSiteId()) {
   };
 }
 
+function employeeCacheKey({ siteId = getCurrentSiteId(), agencyId = '', status = '', collectionName = 'employees' } = {}) {
+  return [
+    collectionName,
+    getCurrentCompanyId(),
+    normalizeSiteId(siteId),
+    normalizeIdentityToken(agencyId),
+    String(status || '').toLowerCase()
+  ].join('|');
+}
+
+function readSessionEmployeeCache(key) {
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(`qrTimeclock:employeeCache:${key}`) || 'null');
+    if (!cached || Date.now() - Number(cached.savedAt || 0) > EMPLOYEE_CACHE_TTL_MS) return null;
+    return Array.isArray(cached.rows) ? cached.rows : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeSessionEmployeeCache(key, rows) {
+  try {
+    sessionStorage.setItem(`qrTimeclock:employeeCache:${key}`, JSON.stringify({
+      savedAt: Date.now(),
+      rows
+    }));
+  } catch (_) {}
+}
+
+function invalidateEmployeeCaches() {
+  state.employeeListCache.clear();
+  state.weeklyDataCache.clear();
+  try {
+    Object.keys(sessionStorage)
+      .filter((key) => key.startsWith('qrTimeclock:employeeCache:'))
+      .forEach((key) => sessionStorage.removeItem(key));
+  } catch (_) {}
+}
+
+async function loadBranchEmployees({ siteId = getCurrentSiteId(), agencyId = isAgencyUser() ? agencyScopeId() : '', status = '', force = false, scope = 'employees' } = {}) {
+  const cacheKey = employeeCacheKey({ siteId, agencyId, status });
+  const cached = state.employeeListCache.get(cacheKey);
+  if (!force && cached && Date.now() - cached.savedAt < EMPLOYEE_CACHE_TTL_MS) return cached.rows;
+
+  if (!force) {
+    const sessionRows = readSessionEmployeeCache(cacheKey);
+    if (sessionRows) {
+      state.employeeListCache.set(cacheKey, { savedAt: Date.now(), rows: sessionRows });
+      return sessionRows;
+    }
+  }
+
+  const constraints = [
+    ...branchConstraints(siteId),
+  ];
+  if (status) constraints.push(where('status', '==', status));
+  if (agencyId) constraints.push(where('agencyId', '==', agencyId));
+
+  const snap = await getDocsCounted(query(collection(db, 'employees'), ...constraints), scope);
+  const rows = snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  state.employeeListCache.set(cacheKey, { savedAt: Date.now(), rows });
+  writeSessionEmployeeCache(cacheKey, rows);
+  return rows;
+}
+
 async function loadPublicEmployees() {
   try {
-    const constraints = [
-      ...branchConstraints(getPublicSiteId()),
-      where('status', '==', 'active'),
-    ];
-
-    const q = query(collection(db, 'employees'), ...constraints);
-    const snap = await getDocs(q);
-    const activeEmployees = snap.docs
-      .map((d) => ({ id: d.id, ...d.data() }))
-      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    const activeEmployees = await loadBranchEmployees({
+      siteId: getPublicSiteId(),
+      status: 'active',
+      agencyId: '',
+      scope: 'startup'
+    });
     state.publicEmployeeRecords = activeEmployees;
     state.publicEmployees = collapseDuplicateEmployees(activeEmployees);
   } catch (error) {
@@ -1097,7 +1194,7 @@ async function loadSiteContext() {
   const siteId = state.siteContext.siteId;
   if (!siteId) return;
   try {
-    const snapshot = await getDoc(doc(db, 'sites', siteId));
+    const snapshot = await getDocCounted(doc(db, 'sites', siteId), 'startup');
     if (!snapshot.exists()) return;
     const site = snapshot.data();
     state.siteContext = {
@@ -1251,6 +1348,7 @@ function positiveNumberOrDefault(value, fallback) {
 
 async function handleWorkerPunch(action) {
   if (state.workerPunchSaving) return;
+  resetFirestoreReadCounter('Put Away save');
   let emp = state.workerEmployee;
   const typedName = prettifyHumanName(els.workerNameInput?.value.trim() || '');
 
@@ -1327,6 +1425,7 @@ async function handleWorkerPunch(action) {
       if (!existingEmployee) {
         newPayload.createdAt = serverTimestamp();
         await setDoc(doc(db, 'employees', employeeId), newPayload, { merge: true });
+        invalidateEmployeeCaches();
       }
 
       emp = { id: employeeId, ...existingEmployee, ...newPayload };
@@ -1346,7 +1445,7 @@ async function handleWorkerPunch(action) {
     } catch (error) {
       console.warn('Auto-create employee skipped:', error.message);
       const identityHash = await hashIdentityKey(employeeScopeKey(emp));
-      const existingSnap = await getDoc(doc(db, 'employees', `auto_${identityHash.slice(0, 24)}`));
+      const existingSnap = await getDocCounted(doc(db, 'employees', `auto_${identityHash.slice(0, 24)}`), 'Put Away save');
       emp = existingSnap.exists()
         ? { id: existingSnap.id, ...existingSnap.data() }
         : { name: emp.name, nameKey: normalizeName(emp.name), employeeId: '', employeeNumber: '' };
@@ -1551,6 +1650,7 @@ async function showWorkerMoreTime() {
 }
 
 async function lookupPublicWorkerTimeRange(selectedEmployee = null) {
+  resetFirestoreReadCounter('History search');
   const employee = selectedEmployee || getSelectedWorkerByName();
   if (!employee) return;
   const range = readDateRange(els.workerTimeFromInput, els.workerTimeToInput);
@@ -1661,7 +1761,7 @@ async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {})
     const mergedConstraints = state.me && isManager()
       ? [where('mergedInto', '==', primaryId)]
       : [where('status', '==', 'merged'), where('mergedInto', '==', primaryId)];
-    const mergedSnapshot = await getDocs(query(collection(db, 'employees'), ...mergedConstraints));
+    const mergedSnapshot = await getDocsCounted(query(collection(db, 'employees'), ...mergedConstraints), options.scope || 'History search');
     mergedSnapshot.docs.forEach((record) => {
       workerIds.add(record.id);
       directWorkerIds.add(record.id);
@@ -1742,7 +1842,8 @@ function getCompatibleWorkerRecords(employee) {
 }
 
 async function fetchPunchesWithRange(baseConstraints, fromMs, toMs, options = {}) {
-  const includeLegacyTimestampFallback = options.includeLegacyTimestampFallback !== false;
+  const includeLegacyTimestampFallback = options.includeLegacyTimestampFallback === true;
+  const scope = options.scope || 'History search';
   const rows = [];
   try {
     const rangedQuery = query(
@@ -1751,7 +1852,7 @@ async function fetchPunchesWithRange(baseConstraints, fromMs, toMs, options = {}
       where('timestampMs', '>=', fromMs),
       where('timestampMs', '<=', toMs)
     );
-    const snapshot = await getDocs(rangedQuery);
+    const snapshot = await getDocsCounted(rangedQuery, scope);
     rows.push(...snapshot.docs.map((record) => normalizePunchRecordForDisplay({ id: record.id, ...record.data() })));
   } catch (error) {
     if (!['failed-precondition', 'permission-denied'].includes(error.code)) throw error;
@@ -1759,7 +1860,7 @@ async function fetchPunchesWithRange(baseConstraints, fromMs, toMs, options = {}
 
   if (includeLegacyTimestampFallback && baseConstraints.length) {
     try {
-      const snapshot = await getDocs(query(collection(db, 'punches'), ...baseConstraints));
+      const snapshot = await getDocsCounted(query(collection(db, 'punches'), ...baseConstraints), scope);
       rows.push(...snapshot.docs
         .map((record) => normalizePunchRecordForDisplay({ id: record.id, ...record.data() }))
         .filter((punch) => Number(punch.timestampMs || 0) >= fromMs && Number(punch.timestampMs || 0) <= toMs));
@@ -2430,6 +2531,8 @@ function renderManagerBranchSwitcher() {
       }
       state.siteId = nextBranch;
       sessionStorage.setItem(`managerActiveBranch:${state.profile?.uid || ''}`, nextBranch);
+      invalidateEmployeeCaches();
+      state.loadedTabs.clear();
       refreshManagerDashboardForBranch();
     });
     chip.insertBefore(selector, els.signOutBtn || null);
@@ -2446,9 +2549,6 @@ function refreshManagerDashboardForBranch() {
   renderSiteSettingsForm();
   if (canEditPunches()) {
     attachManagerLiveViews();
-    attachTimesheetView();
-    populateAgencyWorkerSelect();
-    renderAgencyPreview();
   }
   if (canManageUsers()) {
     attachUsersViewIfAdmin();
@@ -2581,6 +2681,31 @@ function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach((panel) => {
     panel.classList.toggle('hidden', panel.id !== tabId);
   });
+
+  ensureTabDataLoaded(tabId);
+}
+
+function ensureTabDataLoaded(tabId) {
+  if (tabId === 'timesheetsTab') {
+    attachTimesheetView();
+    return;
+  }
+
+  if (tabId === 'agencyTab') {
+    attachTimesheetView();
+    if (!state.loadedTabs.has('agencyTab')) {
+      state.loadedTabs.add('agencyTab');
+      loadAgencyEmployeePage({ reset: true });
+    } else {
+      renderAgencyWorkbench();
+    }
+    return;
+  }
+
+  if (tabId === 'employeesTab' && !state.loadedTabs.has('employeesTab')) {
+    state.loadedTabs.add('employeesTab');
+    attachEmployeesView();
+  }
 }
 
 function canAccessTab(tabId) {
@@ -2595,7 +2720,11 @@ function canAccessTab(tabId) {
 }
 
 function attachManagerLiveViews() {
-  const constraints = [...branchConstraints()];
+  const todayStartMs = startOfLocalDay(new Date()).getTime();
+  const constraints = [
+    ...branchConstraints(),
+    where('timestampMs', '>=', todayStartMs),
+  ];
   if (isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()));
   constraints.push(orderBy('timestampMs', 'desc'));
   constraints.push(limit(250));
@@ -2904,98 +3033,100 @@ async function deletePunchRecord(punchId) {
   }
 }
 
-function attachTimesheetView() {
-  const weekKey = formatDateKey(state.selectedWeekStart);
-
-  const employeeConstraints = [...branchConstraints()];
-  if (isAgencyUser()) employeeConstraints.push(where('agencyId', '==', agencyScopeId()));
-  employeeConstraints.push(orderBy('name', 'asc'));
-  const employeesQuery = query(collection(db, 'employees'), ...employeeConstraints);
-
-  getDocs(employeesQuery)
-    .then((snap) => {
-      state.allEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      renderEmployeeList(state.allEmployees);
-      renderManagerTimeWorkerOptions();
-      if (isAdmin()) renderDuplicateWorkers(false);
-      renderDerivedTimesheets();
-      populateAgencyWorkerSelect();
-      renderAgencyPreview();
-      renderAgencyWorkbench();
-    })
-    .catch((error) => {
-      console.error(error);
-      toast(error.message || 'Could not load employee profiles for timesheets.', true);
-    });
-
-  const punchConstraints = [
-    ...branchConstraints(),
-    where('weekKey', '==', weekKey),
-  ];
-  if (isAgencyUser()) punchConstraints.push(where('agencyId', '==', agencyScopeId()));
-  punchConstraints.push(orderBy('timestampMs', 'asc'));
-
-  const punchesQuery = query(collection(db, 'punches'), ...punchConstraints);
-
-  const tsConstraints = [
-    ...branchConstraints(),
-    where('weekKey', '==', weekKey),
-  ];
-  if (isAgencyUser()) tsConstraints.push(where('agencyId', '==', agencyScopeId()));
-
-  const timesheetsQuery = query(collection(db, 'timesheets'), ...tsConstraints);
-
-  state.unsubscribers.push(
-    onSnapshot(
-      punchesQuery,
-      async (snap) => {
-        const snapshotRows = snap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() }));
-        const compatibleRows = await loadCompatibleWeeklyPunchRows(state.selectedWeekStart);
-        const mergedRows = dedupePunches([...snapshotRows, ...compatibleRows]);
-        state.agencyReview.deletedPunchRows = mergedRows.filter((row) => !isActivePunchRecord(row));
-        state.selectedWeekPunchRows = mergedRows.filter(isActivePunchRecord);
-        state.agencyReview.rangePunchRows = null;
-        renderDerivedTimesheets();
-        populateAgencyWorkerSelect();
-        renderAgencyPreview();
-        renderAgencyWorkbench();
-      },
-      (error) => {
-        console.error(error);
-        toast(error.message || 'Could not load weekly punches.', true);
-      }
-    )
-  );
-
-  state.unsubscribers.push(
-    onSnapshot(
-      timesheetsQuery,
-      (snap) => {
-        const map = {};
-        snap.docs.forEach((d) => {
-          map[d.id] = { id: d.id, ...d.data() };
-        });
-        state.selectedWeekTimesheetDocs = map;
-        renderDerivedTimesheets();
-        renderAgencyPreview();
-        renderAgencyWorkbench();
-      },
-      (error) => {
-        console.error(error);
-        toast(error.message || 'Could not load weekly signoffs.', true);
-      }
-    )
-  );
+function getWeeklyDataCacheKey(weekStartDate = state.selectedWeekStart) {
+  const weekKey = formatDateKey(weekStartDate);
+  return [
+    getCurrentCompanyId(),
+    getCurrentSiteId(),
+    agencyScopeId(),
+    weekKey
+  ].join('|');
 }
 
-async function loadCompatibleWeeklyPunchRows(weekStartDate) {
+async function loadWeeklyWorkspaceData({ weekStartDate = state.selectedWeekStart, force = false, scope = 'Weekly Signoff' } = {}) {
+  const weekKey = formatDateKey(weekStartDate);
+  const cacheKey = getWeeklyDataCacheKey(weekStartDate);
+  const cached = state.weeklyDataCache.get(cacheKey);
+  if (!force && cached && Date.now() - cached.savedAt < WEEKLY_CACHE_TTL_MS) return cached.data;
+
+  const pending = (async () => {
+    resetFirestoreReadCounter(scope);
+    const employeePromise = loadBranchEmployees({ scope });
+
+    const punchConstraints = [
+      ...branchConstraints(),
+      where('weekKey', '==', weekKey),
+    ];
+    if (isAgencyUser()) punchConstraints.push(where('agencyId', '==', agencyScopeId()));
+    punchConstraints.push(orderBy('timestampMs', 'asc'));
+
+    const tsConstraints = [
+      ...branchConstraints(),
+      where('weekKey', '==', weekKey),
+    ];
+    if (isAgencyUser()) tsConstraints.push(where('agencyId', '==', agencyScopeId()));
+
+    const [employees, punchSnap, timesheetSnap, compatibleRows] = await Promise.all([
+      employeePromise,
+      getDocsCounted(query(collection(db, 'punches'), ...punchConstraints), scope),
+      getDocsCounted(query(collection(db, 'timesheets'), ...tsConstraints), scope),
+      loadCompatibleWeeklyPunchRows(weekStartDate, scope)
+    ]);
+
+    const snapshotRows = punchSnap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() }));
+    const mergedRows = dedupePunches([...snapshotRows, ...compatibleRows]);
+    const timesheets = {};
+    timesheetSnap.docs.forEach((d) => {
+      timesheets[d.id] = { id: d.id, ...d.data() };
+    });
+
+    return { weekKey, employees, punches: mergedRows, timesheets };
+  })();
+
+  state.weeklyDataCache.set(cacheKey, { savedAt: Date.now(), data: pending });
+  try {
+    const data = await pending;
+    state.weeklyDataCache.set(cacheKey, { savedAt: Date.now(), data });
+    return data;
+  } catch (error) {
+    state.weeklyDataCache.delete(cacheKey);
+    throw error;
+  }
+}
+
+function applyWeeklyWorkspaceData(data, { resetAgencyRange = true } = {}) {
+  state.allEmployees = data.employees || [];
+  state.selectedWeekTimesheetDocs = data.timesheets || {};
+  const weeklyPunches = data.punches || [];
+  state.agencyReview.deletedPunchRows = weeklyPunches.filter((row) => !isActivePunchRecord(row));
+  state.selectedWeekPunchRows = weeklyPunches.filter(isActivePunchRecord);
+  if (resetAgencyRange) state.agencyReview.rangePunchRows = null;
+  renderEmployeeList(state.allEmployees);
+  renderManagerTimeWorkerOptions();
+  if (isAdmin()) renderDuplicateWorkers(false);
+  renderDerivedTimesheets();
+  populateAgencyWorkerSelect();
+  renderAgencyPreview();
+  renderAgencyWorkbench();
+}
+
+function attachTimesheetView({ force = false } = {}) {
+  loadWeeklyWorkspaceData({ force, scope: 'Weekly Signoff' })
+    .then((data) => applyWeeklyWorkspaceData(data))
+    .catch((error) => {
+      console.error(error);
+      toast(error.message || 'Could not load weekly signoff data.', true);
+    });
+}
+
+async function loadCompatibleWeeklyPunchRows(weekStartDate, scope = 'Weekly Signoff') {
   const weekStart = startOfLocalDay(weekStartDate);
   const weekEnd = addLocalDays(weekStart, 6);
   weekEnd.setHours(23, 59, 59, 999);
   const constraints = [...branchConstraints()];
   if (isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()));
   try {
-    return await fetchPunchesWithRange(constraints, weekStart.getTime(), weekEnd.getTime());
+    return await fetchPunchesWithRange(constraints, weekStart.getTime(), weekEnd.getTime(), { scope });
   } catch (error) {
     console.warn('Compatible weekly punch lookup failed:', error.message);
     return [];
@@ -3240,6 +3371,9 @@ async function signTimesheet(timesheetId) {
     }, { merge: true });
 
     toast('Timesheet signed.');
+    loadWeeklyWorkspaceData({ force: true, scope: 'Weekly Signoff' })
+      .then((data) => applyWeeklyWorkspaceData(data))
+      .catch((error) => console.warn('Could not refresh weekly signoff cache:', error.message));
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not sign timesheet.', true);
@@ -3282,6 +3416,9 @@ async function reopenTimesheet(timesheetId) {
     }, { merge: true });
 
     toast('Timesheet reopened.');
+    loadWeeklyWorkspaceData({ force: true, scope: 'Weekly Signoff' })
+      .then((data) => applyWeeklyWorkspaceData(data))
+      .catch((error) => console.warn('Could not refresh weekly signoff cache:', error.message));
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not reopen timesheet.', true);
@@ -3715,23 +3852,18 @@ async function denyRequest(requestId) {
    ─────────────────────────────────────────────────── */
 
 function attachEmployeesView() {
-  const empConstraints = [...branchConstraints()];
-  if (isAgencyUser()) empConstraints.push(where('agencyId', '==', agencyScopeId()));
-  empConstraints.push(orderBy('name', 'asc'));
-
-  const empQuery = query(collection(db, 'employees'), ...empConstraints);
-
-  state.unsubscribers.push(
-    onSnapshot(empQuery, (snap) => {
-      state.allEmployees = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  state.loadedTabs.add('employeesTab');
+  loadBranchEmployees({ scope: 'employees' })
+    .then((rows) => {
+      state.allEmployees = rows;
       renderEmployeeList(state.allEmployees);
       renderManagerTimeWorkerOptions();
       if (isAdmin()) renderDuplicateWorkers(false);
-    }, (error) => {
+    })
+    .catch((error) => {
       console.error(error);
       toast(error.message || 'Could not load employees.', true);
-    })
-  );
+    });
 }
 
 function renderEmployeeList(employees) {
@@ -3883,6 +4015,7 @@ function renderManagerTimeWorkerOptions() {
 
 async function lookupManagerTimeRange() {
   if (!isManager()) return;
+  resetFirestoreReadCounter('History search');
   const employeeId = els.managerTimeWorkerSelect?.value || '';
   const employee = state.allEmployees.find((row) => row.id === employeeId);
   if (!employee) {
@@ -4148,7 +4281,9 @@ async function handleSaveEmployee(event) {
       toast(reusableEmployee ? 'Existing active employee reused and updated.' : 'Employee created: ' + employeeNumber);
     }
 
+    invalidateEmployeeCaches();
     cancelEmployeeEdit();
+    attachEmployeesView();
   } catch (error) {
     console.error(error);
     toast(error.message || 'Could not save employee.', true);
@@ -4170,6 +4305,8 @@ async function reactivateEmployee(employeeId) {
   try {
     await updateDoc(doc(db, 'employees', employeeId), payload);
     await logAudit('worker_reactivated', 'employee', employeeId, employee, payload);
+    invalidateEmployeeCaches();
+    attachEmployeesView();
     toast('Employee reactivated.');
   } catch (error) {
     console.error(error);
@@ -5077,7 +5214,7 @@ async function loadAgencyRosterPagePart(collectionName, siteField, cursor, pageS
   if (cursor) constraints.push(startAfter(cursor));
   constraints.push(limit(pageSize));
 
-  const snap = await getDocs(query(collection(db, collectionName), ...constraints));
+  const snap = await getDocsCounted(query(collection(db, collectionName), ...constraints), 'Agency Export');
   return {
     rows: snap.docs.map((record) => ({ id: record.id, sourceCollection: collectionName, ...record.data() })),
     cursor: snap.docs.at(-1) || cursor || null,
@@ -5636,9 +5773,8 @@ async function handleAgencyDateRangeChange() {
     return;
   }
   try {
-    const constraints = [...branchConstraints()];
-    if (isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()));
-    const rows = await fetchPunchesWithRange(constraints, fromMs, toMs);
+    resetFirestoreReadCounter('Agency Export');
+    const rows = await loadAgencyRangePunches(fromValue, toValue, fromMs, toMs);
     state.agencyReview.deletedPunchRows = rows.filter((row) => !isActivePunchRecord(row));
     state.agencyReview.rangePunchRows = rows.filter(isActivePunchRecord);
   } catch (error) {
@@ -5646,6 +5782,19 @@ async function handleAgencyDateRangeChange() {
     toast(error.message || 'Could not load Agency Export date range.', true);
   }
   renderAgencyWorkbench();
+}
+
+async function loadAgencyRangePunches(fromValue, toValue, fromMs, toMs) {
+  const selectedWeekStart = formatDateInput(state.selectedWeekStart);
+  const selectedWeekEnd = formatDateInput(addLocalDays(state.selectedWeekStart, 6));
+  if (fromValue === selectedWeekStart && toValue === selectedWeekEnd) {
+    const weekly = await loadWeeklyWorkspaceData({ scope: 'Agency Export' });
+    return weekly.punches || [];
+  }
+
+  const constraints = [...branchConstraints()];
+  if (isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()));
+  return fetchPunchesWithRange(constraints, fromMs, toMs, { scope: 'Agency Export' });
 }
 
 function openAgencyEmployeePanel(identityKey) {
@@ -6439,7 +6588,6 @@ function clearTimesheetListenerOnly() {
 
   if (state.me && isManager()) {
     attachManagerLiveViews();
-    attachTimesheetView();
     attachUsersViewIfAdmin();
     attachPendingUsersViewIfAdmin();
   }
@@ -6999,35 +7147,35 @@ async function findExistingEmployeeForUpsert({ employeeNumber, nameKey, companyI
   };
 
   if (employeeNumberKey) {
-    addMatches(await getDocs(query(
+    addMatches(await getDocsCounted(query(
       employeesRef,
       where('companyId', '==', normalizedCompanyId),
       where('agencyId', '==', normalizedAgencyId),
       where('assignedSiteId', '==', normalizedSiteId),
       where('status', '==', 'active'),
       where('employeeNumberKey', '==', employeeNumberKey)
-    )));
+    ), 'Put Away save'));
     if (!matches.length) {
-      addMatches(await getDocs(query(
+      addMatches(await getDocsCounted(query(
         employeesRef,
         where('companyId', '==', normalizedCompanyId),
         where('agencyId', '==', normalizedAgencyId),
         where('assignedSiteId', '==', normalizedSiteId),
         where('status', '==', 'active'),
         where('employeeNumber', '==', employeeNumber)
-      )));
+      ), 'Put Away save'));
     }
   }
 
   if (!matches.length && nameKey) {
-    addMatches(await getDocs(query(
+    addMatches(await getDocsCounted(query(
       employeesRef,
       where('companyId', '==', normalizedCompanyId),
       where('agencyId', '==', normalizedAgencyId),
       where('assignedSiteId', '==', normalizedSiteId),
       where('status', '==', 'active'),
       where('nameKey', '==', nameKey)
-    )));
+    ), 'Put Away save'));
   }
 
   return matches[0] || null;
@@ -7201,6 +7349,7 @@ async function mergeDuplicateEmployees(primaryEmployeeId, duplicateEmployeeIds, 
     mergeLogId: mergeLogRef.id
   }, 'Safe duplicate employee merge');
 
+  invalidateEmployeeCaches();
   return { ...preview, dryRun: false, mergeLogId: mergeLogRef.id };
 }
 
