@@ -65,8 +65,8 @@ function activePunch(row) {
 function actionLabel(action) {
   const labels = {
     clock_in: 'Clock In',
-    start_lunch: 'Lunch Out',
-    end_lunch: 'Lunch In',
+    start_lunch: 'Start Lunch',
+    end_lunch: 'End Lunch',
     clock_out: 'Clock Out'
   };
   return labels[action] || String(action || 'Punch').replaceAll('_', ' ');
@@ -103,8 +103,6 @@ async function loadFallbackPunches() {
   const db = getFirestore(apps[0]);
   const siteId = currentManagerSiteId();
 
-  // This deliberately uses one branch equality filter and filters dates in memory.
-  // It remains usable when a compound Firestore index for the primary live query is missing.
   const snap = await getDocs(query(
     collection(db, 'punches'),
     where('siteId', '==', siteId),
