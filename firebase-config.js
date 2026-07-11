@@ -20,5 +20,8 @@ if (typeof window !== 'undefined') {
     import('./agency-export-saved-timesheet-fallback.js?v=20260706-1').catch((error) => {
       console.warn('Agency export saved-timesheet fallback failed to load:', error.message);
     });
+    import('./timeclock-usability-guard.js?v=20260711-1').catch((error) => {
+      console.warn('Timeclock usability guard failed to load:', error.message);
+    });
   });
 }
