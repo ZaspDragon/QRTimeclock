@@ -23,5 +23,8 @@ if (typeof window !== 'undefined') {
     import('./timeclock-usability-guard.js?v=20260711-1').catch((error) => {
       console.warn('Timeclock usability guard failed to load:', error.message);
     });
+    import('./lunch-labels.js?v=20260711-1').catch((error) => {
+      console.warn('Lunch label update failed to load:', error.message);
+    });
   });
 }
