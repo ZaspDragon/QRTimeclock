@@ -12,6 +12,7 @@ import {
 const COMPANY_ID = 'chadwell';
 const MAX_FALLBACK_ROWS = 250;
 const REFRESH_DEBOUNCE_MS = 800;
+const MANAGER_CONTROL_RETRY_MS = [500, 1200, 2500];
 let refreshTimer = null;
 let controlsInstalled = false;
 
@@ -214,8 +215,23 @@ function clickTabButton(id) {
   if (button && !button.classList.contains('hidden')) button.click();
 }
 
+function managerNavigationIsAvailable() {
+  const managerOnlyControls = [
+    byId('editPunchesTabBtn'),
+    byId('timesheetsTabBtn'),
+    byId('agencyTabBtn')
+  ].filter(Boolean);
+
+  return managerOnlyControls.some((control) => {
+    const explicitlyHidden = control.classList.contains('hidden')
+      || control.hidden
+      || control.getAttribute('aria-hidden') === 'true';
+    return !explicitlyHidden;
+  });
+}
+
 function installManagerControls() {
-  if (controlsInstalled || !byId('appShell')) return;
+  if (controlsInstalled || !byId('appShell') || !managerNavigationIsAvailable()) return false;
   controlsInstalled = true;
 
   const bar = document.createElement('div');
@@ -254,6 +270,15 @@ function installManagerControls() {
   });
 
   schedulePunchRefresh();
+  return true;
+}
+
+function scheduleManagerControlInstall() {
+  MANAGER_CONTROL_RETRY_MS.forEach((delay) => {
+    window.setTimeout(() => {
+      if (!controlsInstalled) installManagerControls();
+    }, delay);
+  });
 }
 
 function watchWorkerPunchConfirmation() {
@@ -280,7 +305,7 @@ function initialize() {
   const auth = getAuth(apps[0]);
   onAuthStateChanged(auth, (user) => {
     if (!user) return;
-    window.setTimeout(installManagerControls, 500);
+    scheduleManagerControlInstall();
   });
 }
 
