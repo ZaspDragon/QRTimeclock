@@ -1,0 +1,7 @@
+{
+  "scripts": {
+    "check": "node --check app.js && node --check scripts/branch-backfill-preview.js && node --check scripts/payroll-snapshot-regression.mjs",
+    "test:payroll": "node scripts/payroll-snapshot-regression.mjs",
+    "build": "npm run check"
+  }
+}
