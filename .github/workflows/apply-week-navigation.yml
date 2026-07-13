@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/week-navigation-controls
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -15,6 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: agent/week-navigation-controls
           fetch-depth: 0
       - name: Add week navigation controls
         shell: bash
@@ -63,4 +67,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add index.html style.css week-navigation.js .github/workflows/apply-week-navigation.yml
           git commit -m "Add week navigation controls"
-          git push
+          git push origin HEAD:agent/week-navigation-controls
