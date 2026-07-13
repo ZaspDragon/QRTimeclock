@@ -355,12 +355,8 @@ async function init() {
     attachWorkerLiveView(pretty);
   }
 
-  if (els.weekPicker) {
-    els.weekPicker.value = formatDateInput(state.selectedWeekStart);
-  }
-  if (els.repairWeekStartInput) {
-    els.repairWeekStartInput.value = formatDateInput(state.selectedWeekStart);
-  }
+  state.selectedWeekStart = normalizeWeekStartDate(state.selectedWeekStart);
+  syncSelectedWeekInputs();
 
   if (els.manualPunchDateInput) {
     els.manualPunchDateInput.value = formatDateInput(new Date());
@@ -547,8 +543,8 @@ function wireEvents() {
   syncLoginConsent();
 
   els.weekPicker?.addEventListener('change', () => {
-    state.selectedWeekStart = new Date(`${els.weekPicker.value}T00:00:00`);
-    if (els.repairWeekStartInput) els.repairWeekStartInput.value = formatDateInput(state.selectedWeekStart);
+    state.selectedWeekStart = normalizeWeekStartDate(els.weekPicker.value);
+    syncSelectedWeekInputs();
     if (state.me && isManager()) {
       clearTimesheetListenerOnly();
     }
@@ -572,6 +568,8 @@ function wireEvents() {
   els.missedPunchForm?.addEventListener('submit', handleMissedPunchSubmit);
 
   els.myTimecardWeekPicker?.addEventListener('change', () => {
+    state.selectedWeekStart = normalizeWeekStartDate(els.myTimecardWeekPicker.value);
+    syncSelectedWeekInputs();
     if (state.me && isEmployee()) {
       clearMyTimecardListener();
       attachMyTimecardView();
@@ -693,6 +691,19 @@ function normalizeSiteId(value, fallback = CURRENT_SITE_ID) {
 
 function firstPresent(...values) {
   return values.find((value) => String(value || '').trim()) || '';
+}
+
+function normalizeWeekStartDate(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(`${value}T00:00:00`);
+  const validDate = Number.isFinite(date.getTime()) ? date : new Date();
+  return getMondayDate(validDate);
+}
+
+function syncSelectedWeekInputs() {
+  const weekValue = formatDateInput(state.selectedWeekStart);
+  if (els.weekPicker) els.weekPicker.value = weekValue;
+  if (els.repairWeekStartInput) els.repairWeekStartInput.value = weekValue;
+  if (els.myTimecardWeekPicker) els.myTimecardWeekPicker.value = weekValue;
 }
 
 function getCurrentCompanyId() {
@@ -2987,6 +2998,8 @@ async function deletePunchRecord(punchId) {
 }
 
 function attachTimesheetView() {
+  state.selectedWeekStart = normalizeWeekStartDate(state.selectedWeekStart);
+  syncSelectedWeekInputs();
   const weekKey = formatDateKey(state.selectedWeekStart);
   state.selectedWeekPunchRowsLoaded = false;
   state.selectedWeekPunchRows = [];
@@ -3079,7 +3092,7 @@ function attachTimesheetView() {
 }
 
 async function loadCompatibleWeeklyPunchRows(weekStartDate) {
-  const weekStart = startOfLocalDay(weekStartDate);
+  const weekStart = startOfLocalDay(normalizeWeekStartDate(weekStartDate));
   const weekEnd = addLocalDays(weekStart, 6);
   weekEnd.setHours(23, 59, 59, 999);
   const constraints = [...branchConstraints()];
@@ -3473,8 +3486,10 @@ function isEmployee() {
 
 function attachMyTimecardView() {
   const weekStart = els.myTimecardWeekPicker?.value
-    ? new Date(`${els.myTimecardWeekPicker.value}T00:00:00`)
-    : state.selectedWeekStart;
+    ? normalizeWeekStartDate(els.myTimecardWeekPicker.value)
+    : normalizeWeekStartDate(state.selectedWeekStart);
+  state.selectedWeekStart = weekStart;
+  syncSelectedWeekInputs();
 
   const weekKey = formatDateKey(weekStart);
   const employeeId = state.profile?.employeeId || null;
