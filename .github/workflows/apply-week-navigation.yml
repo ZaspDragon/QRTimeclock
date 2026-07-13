@@ -1,0 +1,66 @@
+name: Apply week navigation fix
+
+on:
+  push:
+    branches:
+      - agent/week-navigation-controls
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Add week navigation controls
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('index.html')
+          text = path.read_text()
+          old = '''            <div class="inline-field slim-field">
+              <label for="weekPicker">Week start</label>
+              <input id="weekPicker" type="date" />
+            </div>'''
+          new = '''            <div class="inline-field slim-field week-picker-tools">
+              <label for="weekPicker">Week start</label>
+              <div class="week-nav-controls" role="group" aria-label="Timesheet week navigation">
+                <button id="previousWeekBtn" class="ghost-btn" type="button">← Previous Week</button>
+                <input id="weekPicker" type="date" />
+                <button id="currentWeekBtn" class="secondary-btn" type="button">This Week</button>
+                <button id="nextWeekBtn" class="ghost-btn" type="button">Next Week →</button>
+              </div>
+            </div>'''
+          if old not in text:
+              raise SystemExit('Expected week picker markup was not found; refusing unsafe replacement.')
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              '<script type="module" src="app.js?v=20260615-1"></script>',
+              '<script type="module" src="app.js?v=20260615-1"></script>\n  <script src="week-navigation.js?v=20260713-1" defer></script>',
+              1,
+          )
+          path.write_text(text)
+
+          Path('week-navigation.js').write_text('''(function setupWeekNavigation() {\n  function getMonday(date) {\n    const value = new Date(date);\n    value.setHours(0, 0, 0, 0);\n    const day = value.getDay();\n    value.setDate(value.getDate() - (day === 0 ? 6 : day - 1));\n    return value;\n  }\n\n  function formatDateInput(date) {\n    const year = date.getFullYear();\n    const month = String(date.getMonth() + 1).padStart(2, '0');\n    const day = String(date.getDate()).padStart(2, '0');\n    return `${year}-${month}-${day}`;\n  }\n\n  function changeWeek(offsetWeeks) {\n    const picker = document.getElementById('weekPicker');\n    if (!picker) return;\n    const base = picker.value ? new Date(`${picker.value}T00:00:00`) : getMonday(new Date());\n    base.setDate(base.getDate() + (offsetWeeks * 7));\n    picker.value = formatDateInput(getMonday(base));\n    picker.dispatchEvent(new Event('change', { bubbles: true }));\n  }\n\n  document.addEventListener('DOMContentLoaded', () => {\n    document.getElementById('previousWeekBtn')?.addEventListener('click', () => changeWeek(-1));\n    document.getElementById('nextWeekBtn')?.addEventListener('click', () => changeWeek(1));\n    document.getElementById('currentWeekBtn')?.addEventListener('click', () => {\n      const picker = document.getElementById('weekPicker');\n      if (!picker) return;\n      picker.value = formatDateInput(getMonday(new Date()));\n      picker.dispatchEvent(new Event('change', { bubbles: true }));\n    });\n  });\n})();\n''')
+
+          style = Path('style.css')
+          css = style.read_text()
+          addition = '''\n\n.week-picker-tools {\n  min-width: min(100%, 560px);\n}\n\n.week-nav-controls {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: flex-end;\n  gap: 8px;\n}\n\n.week-nav-controls input[type="date"] {\n  min-width: 160px;\n}\n\n@media (max-width: 720px) {\n  .week-picker-tools,\n  .week-nav-controls {\n    width: 100%;\n  }\n\n  .week-nav-controls {\n    justify-content: stretch;\n  }\n\n  .week-nav-controls button,\n  .week-nav-controls input[type="date"] {\n    flex: 1 1 145px;\n  }\n}\n'''
+          if '.week-nav-controls {' not in css:
+              style.write_text(css + addition)
+          PY
+      - name: Commit fix
+        shell: bash
+        run: |
+          rm -f .github/workflows/apply-week-navigation.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html style.css week-navigation.js .github/workflows/apply-week-navigation.yml
+          git commit -m "Add week navigation controls"
+          git push
