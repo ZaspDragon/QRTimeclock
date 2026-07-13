@@ -786,6 +786,28 @@ function branchPayload(siteId = getCurrentSiteId()) {
   };
 }
 
+function scopedPunchHistoryConstraints(siteId = getCurrentSiteId()) {
+  const constraints = [...branchConstraints(siteId)];
+  if (state.me && isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()));
+  return constraints;
+}
+
+function validatePunchPayloadForSave(payload, { requireEmployeeId = true } = {}) {
+  const errors = [];
+  if (!String(payload?.name || payload?.workerName || payload?.employeeName || '').trim()) errors.push('worker name');
+  if (!String(payload?.nameKey || '').trim()) errors.push('nameKey');
+  if (!['clock_in', 'start_lunch', 'end_lunch', 'clock_out'].includes(payload?.action)) errors.push('valid punch action');
+  if (!Number.isFinite(Number(payload?.timestampMs)) || Number(payload?.timestampMs) <= 0) errors.push('valid timestamp');
+  if (!String(payload?.dateKey || '').trim()) errors.push('dateKey');
+  if (!String(payload?.weekKey || '').trim()) errors.push('weekKey');
+  if (payload?.companyId !== getCurrentCompanyId()) errors.push('companyId');
+  if (!BRANCH_OPTIONS.some((branch) => branch.siteId === payload?.siteId)) errors.push('siteId');
+  if (requireEmployeeId && !String(payload?.employeeId || payload?.workerId || '').trim()) errors.push('employeeId');
+  if (errors.length) {
+    throw new Error(`Punch was not saved. Missing or invalid: ${errors.join(', ')}.`);
+  }
+}
+
 async function loadPublicEmployees() {
   try {
     const constraints = [
@@ -1361,6 +1383,11 @@ async function handleWorkerPunch(action) {
   const dateKey = formatDateKey(now);
   const weekKey = formatDateKey(getMondayDate(now));
   const punchSiteId = normalizeSiteId(firstPresent(emp.siteId, emp.assignedSiteId, publicSiteId), publicSiteId);
+  const verifiedEmployeeId = emp.employeeId || emp.id || '';
+  if (!verifiedEmployeeId) {
+    toast('Your worker profile could not be verified. Ask a manager to add you before punching.', true);
+    return;
+  }
 
   state.workerPunchSaving = true;
   setWorkerPunchBusy(true);
@@ -1370,7 +1397,7 @@ async function handleWorkerPunch(action) {
     if (previousPunchMs && nowMs - previousPunchMs < 10000) {
       throw new Error('That punch was already saved. Please wait a few seconds.');
     }
-    await addDoc(collection(db, 'punches'), {
+    const payload = {
       ...buildPunchLocationPayload(emp, punchSiteId),
       ...branchPayload(punchSiteId),
       name,
@@ -1382,13 +1409,15 @@ async function handleWorkerPunch(action) {
       weekKey,
       source: 'public_qr',
       createdAt: serverTimestamp(),
-      employeeId: emp.employeeId || emp.id || '',
+      employeeId: verifiedEmployeeId,
       employeeNumber: emp.employeeNumber || '',
       agencyId: emp.agencyId || '',
       assignedSiteId: normalizeSiteId(firstPresent(emp.assignedSiteId, emp.siteId, punchSiteId), punchSiteId),
       siteIds: [punchSiteId],
       qrSlug: state.siteContext.qrSlug || '',
-    });
+    };
+    validatePunchPayloadForSave(payload);
+    await addDoc(collection(db, 'punches'), payload);
 
     cacheWorkerPunch(emp, {
       name,
@@ -1397,7 +1426,7 @@ async function handleWorkerPunch(action) {
       timestampMs: nowMs,
       dateKey,
       weekKey,
-      employeeId: emp.employeeId || emp.id || '',
+      employeeId: verifiedEmployeeId,
     });
 
     const savedActionLabel = prettyAction(action);
@@ -1653,6 +1682,8 @@ async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {})
   const primaryId = employee.id || employee.employeeId || '';
   const workerIds = new Set([primaryId, employee.employeeId].filter(Boolean));
   const directWorkerIds = new Set([primaryId, employee.employeeId].filter(Boolean));
+  const employeeSiteId = normalizeSiteId(firstPresent(employee.siteId, employee.assignedSiteId, getCurrentSiteId()), getCurrentSiteId());
+  const historyScope = scopedPunchHistoryConstraints(employeeSiteId);
   getCompatibleWorkerRecords(employee).forEach((record) => {
     if (record.id) workerIds.add(record.id);
     if (record.employeeId) workerIds.add(record.employeeId);
@@ -1661,10 +1692,25 @@ async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {})
     const mergedConstraints = state.me && isManager()
       ? [where('mergedInto', '==', primaryId)]
       : [where('status', '==', 'merged'), where('mergedInto', '==', primaryId)];
-    const mergedSnapshot = await getDocs(query(collection(db, 'employees'), ...mergedConstraints));
-    mergedSnapshot.docs.forEach((record) => {
-      workerIds.add(record.id);
-      directWorkerIds.add(record.id);
+    const mergedQueries = [
+      query(collection(db, 'employees'), ...branchConstraints(employeeSiteId), ...mergedConstraints),
+      query(
+        collection(db, 'employees'),
+        where('companyId', '==', getCurrentCompanyId()),
+        where('assignedSiteId', '==', employeeSiteId),
+        ...mergedConstraints
+      ),
+    ];
+    const mergedResults = await Promise.allSettled(mergedQueries.map((mergedQuery) => getDocs(mergedQuery)));
+    mergedResults.forEach((result) => {
+      if (result.status !== 'fulfilled') {
+        console.warn('Merged employee lookup skipped:', result.reason?.message || result.reason);
+        return;
+      }
+      result.value.docs.forEach((record) => {
+        workerIds.add(record.id);
+        directWorkerIds.add(record.id);
+      });
     });
   }
 
@@ -1673,7 +1719,7 @@ async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {})
   if (employee.name) {
     try {
       const nameRows = await fetchPunchesWithRange(
-        [where('nameKey', '==', normalizeName(employee.name))],
+        [...historyScope, where('nameKey', '==', normalizeName(employee.name))],
         fromMs,
         toMs
       );
@@ -1689,7 +1735,7 @@ async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {})
 
   const idsToQuery = nameQuerySucceeded ? [...directWorkerIds] : [...workerIds];
   const idRows = await Promise.all(idsToQuery.map((workerId) =>
-    fetchPunchesWithRange([where('employeeId', '==', workerId)], fromMs, toMs)
+    fetchPunchesWithRange([...historyScope, where('employeeId', '==', workerId)], fromMs, toMs)
   ));
   idRows.forEach((workerRows) => rows.push(...workerRows));
 
@@ -1698,7 +1744,7 @@ async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {})
       ? []
       : [where('employeeId', '==', '')];
     const legacyRows = await fetchPunchesWithRange(
-      legacyConstraints,
+      [...historyScope, ...legacyConstraints],
       fromMs,
       toMs
     );
@@ -1983,6 +2029,19 @@ async function generateNextPublicEmployeeNumber() {
   return prefix + String(maxNum + 1);
 }
 
+function findActiveEmployeeForPunchName(nameKey, siteId = getCurrentSiteId(), agencyId = state.agencyId || '') {
+  const normalizedAgencyId = String(agencyId || '').trim();
+  const candidates = (state.allEmployees || []).filter((employee) => {
+    if (!isActiveEmployee(employee)) return false;
+    if (normalizeName(getWorkerProfileName(employee) || employee.nameKey || '') !== nameKey) return false;
+    if (normalizeSiteId(firstPresent(employee.siteId, employee.assignedSiteId, siteId), siteId) !== siteId) return false;
+    return String(employee.agencyId || '').trim() === normalizedAgencyId;
+  });
+  if (candidates.length === 1) return candidates[0];
+  const collapsed = collapseDuplicateEmployees(candidates);
+  return collapsed.length === 1 ? collapsed[0] : null;
+}
+
 async function handleManualPunchSubmit(event) {
   event.preventDefault();
 
@@ -2016,9 +2075,14 @@ async function handleManualPunchSubmit(event) {
   const punchDate = new Date(parsedMs);
   const dateKey = formatDateKey(punchDate);
   const weekKey = formatDateKey(getMondayDate(punchDate));
+  const employee = findActiveEmployeeForPunchName(nameKey);
+  if (!employee) {
+    toast('Create or select a single active employee profile before adding a manual punch.', true);
+    return;
+  }
 
   try {
-    await addDoc(collection(db, 'punches'), {
+    const payload = {
       name,
       nameKey,
       action,
@@ -2030,9 +2094,13 @@ async function handleManualPunchSubmit(event) {
       createdAt: serverTimestamp(),
       createdBy: state.profile?.name || state.me?.email || 'Manager',
       ...branchPayload(),
-      agencyId: state.agencyId || '',
-      employeeId: '',
-    });
+      agencyId: employee.agencyId || state.agencyId || '',
+      employeeId: employee.employeeId || employee.id || '',
+      workerId: employee.workerId || employee.id || employee.employeeId || '',
+      employeeNumber: employee.employeeNumber || '',
+    };
+    validatePunchPayloadForSave(payload);
+    await addDoc(collection(db, 'punches'), payload);
 
     await addDoc(collection(db, 'punch_edits'), {
       type: 'manual_add',
@@ -3635,26 +3703,10 @@ async function approveRequest(requestId) {
   const now = Timestamp.fromDate(new Date());
 
   try {
-    // 1. Update the request status
-    await updateDoc(doc(db, 'missedPunchRequests', requestId), {
-      status: 'approved',
-      reviewedBy: managerName,
-      reviewedAt: now,
-      approvedBy: managerName,
-      approvedAt: now,
-      updatedAt: serverTimestamp(),
-    });
-    await logAudit('missed_punch_approved', 'missedPunchRequest', requestId, req, {
-      status: 'approved',
-      reviewedBy: managerName,
-    }, 'Missed punch request approved');
-
-    // 2. Auto-create the actual punch
     const punchDate = new Date(req.requestedTimestampMs);
     const dateKey = formatDateKey(punchDate);
     const weekKey = formatDateKey(getMondayDate(punchDate));
-
-    await addDoc(collection(db, 'punches'), {
+    const punchPayload = {
       name: req.name || '',
       nameKey: normalizeName(req.name || ''),
       action: req.requestedAction,
@@ -3671,7 +3723,25 @@ async function approveRequest(requestId) {
       siteId: req.siteId || getCurrentSiteId(),
       agencyId: req.agencyId || '',
       employeeId: req.employeeId || '',
+    };
+    validatePunchPayloadForSave(punchPayload);
+
+    // 1. Update the request status
+    await updateDoc(doc(db, 'missedPunchRequests', requestId), {
+      status: 'approved',
+      reviewedBy: managerName,
+      reviewedAt: now,
+      approvedBy: managerName,
+      approvedAt: now,
+      updatedAt: serverTimestamp(),
     });
+    await logAudit('missed_punch_approved', 'missedPunchRequest', requestId, req, {
+      status: 'approved',
+      reviewedBy: managerName,
+    }, 'Missed punch request approved');
+
+    // 2. Auto-create the actual punch
+    await addDoc(collection(db, 'punches'), punchPayload);
 
     toast('Request approved — punch created.');
   } catch (error) {
@@ -5967,6 +6037,7 @@ async function addMissingAgencyPunch(row) {
     updatedAt: serverTimestamp(),
   };
   try {
+    validatePunchPayloadForSave(payload);
     const ref = await addDoc(collection(db, 'punches'), payload);
     await addDoc(collection(db, 'punch_edits'), {
       ...branchPayload(payload.siteId),
