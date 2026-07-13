@@ -68,6 +68,7 @@ const state = {
   publicEmployeeRecords: [], // full active list retained for historical ID lookup
   allPunchRows: [],
   selectedWeekPunchRows: [],
+  selectedWeekPunchRowsLoaded: false,
   selectedWeekTimesheetDocs: {},
   allEmployees: [],
   allUsers: [],
@@ -550,7 +551,6 @@ function wireEvents() {
     if (els.repairWeekStartInput) els.repairWeekStartInput.value = formatDateInput(state.selectedWeekStart);
     if (state.me && isManager()) {
       clearTimesheetListenerOnly();
-      attachTimesheetView();
     }
   });
 
@@ -563,7 +563,7 @@ function wireEvents() {
   els.manualPunchForm?.addEventListener('submit', handleManualPunchSubmit);
 
   els.editFilterNameInput?.addEventListener('input', () => {
-    renderEditPunchesTable(state.allPunchRows);
+    renderEditPunchesTable(getEditablePunchRows());
   });
 
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
@@ -2681,7 +2681,7 @@ function attachManagerLiveViews() {
         state.allPunchRows = rows;
         renderLivePunches(rows);
         renderActiveNow(rows);
-        renderEditPunchesTable(rows);
+        renderEditPunchesTable(getEditablePunchRows());
         renderGpsSummary(rows);
       },
       (error) => {
@@ -2747,6 +2747,19 @@ function isGpsAccuracyTooLow(row) {
   return accuracy !== null && accuracy > threshold;
 }
 
+function getEditablePunchRows() {
+  return state.selectedWeekPunchRowsLoaded
+    ? state.selectedWeekPunchRows
+    : state.allPunchRows;
+}
+
+function findEditablePunch(punchId) {
+  return getEditablePunchRows().find((row) => row.id === punchId)
+    || state.selectedWeekPunchRows.find((row) => row.id === punchId)
+    || state.allPunchRows.find((row) => row.id === punchId)
+    || null;
+}
+
 function renderActiveNow(rows) {
   if (!els.activeNowList) return;
 
@@ -2797,7 +2810,8 @@ function renderEditPunchesTable(rows) {
   });
 
   if (!filtered.length) {
-    els.editPunchesBody.innerHTML = '<tr><td colspan="9">No punches found.</td></tr>';
+    const weekText = formatDateKey(state.selectedWeekStart);
+    els.editPunchesBody.innerHTML = `<tr><td colspan="9">No punches found for week ${escapeHtml(weekText)}.</td></tr>`;
     return;
   }
 
@@ -2841,7 +2855,7 @@ async function editPunch(punchId) {
     return;
   }
 
-  const row = state.allPunchRows.find((r) => r.id === punchId);
+  const row = findEditablePunch(punchId);
   if (!row) {
     toast('Punch not found.', true);
     return;
@@ -2922,7 +2936,7 @@ async function editPunch(punchId) {
       },
       editedBy: state.profile?.name || state.me?.email || 'Manager',
       editedAt: serverTimestamp(),
-      ...branchPayload()
+      ...branchPayload(row.siteId || getCurrentSiteId())
     });
 
     await updateDoc(doc(db, 'punches', punchId), { ...updatedPayload, ...branchPayload(row.siteId || CURRENT_SITE_ID) });
@@ -2941,7 +2955,7 @@ async function deletePunchRecord(punchId) {
     return;
   }
 
-  const row = state.allPunchRows.find((r) => r.id === punchId);
+  const row = findEditablePunch(punchId);
   const okay = confirm('Delete this punch?');
   if (!okay) return;
 
@@ -2974,6 +2988,9 @@ async function deletePunchRecord(punchId) {
 
 function attachTimesheetView() {
   const weekKey = formatDateKey(state.selectedWeekStart);
+  state.selectedWeekPunchRowsLoaded = false;
+  state.selectedWeekPunchRows = [];
+  renderEditPunchesTable(getEditablePunchRows());
 
   const employeeConstraints = [...branchConstraints()];
   if (isAgencyUser()) employeeConstraints.push(where('agencyId', '==', agencyScopeId()));
@@ -3022,7 +3039,9 @@ function attachTimesheetView() {
         const mergedRows = dedupePunches([...snapshotRows, ...compatibleRows]);
         state.agencyReview.deletedPunchRows = mergedRows.filter((row) => !isActivePunchRecord(row));
         state.selectedWeekPunchRows = mergedRows.filter(isActivePunchRecord);
+        state.selectedWeekPunchRowsLoaded = true;
         state.agencyReview.rangePunchRows = null;
+        renderEditPunchesTable(getEditablePunchRows());
         renderDerivedTimesheets();
         populateAgencyWorkerSelect();
         renderAgencyPreview();
@@ -3030,6 +3049,9 @@ function attachTimesheetView() {
       },
       (error) => {
         console.error(error);
+        state.selectedWeekPunchRowsLoaded = true;
+        state.selectedWeekPunchRows = [];
+        renderEditPunchesTable(getEditablePunchRows());
         toast(error.message || 'Could not load weekly punches.', true);
       }
     )
