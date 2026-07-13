@@ -204,6 +204,8 @@ service cloud.firestore {
           'active',
           'deletedAt',
           'deletedBy',
+          'deletedByRole',
+          'deletedByUid',
           'deleteReason',
           'updatedAt'
         ]);

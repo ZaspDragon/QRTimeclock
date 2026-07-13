@@ -319,6 +319,7 @@ const els = {
   agencyPreviewBtn: document.getElementById('agencyPreviewBtn'),
   agencyPrintBtn: document.getElementById('agencyPrintBtn'),
   agencyLegacyPrintBtn: document.getElementById('agencyLegacyPrintBtn'),
+  agencyLegacyEditBtn: document.getElementById('agencyLegacyEditBtn'),
   agencyPreview: document.getElementById('agencyPreview'),
   agencyWeekPicker: document.getElementById('agencyWeekPicker'),
   agencySearchInput: document.getElementById('agencySearchInput'),
@@ -648,6 +649,7 @@ function wireEvents() {
   els.agencyPreviewBtn?.addEventListener('click', () => renderAgencyPreview());
   els.agencyPrintBtn?.addEventListener('click', () => exportAgencyReviewPdf());
   els.agencyLegacyPrintBtn?.addEventListener('click', () => printAgencyPreview());
+  els.agencyLegacyEditBtn?.addEventListener('click', openLegacyAgencySimpleEdit);
   els.agencyLegacyWorkerSelect?.addEventListener('change', () => renderAgencyPreview());
   els.agencyWeekPicker?.addEventListener('change', () => {
     state.selectedWeekStart = normalizeWeekStartDate(els.agencyWeekPicker.value);
@@ -3146,6 +3148,8 @@ async function deletePunchRecord(punchId) {
       active: false,
       deletedAt: serverTimestamp(),
       deletedBy: state.profile?.name || state.me?.email || 'Manager',
+      deletedByRole: state.profile?.role || '',
+      deletedByUid: state.me?.uid || '',
       deleteReason: 'Manager deleted from punch editor',
       updatedAt: serverTimestamp()
     };
@@ -5431,12 +5435,19 @@ function renderAgencyWorkbench() {
 
 function renderAgencyRecoveryStatus() {
   const deletedRows = state.agencyReview.deletedPunchRows || [];
+  const restorableRows = getAgencyRestorableDeletedPunchRows();
+  const authorizedDeleteCount = Math.max(0, deletedRows.length - restorableRows.length);
   if (els.agencyRestoreDeletedBtn) {
-    els.agencyRestoreDeletedBtn.disabled = !deletedRows.length || !canEditPunches();
+    els.agencyRestoreDeletedBtn.disabled = !restorableRows.length || !canEditPunches();
+    els.agencyRestoreDeletedBtn.textContent = restorableRows.length
+      ? `Restore ${restorableRows.length} Unauthorized Delete(s)`
+      : 'Restore Unauthorized Deletes';
   }
   if (els.agencyRecoveryStatus) {
-    els.agencyRecoveryStatus.textContent = deletedRows.length
-      ? `${deletedRows.length} soft-deleted punch(es) found in this range. Review before restoring.`
+    els.agencyRecoveryStatus.textContent = restorableRows.length
+      ? `${restorableRows.length} soft-deleted punch(es) are not tied to an admin/manager delete and can be restored. ${authorizedDeleteCount} authorized delete(s) left alone.`
+      : authorizedDeleteCount
+        ? `${authorizedDeleteCount} soft-deleted punch(es) found, all marked as admin/manager deletes.`
       : 'No soft-deleted punches loaded for this range.';
   }
 }
@@ -6153,6 +6164,7 @@ async function deleteAgencyPunch(punchId) {
     active: false,
     deletedAt: serverTimestamp(),
     deletedBy: state.profile?.name || state.me?.email || 'Manager',
+    deletedByRole: state.profile?.role || '',
     deletedByUid: state.me?.uid || '',
     deleteReason: String(reason).trim(),
     updatedAt: serverTimestamp(),
@@ -6160,13 +6172,43 @@ async function deleteAgencyPunch(punchId) {
   await writeAgencyPunchChange(punch, payload, 'delete', reason);
 }
 
+function getAgencyRestorableDeletedPunchRows() {
+  return dedupePunches(state.agencyReview.deletedPunchRows || [])
+    .filter((punch) => !wasPunchDeletedByAdminOrManager(punch));
+}
+
+function wasPunchDeletedByAdminOrManager(punch = {}) {
+  const role = firstPresent(punch.deletedByRole, punch.actorRole, punch.role);
+  if (role && isAdminManagerDeleteRole(role)) return true;
+
+  const uid = String(punch.deletedByUid || punch.actorUid || '').trim();
+  if (uid) {
+    const actor = findUserProfileByUid(uid);
+    if (actor && isAdminManagerDeleteRole(actor.role)) return true;
+  }
+
+  const label = String(firstPresent(punch.deletedByTitle, punch.deletedByRole, punch.deletedBy) || '').toLowerCase();
+  return /\b(admin|manager|supervisor|owner|super\s*admin)\b/.test(label);
+}
+
+function findUserProfileByUid(uid) {
+  return (state.allUsers || []).find((user) =>
+    [user.uid, user.id, user.userId].map((value) => String(value || '').trim()).includes(uid)
+  ) || (state.profile?.uid === uid || state.me?.uid === uid ? state.profile : null);
+}
+
+function isAdminManagerDeleteRole(role) {
+  const normalized = normalizeRole(role);
+  return PUNCH_DELETE_ROLES.has(normalized) || ['admin', 'manager', 'owner', 'super_admin', 'superadmin'].includes(normalized);
+}
+
 async function restoreAgencySoftDeletedPunches() {
-  const deletedRows = dedupePunches(state.agencyReview.deletedPunchRows || []);
-  if (!deletedRows.length) return toast('No soft-deleted punches are loaded for this range.', true);
+  const deletedRows = getAgencyRestorableDeletedPunchRows();
+  if (!deletedRows.length) return toast('No unauthorized soft-deleted punches are loaded for this range.', true);
   if (!canEditPunches()) return toast('You need edit-punch permission to restore punches.', true);
-  const reason = prompt(`Restore ${deletedRows.length} soft-deleted punch(es) for this Agency Export range? Reason required:`, 'Recover soft-deleted punch for payroll review');
+  const reason = prompt(`Restore ${deletedRows.length} soft-deleted punch(es) not tied to admin/manager deletes? Reason required:`, 'Recover unauthorized soft-deleted punch for payroll review');
   if (!String(reason || '').trim()) return toast('A reason is required to restore punches.', true);
-  if (!confirm(`Restore ${deletedRows.length} soft-deleted punch(es)? This does not delete or recreate data.`)) return;
+  if (!confirm(`Restore ${deletedRows.length} unauthorized soft-deleted punch(es)? This does not delete or recreate data.`)) return;
 
   let restored = 0;
   for (const punch of deletedRows) {
@@ -6591,6 +6633,19 @@ function renderAgencyPreview() {
       </div>
     </div>
   `;
+}
+
+function openLegacyAgencySimpleEdit() {
+  const selectedWorkerKey = els.agencyLegacyWorkerSelect?.value || '';
+  if (!selectedWorkerKey) return toast('Choose a worker before opening simple edits.', true);
+  state.agencyReview.selectedKey = selectedWorkerKey;
+  state.agencyReview.activeTab = 'punches';
+  els.agencyEmployeePanel?.classList.remove('hidden');
+  document.querySelectorAll('[data-agency-panel-tab]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.agencyPanelTab === 'punches');
+  });
+  renderAgencyWorkbench();
+  els.agencyEmployeePanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function mergeDuplicatePayrollRowsInMemory(rows) {

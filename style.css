@@ -1286,6 +1286,14 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   margin-top: 18px;
 }
 
+.agency-print-preview.legacy-primary {
+  margin: 0 0 18px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 16px;
+  background: #fff;
+}
+
 .agency-print-preview summary {
   cursor: pointer;
   font-weight: 800;

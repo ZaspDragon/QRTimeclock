@@ -952,8 +952,8 @@
         <div class="card agency-workbench-card">
           <div class="card-head split-head">
             <div>
-              <h2>Agency Export</h2>
-              <p>Search, review, edit, and export employee time without leaving this page.</p>
+              <h2>Legacy Agency Review</h2>
+              <p>Choose a worker, review the weekly sheet, make simple punch fixes, then print or export.</p>
             </div>
             <div class="form-actions">
               <button id="agencyExportCsvBtn" class="secondary-btn" type="button">CSV</button>
@@ -961,6 +961,30 @@
               <button id="agencyPrintBtn" class="secondary-btn" type="button">PDF</button>
             </div>
           </div>
+
+          <details class="agency-print-preview legacy-primary" open>
+            <summary>Legacy agency sheet preview</summary>
+            <div class="grid-form compact-form" style="margin:16px 0;">
+              <label>
+                <span>Worker</span>
+                <select id="agencyLegacyWorkerSelect">
+                  <option value="">Select a worker</option>
+                </select>
+              </label>
+
+              <div class="form-actions full-width">
+                <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
+                <button id="agencyLegacyEditBtn" class="secondary-btn" type="button">Simple Edit Punches</button>
+                <button id="agencyLegacyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
+              </div>
+            </div>
+
+            <div id="agencyPreviewWrap" class="mini-table-wrap">
+              <div id="agencyPreview" style="padding:18px;">
+                <div class="empty-state">Choose a worker and click Preview Sheet.</div>
+              </div>
+            </div>
+          </details>
 
           <div class="agency-sticky-tools">
             <label>
@@ -1074,29 +1098,6 @@
               <div id="agencyPanelContent" class="agency-panel-content"></div>
             </aside>
           </div>
-
-          <details class="agency-print-preview" open>
-            <summary>Legacy agency sheet preview</summary>
-            <div class="grid-form compact-form" style="margin:16px 0;">
-              <label>
-                <span>Worker</span>
-                <select id="agencyLegacyWorkerSelect">
-                  <option value="">Select a worker</option>
-                </select>
-              </label>
-
-              <div class="form-actions full-width">
-                <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
-                <button id="agencyLegacyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
-              </div>
-            </div>
-
-            <div id="agencyPreviewWrap" class="mini-table-wrap">
-              <div id="agencyPreview" style="padding:18px;">
-                <div class="empty-state">Choose a worker and click Preview Sheet.</div>
-              </div>
-            </div>
-          </details>
         </div>
       </section>
     </section>
