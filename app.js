@@ -230,6 +230,7 @@ const els = {
   manualPunchActionInput: document.getElementById('manualPunchActionInput'),
   manualPunchDateInput: document.getElementById('manualPunchDateInput'),
   manualPunchTimeInput: document.getElementById('manualPunchTimeInput'),
+  editWeekPicker: document.getElementById('editWeekPicker'),
   editFilterNameInput: document.getElementById('editFilterNameInput'),
   editPunchesBody: document.getElementById('editPunchesBody'),
 
@@ -319,6 +320,7 @@ const els = {
   agencyPrintBtn: document.getElementById('agencyPrintBtn'),
   agencyLegacyPrintBtn: document.getElementById('agencyLegacyPrintBtn'),
   agencyPreview: document.getElementById('agencyPreview'),
+  agencyWeekPicker: document.getElementById('agencyWeekPicker'),
   agencySearchInput: document.getElementById('agencySearchInput'),
   agencyDateFilter: document.getElementById('agencyDateFilter'),
   agencyFromDateFilter: document.getElementById('agencyFromDateFilter'),
@@ -580,7 +582,7 @@ function wireEvents() {
     state.selectedWeekStart = normalizeWeekStartDate(els.weekPicker.value);
     syncSelectedWeekInputs();
     if (state.me && isManager()) {
-      clearTimesheetListenerOnly();
+      loadSelectedWeekForManager({ force: true });
     }
   });
 
@@ -594,6 +596,10 @@ function wireEvents() {
 
   els.editFilterNameInput?.addEventListener('input', () => {
     renderEditPunchesTable(getEditablePunchRows());
+  });
+  els.editWeekPicker?.addEventListener('change', () => {
+    state.selectedWeekStart = normalizeWeekStartDate(els.editWeekPicker.value);
+    loadSelectedWeekForManager({ force: true });
   });
 
   els.userProfileForm?.addEventListener('submit', handleSaveProfile);
@@ -643,6 +649,11 @@ function wireEvents() {
   els.agencyPrintBtn?.addEventListener('click', () => exportAgencyReviewPdf());
   els.agencyLegacyPrintBtn?.addEventListener('click', () => printAgencyPreview());
   els.agencyLegacyWorkerSelect?.addEventListener('change', () => renderAgencyPreview());
+  els.agencyWeekPicker?.addEventListener('change', () => {
+    state.selectedWeekStart = normalizeWeekStartDate(els.agencyWeekPicker.value);
+    state.agencyReview.page = 1;
+    loadSelectedWeekForManager({ force: true });
+  });
   els.agencySearchInput?.addEventListener('input', () => {
     state.agencyReview.page = 1;
     renderAgencyWorkbench();
@@ -736,8 +747,22 @@ function normalizeWeekStartDate(value = new Date()) {
 function syncSelectedWeekInputs() {
   const weekValue = formatDateInput(state.selectedWeekStart);
   if (els.weekPicker) els.weekPicker.value = weekValue;
+  if (els.editWeekPicker) els.editWeekPicker.value = weekValue;
+  if (els.agencyWeekPicker) els.agencyWeekPicker.value = weekValue;
   if (els.repairWeekStartInput) els.repairWeekStartInput.value = weekValue;
   if (els.myTimecardWeekPicker) els.myTimecardWeekPicker.value = weekValue;
+}
+
+function loadSelectedWeekForManager({ force = true, updateAgencyRange = true } = {}) {
+  state.selectedWeekStart = normalizeWeekStartDate(state.selectedWeekStart);
+  syncSelectedWeekInputs();
+  if (updateAgencyRange) {
+    state.agencyReview.rangePunchRows = null;
+    if (els.agencyDateFilter) els.agencyDateFilter.value = '';
+    if (els.agencyFromDateFilter) els.agencyFromDateFilter.value = '';
+    if (els.agencyToDateFilter) els.agencyToDateFilter.value = '';
+  }
+  attachTimesheetView({ force });
 }
 
 function getCurrentCompanyId() {
@@ -2772,8 +2797,13 @@ function ensureTabDataLoaded(tabId) {
     return;
   }
 
+  if (tabId === 'editPunchesTab') {
+    loadSelectedWeekForManager({ force: !state.selectedWeekPunchRowsLoaded });
+    return;
+  }
+
   if (tabId === 'agencyTab') {
-    attachTimesheetView();
+    loadSelectedWeekForManager({ force: !state.selectedWeekPunchRowsLoaded });
     if (!state.loadedTabs.has('agencyTab')) {
       state.loadedTabs.add('agencyTab');
       loadAgencyEmployeePage({ reset: true });

@@ -530,6 +530,10 @@
 
             <div class="stack gap16">
               <label>
+                <span>Week start</span>
+                <input id="editWeekPicker" type="date" />
+              </label>
+              <label>
                 <span>Filter by name</span>
                 <input id="editFilterNameInput" type="text" placeholder="Type a name or leave blank" />
               </label>
@@ -964,6 +968,7 @@
               <input id="agencySearchInput" type="search" placeholder="Name, number, agency, branch, department, PIN, site, notes" autocomplete="off" />
             </label>
             <div class="agency-filter-grid">
+              <label><span>Week start</span><input id="agencyWeekPicker" type="date" /></label>
               <label><span>Date</span><input id="agencyDateFilter" type="date" /></label>
               <label><span>From</span><input id="agencyFromDateFilter" type="date" /></label>
               <label><span>To</span><input id="agencyToDateFilter" type="date" /></label>
@@ -1070,7 +1075,7 @@
             </aside>
           </div>
 
-          <details class="agency-print-preview">
+          <details class="agency-print-preview" open>
             <summary>Legacy agency sheet preview</summary>
             <div class="grid-form compact-form" style="margin:16px 0;">
               <label>
