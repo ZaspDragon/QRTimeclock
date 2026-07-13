@@ -10,11 +10,12 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 
 const COMPANY_ID = 'chadwell';
-const MAX_FALLBACK_ROWS = 250;
+const MAX_FALLBACK_ROWS = 1000;
 const REFRESH_DEBOUNCE_MS = 800;
 const MANAGER_CONTROL_RETRY_MS = [500, 1200, 2500];
 let refreshTimer = null;
 let controlsInstalled = false;
+let agencySimpleModeInstalled = false;
 
 function byId(id) {
   return document.getElementById(id);
@@ -37,19 +38,11 @@ function normalizeSiteId(value) {
 function currentManagerSiteId() {
   const visibleSelect = document.querySelector('.manager-branch-select, [data-manager-branch-select], #managerBranchSelect');
   if (visibleSelect?.value) return normalizeSiteId(visibleSelect.value);
-
   const workerBranch = byId('workerBranchSelect');
   if (workerBranch?.value) return normalizeSiteId(workerBranch.value);
-
   const sessionKey = Object.keys(sessionStorage).find((key) => key.startsWith('managerActiveBranch:'));
   if (sessionKey) return normalizeSiteId(sessionStorage.getItem(sessionKey));
   return 'OH01';
-}
-
-function startOfTodayMs() {
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  return now.getTime();
 }
 
 function punchTimestampMs(row) {
@@ -98,31 +91,34 @@ function showStatus(message, isError = false) {
   box.style.borderColor = isError ? '#b42318' : '';
 }
 
-async function loadFallbackPunches() {
+async function loadBranchPunches() {
   const apps = getApps();
   if (!apps.length) return [];
   const db = getFirestore(apps[0]);
   const siteId = currentManagerSiteId();
-
   const snap = await getDocs(query(
     collection(db, 'punches'),
     where('siteId', '==', siteId),
     limit(MAX_FALLBACK_ROWS)
   ));
-
-  const todayStart = startOfTodayMs();
   return snap.docs
     .map((record) => ({ id: record.id, ...record.data() }))
     .filter((row) => row.companyId === COMPANY_ID || !row.companyId)
-    .filter(activePunch)
-    .filter((row) => punchTimestampMs(row) >= todayStart)
+    .filter(activePunch);
+}
+
+async function loadFallbackPunches() {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const rows = await loadBranchPunches();
+  return rows
+    .filter((row) => punchTimestampMs(row) >= todayStart.getTime())
     .sort((a, b) => punchTimestampMs(b) - punchTimestampMs(a));
 }
 
 function renderFallbackPunches(rows) {
   const body = byId('livePunchBody');
   if (!body) return;
-
   if (!rows.length) {
     const existingText = body.textContent.trim().toLowerCase();
     if (!existingText || existingText.includes('loading') || existingText.includes('could not')) {
@@ -130,7 +126,6 @@ function renderFallbackPunches(rows) {
     }
     return;
   }
-
   body.innerHTML = rows.map((row) => {
     const name = row.name || row.workerName || row.employeeName || 'Unknown worker';
     const agency = row.agencyName || row.agency || 'Direct';
@@ -148,12 +143,10 @@ function renderFallbackPunches(rows) {
 async function ensurePunchesVisible({ announce = false } = {}) {
   const body = byId('livePunchBody');
   if (!body) return;
-
   try {
     const rows = await loadFallbackPunches();
     const hasPrimaryRows = body.querySelector('tr:not([data-fallback-punch-id])')
       && !/no punches|loading|could not/i.test(body.textContent);
-
     if (!hasPrimaryRows || announce) renderFallbackPunches(rows);
     showStatus(rows.length
       ? `${rows.length} punch${rows.length === 1 ? '' : 'es'} found for ${currentManagerSiteId()} today.`
@@ -172,21 +165,16 @@ function schedulePunchRefresh(options = {}) {
 function textFromVisibleTimeArea() {
   const candidates = [
     byId('agencyPreview'),
-    byId('agencyPreviewPanel'),
-    byId('agencyWorkbench'),
     byId('timesheetBody')?.closest('table'),
     byId('managerTimeRangeResults')
   ].filter(Boolean);
-
   const visible = candidates.find((element) => !element.classList.contains('hidden') && element.offsetParent !== null)
     || candidates[0];
   return visible?.innerText?.trim() || '';
 }
 
 function selectedWeekLabel() {
-  return byId('weekPicker')?.value
-    || byId('agencyWeekPicker')?.value
-    || 'selected week';
+  return byId('weekPicker')?.value || byId('agencyWeekPicker')?.value || 'selected week';
 }
 
 async function copyTimeSummary() {
@@ -196,7 +184,7 @@ async function copyTimeSummary() {
     return;
   }
   await navigator.clipboard.writeText(text);
-  showStatus('Time summary copied. You can paste it into email, Slack, or payroll notes.');
+  showStatus('Time summary copied.');
 }
 
 function emailTimeSummary() {
@@ -216,24 +204,106 @@ function clickTabButton(id) {
 }
 
 function managerNavigationIsAvailable() {
-  const managerOnlyControls = [
-    byId('editPunchesTabBtn'),
-    byId('timesheetsTabBtn'),
-    byId('agencyTabBtn')
-  ].filter(Boolean);
+  return [byId('editPunchesTabBtn'), byId('timesheetsTabBtn'), byId('agencyTabBtn')]
+    .filter(Boolean)
+    .some((control) => !control.classList.contains('hidden') && !control.hidden && control.getAttribute('aria-hidden') !== 'true');
+}
 
-  return managerOnlyControls.some((control) => {
-    const explicitlyHidden = control.classList.contains('hidden')
-      || control.hidden
-      || control.getAttribute('aria-hidden') === 'true';
-    return !explicitlyHidden;
-  });
+function lastWeekRange() {
+  const now = new Date();
+  const day = now.getDay();
+  const thisMonday = new Date(now);
+  thisMonday.setHours(0, 0, 0, 0);
+  thisMonday.setDate(now.getDate() - ((day + 6) % 7));
+  const start = new Date(thisMonday);
+  start.setDate(start.getDate() - 7);
+  const end = new Date(thisMonday);
+  return { start, end };
+}
+
+function normalizeWorkerKey(row) {
+  return String(row.employeeId || row.workerId || row.nameKey || row.name || row.workerName || 'unknown')
+    .trim().toLowerCase();
+}
+
+async function runLastWeekPunchAudit() {
+  const output = byId('lastWeekPunchAuditStatus');
+  if (!output) return;
+  output.textContent = 'Checking recorded punches from last week...';
+  try {
+    const { start, end } = lastWeekRange();
+    const rows = (await loadBranchPunches())
+      .filter((row) => {
+        const ms = punchTimestampMs(row);
+        return ms >= start.getTime() && ms < end.getTime();
+      })
+      .sort((a, b) => punchTimestampMs(a) - punchTimestampMs(b));
+
+    const byWorkerDay = new Map();
+    rows.forEach((row) => {
+      const date = new Date(punchTimestampMs(row)).toLocaleDateString('en-CA');
+      const key = `${normalizeWorkerKey(row)}|${date}`;
+      if (!byWorkerDay.has(key)) byWorkerDay.set(key, []);
+      byWorkerDay.get(key).push(row);
+    });
+
+    const warnings = [];
+    byWorkerDay.forEach((dayRows) => {
+      const actions = dayRows.map((row) => row.action);
+      const name = dayRows[0]?.name || dayRows[0]?.workerName || 'Unknown worker';
+      const date = new Date(punchTimestampMs(dayRows[0])).toLocaleDateString();
+      if (!actions.includes('clock_in')) warnings.push(`${name} — ${date}: missing Clock In`);
+      if (!actions.includes('clock_out')) warnings.push(`${name} — ${date}: missing Clock Out`);
+      const hasOneLunchSide = actions.includes('start_lunch') !== actions.includes('end_lunch');
+      if (hasOneLunchSide) warnings.push(`${name} — ${date}: incomplete lunch pair`);
+    });
+
+    const label = `${start.toLocaleDateString()}–${new Date(end.getTime() - 1).toLocaleDateString()}`;
+    output.innerHTML = warnings.length
+      ? `<strong>${rows.length} recorded punches checked for ${escapeHtml(label)}.</strong><br>${warnings.length} possible missing-punch problem${warnings.length === 1 ? '' : 's'}:<br>${warnings.slice(0, 40).map(escapeHtml).join('<br>')}`
+      : `<strong>${rows.length} recorded punches checked for ${escapeHtml(label)}.</strong><br>No incomplete Clock In/Clock Out or one-sided lunch pairs were found in the records returned.`;
+  } catch (error) {
+    output.textContent = `Last-week audit failed: ${error.message || 'Unknown error'}`;
+  }
+}
+
+function installSimpleAgencyMode() {
+  if (agencySimpleModeInstalled) return;
+  const tab = byId('agencyTab');
+  const legacyPreview = tab?.querySelector('.agency-print-preview');
+  if (!tab || !legacyPreview) return;
+  agencySimpleModeInstalled = true;
+
+  tab.querySelectorAll('.agency-sticky-tools, .agency-stats-grid, #agencyCoverageStatus, .agency-recovery-actions, .agency-layout')
+    .forEach((element) => { element.style.display = 'none'; });
+  tab.querySelector('.agency-workbench-card > .card-head')?.classList.remove('split-head');
+  const heading = tab.querySelector('.agency-workbench-card > .card-head h2');
+  const description = tab.querySelector('.agency-workbench-card > .card-head p');
+  if (heading) heading.textContent = 'Temp Agency Export';
+  if (description) description.textContent = 'Choose one worker, preview the weekly sheet, then print or save it as a PDF.';
+  const topExportButtons = tab.querySelector('.agency-workbench-card > .card-head .form-actions');
+  if (topExportButtons) topExportButtons.style.display = 'none';
+  legacyPreview.open = true;
+  const summary = legacyPreview.querySelector('summary');
+  if (summary) summary.style.display = 'none';
+
+  const auditBox = document.createElement('div');
+  auditBox.className = 'card';
+  auditBox.style.marginTop = '16px';
+  auditBox.innerHTML = `
+    <div class="card-head">
+      <h3>Last Week Punch Check</h3>
+      <p>Read-only check for recorded Clock In, Clock Out, and incomplete lunch pairs. It does not edit or delete payroll data.</p>
+    </div>
+    <button id="runLastWeekPunchAuditBtn" class="secondary-btn" type="button">Check Last Week's Recorded Punches</button>
+    <div id="lastWeekPunchAuditStatus" class="status-box" style="margin-top:12px;">Not checked yet.</div>`;
+  legacyPreview.insertAdjacentElement('afterend', auditBox);
+  byId('runLastWeekPunchAuditBtn')?.addEventListener('click', runLastWeekPunchAudit);
 }
 
 function installManagerControls() {
   if (controlsInstalled || !byId('appShell') || !managerNavigationIsAvailable()) return false;
   controlsInstalled = true;
-
   const bar = document.createElement('div');
   bar.id = 'timeclockQuickActions';
   bar.className = 'card';
@@ -241,7 +311,7 @@ function installManagerControls() {
   bar.innerHTML = `
     <div class="card-head">
       <h3>Quick Actions</h3>
-      <p>Refresh punches, correct time, review the week, or send hours without hunting through every tab.</p>
+      <p>Refresh punches, correct time, review the week, or send hours.</p>
     </div>
     <div class="form-actions" style="flex-wrap:wrap">
       <button id="quickRefreshPunches" class="primary-btn" type="button">Refresh Today's Punches</button>
@@ -251,24 +321,20 @@ function installManagerControls() {
       <button id="quickCopyTime" class="ghost-btn" type="button">Copy Time Summary</button>
       <button id="quickEmailTime" class="ghost-btn" type="button">Email Time Summary</button>
     </div>`;
-
   const appShell = byId('appShell');
   const tabBar = byId('tabBar');
   appShell.insertBefore(bar, tabBar || appShell.firstChild);
-
   byId('quickRefreshPunches')?.addEventListener('click', () => ensurePunchesVisible({ announce: true }));
   byId('quickEditPunches')?.addEventListener('click', () => clickTabButton('editPunchesTabBtn'));
   byId('quickWeeklyTime')?.addEventListener('click', () => clickTabButton('timesheetsTabBtn'));
   byId('quickAgencyExport')?.addEventListener('click', () => clickTabButton('agencyTabBtn'));
   byId('quickCopyTime')?.addEventListener('click', () => copyTimeSummary().catch((error) => showStatus(error.message, true)));
   byId('quickEmailTime')?.addEventListener('click', emailTimeSummary);
-
   document.addEventListener('change', (event) => {
     if (event.target.matches('.manager-branch-select, [data-manager-branch-select], #managerBranchSelect')) {
       schedulePunchRefresh({ announce: true });
     }
   });
-
   schedulePunchRefresh();
   return true;
 }
@@ -276,6 +342,7 @@ function installManagerControls() {
 function scheduleManagerControlInstall() {
   MANAGER_CONTROL_RETRY_MS.forEach((delay) => {
     window.setTimeout(() => {
+      installSimpleAgencyMode();
       if (!controlsInstalled) installManagerControls();
     }, delay);
   });
@@ -284,7 +351,6 @@ function scheduleManagerControlInstall() {
 function watchWorkerPunchConfirmation() {
   const status = byId('workerStatusMessage');
   if (!status) return;
-
   const observer = new MutationObserver(() => {
     const text = status.textContent.toLowerCase();
     if (/saved|recorded|clocked|punch complete|success/.test(text)) {
@@ -300,6 +366,7 @@ function watchWorkerPunchConfirmation() {
 
 function initialize() {
   watchWorkerPunchConfirmation();
+  installSimpleAgencyMode();
   const apps = getApps();
   if (!apps.length) return;
   const auth = getAuth(apps[0]);
