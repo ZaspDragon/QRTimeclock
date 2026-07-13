@@ -3316,10 +3316,10 @@ function getDerivedTimesheetRows() {
   const weekKey = formatDateKey(state.selectedWeekStart);
   const grouped = new Map();
   const profileIndex = buildWorkerProfileIndex();
-  const canonicalDirectory = buildCanonicalWorkerDirectory();
+  const canonicalDirectory = buildCanonicalWorkerDirectory([], profileIndex);
 
   state.selectedWeekPunchRows.forEach((p) => {
-    const key = getWorkerIdentityKey(p, canonicalDirectory);
+    const key = getWorkerIdentityKey(p, canonicalDirectory, profileIndex);
     if (!key) return;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(p);
@@ -3442,8 +3442,7 @@ function findTimesheetEmployee(personPunches, identityKey, profileIndex = buildW
   ].map((employee) => [employee.id || employee.employeeId || `${employee.nameKey}:${employee.name}`, employee])).values()];
   const ids = new Set();
   personPunches.forEach((punch) => {
-    if (punch.employeeId) ids.add(String(punch.employeeId));
-    if (punch.workerId) ids.add(String(punch.workerId));
+    getTrustedRecordWorkerIds(punch, profileIndex).forEach((id) => ids.add(id));
   });
 
   for (const id of ids) {
@@ -5445,13 +5444,13 @@ function renderAgencyRecoveryStatus() {
 function buildAgencyReviewRows() {
   const punches = getAgencySourcePunches();
   const employeeRows = getAgencyEmployeeRowsForReview();
-  const directory = buildAgencyWorkerDirectory([...punches, ...employeeRows, ...(state.allUsers || [])]);
   const profileIndex = buildWorkerProfileIndex(employeeRows, state.allUsers || []);
+  const directory = buildAgencyWorkerDirectory([...punches, ...employeeRows, ...(state.allUsers || [])], profileIndex);
   const grouped = new Map();
 
   punches.forEach((punch) => {
     const normalized = normalizePunchRecordForDisplay(punch);
-    const key = getWorkerIdentityKey(normalized, directory);
+    const key = getWorkerIdentityKey(normalized, directory, profileIndex);
     if (!key) return;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(normalized);
@@ -5495,7 +5494,7 @@ function getAgencyEmployeeRowsForReview() {
 function findAgencyReviewEmployee(personPunches, identityKey, profileIndex, employeeRows) {
   const ids = new Set();
   personPunches.forEach((punch) => {
-    getRecordWorkerIds(punch).forEach((id) => ids.add(id));
+    getTrustedRecordWorkerIds(punch, profileIndex).forEach((id) => ids.add(id));
   });
   for (const id of ids) {
     if (profileIndex.has(id)) return profileIndex.get(id);
@@ -5507,12 +5506,12 @@ function findAgencyReviewEmployee(personPunches, identityKey, profileIndex, empl
   ) || null;
 }
 
-function buildAgencyWorkerDirectory(sourceRows = []) {
+function buildAgencyWorkerDirectory(sourceRows = [], profileIndex = buildWorkerProfileIndex()) {
   const signatureIds = new Map();
   const emailIds = new Map();
 
   sourceRows.forEach((row) => {
-    const ids = [...getWorkerProfileIds(row), ...getRecordWorkerIds(row)].filter(Boolean);
+    const ids = getDirectoryWorkerIds(row, profileIndex);
     const email = getRecordEmail(row);
     const signature = getWorkerSignature(row);
     if (signature && ids.length) {
@@ -7045,6 +7044,21 @@ function getRecordWorkerIds(row) {
   ].map((value) => String(value || '').trim()).filter(Boolean);
 }
 
+function getTrustedRecordWorkerIds(row, profileIndex = buildWorkerProfileIndex()) {
+  const copiedName = getCopiedWorkerName(row);
+  return getRecordWorkerIds(row).filter((id) => {
+    const profile = profileIndex.get(id);
+    const profileName = getWorkerProfileName(profile);
+    return !copiedName || !profileName || !namesDiffer(profileName, copiedName);
+  });
+}
+
+function getDirectoryWorkerIds(row, profileIndex = buildWorkerProfileIndex()) {
+  return row?.action || row?.timestampMs || row?.dateKey || row?.weekKey
+    ? getTrustedRecordWorkerIds(row, profileIndex)
+    : [...getWorkerProfileIds(row), ...getTrustedRecordWorkerIds(row, profileIndex)].filter(Boolean);
+}
+
 function buildWorkerProfileIndex(workers = state.allEmployees || [], users = state.allUsers || []) {
   const byId = new Map();
   (workers || []).forEach((worker) => {
@@ -7109,7 +7123,7 @@ function getWorkerSignature(row) {
   return name && (agency || branch) ? `${name}|${agency}|${branch}` : '';
 }
 
-function buildCanonicalWorkerDirectory(records = []) {
+function buildCanonicalWorkerDirectory(records = [], profileIndex = buildWorkerProfileIndex()) {
   const sourceRows = [
     ...(state.allEmployees || []),
     ...(state.publicEmployeeRecords || []),
@@ -7122,7 +7136,7 @@ function buildCanonicalWorkerDirectory(records = []) {
   const emailIds = new Map();
 
   sourceRows.forEach((row) => {
-    const ids = [...getWorkerProfileIds(row), ...getRecordWorkerIds(row)].filter(Boolean);
+    const ids = getDirectoryWorkerIds(row, profileIndex);
     const email = getRecordEmail(row);
     const signature = getWorkerSignature(row);
     if (signature && ids.length) {
@@ -7143,8 +7157,8 @@ function buildCanonicalWorkerDirectory(records = []) {
   return { signaturePrimary, emailPrimary };
 }
 
-function getWorkerIdentityKey(row, directory = buildCanonicalWorkerDirectory()) {
-  const stableId = getRecordWorkerIds(row)[0] || getWorkerProfileIds(row)[0] || '';
+function getWorkerIdentityKey(row, directory = buildCanonicalWorkerDirectory(), profileIndex = buildWorkerProfileIndex()) {
+  const stableId = getDirectoryWorkerIds(row, profileIndex)[0] || '';
   const email = getRecordEmail(row);
   const signature = getWorkerSignature(row);
   const signaturePrimaryId = signature ? directory.signaturePrimary.get(signature) : '';
