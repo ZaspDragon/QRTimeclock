@@ -2804,12 +2804,6 @@ function ensureTabDataLoaded(tabId) {
 
   if (tabId === 'agencyTab') {
     loadSelectedWeekForManager({ force: !state.selectedWeekPunchRowsLoaded });
-    if (!state.loadedTabs.has('agencyTab')) {
-      state.loadedTabs.add('agencyTab');
-      loadAgencyEmployeePage({ reset: true });
-    } else {
-      renderAgencyWorkbench();
-    }
     return;
   }
 
