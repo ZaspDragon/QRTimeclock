@@ -31,8 +31,7 @@ function escapeHtml(value) {
 }
 
 function normalizeSiteId(value) {
-  const site = String(value || '').trim().toUpperCase();
-  return site === 'OHC' ? 'OHC' : 'OH01';
+  return String(value || '').trim().toUpperCase() || 'OH01';
 }
 
 function currentManagerSiteId() {
