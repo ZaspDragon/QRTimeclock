@@ -1,7 +1,8 @@
 {
   "scripts": {
-    "check": "node --check app.js && node --check scripts/branch-backfill-preview.js && node --check scripts/payroll-snapshot-regression.mjs",
+    "check": "node --check app.js && node --check scripts/branch-backfill-preview.js && node --check scripts/payroll-snapshot-regression.mjs && node --check scripts/payroll-critical-regression.mjs && node scripts/payroll-critical-regression.mjs",
     "test:payroll": "node scripts/payroll-snapshot-regression.mjs",
+    "test:payroll-critical": "node scripts/payroll-critical-regression.mjs",
     "build": "npm run check"
   }
 }

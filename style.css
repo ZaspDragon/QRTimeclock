@@ -382,6 +382,10 @@ button[aria-busy="true"]::after {
   background: rgba(255,255,255,0.05);
 }
 .status-box { padding: 14px; margin: 10px 0 16px; }
+.status-box.error-state {
+  border-color: rgba(255, 107, 107, 0.45);
+  color: #ffd8d8;
+}
 .worker-self-service {
   padding: 18px;
   border-radius: 14px;

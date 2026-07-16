@@ -104,9 +104,20 @@ service cloud.firestore {
 
     function sameCompanyAndSite(data) {
       return activeProfile()
-        && validCompanySite(data)
         && data.companyId == myCompanyId()
-        && mySiteIds().hasAny([data.siteId]);
+        && (
+          (data.siteId is string && mySiteIds().hasAny([data.siteId]))
+          || (data.assignedSiteId is string && mySiteIds().hasAny([data.assignedSiteId]))
+          || (data.branchId is string && mySiteIds().hasAny([data.branchId]))
+          || (data.siteIds is list && data.siteIds.hasAny(mySiteIds()))
+        );
+    }
+
+    function noUsableBranch(data) {
+      return (!('siteId' in data) || data.siteId == null || data.siteId == '')
+        && (!('assignedSiteId' in data) || data.assignedSiteId == null || data.assignedSiteId == '')
+        && (!('branchId' in data) || data.branchId == null || data.branchId == '')
+        && (!('siteIds' in data) || !(data.siteIds is list) || data.siteIds.size() == 0);
     }
 
     function sameAgency(data) {
@@ -162,7 +173,44 @@ service cloud.firestore {
         && request.resource.data.action in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out']
         && request.resource.data.dateKey is string
         && request.resource.data.weekKey is string
-        && request.resource.data.timestampMs is number;
+        && request.resource.data.timestampMs is number
+        && request.resource.data.employeeId is string
+        && request.resource.data.employeeId.size() > 0
+        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && request.resource.data.duplicateGuardKey is string
+        && existsAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey))
+        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.employeeId == request.resource.data.employeeId
+        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.action == request.resource.data.action
+        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.companyId == request.resource.data.companyId
+        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.siteId == request.resource.data.siteId;
+    }
+
+    function publicPunchGuardCreate(guardId) {
+      return request.resource.data.duplicateGuardKey == guardId
+        && request.resource.data.punchId == guardId
+        && validCompanySite(request.resource.data)
+        && request.resource.data.employeeId is string
+        && request.resource.data.employeeId.size() > 0
+        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && request.resource.data.action in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out']
+        && request.resource.data.acceptedAtMs is number;
+    }
+
+    function publicPunchStateWrite(stateId) {
+      return request.resource.data.workerStateKey == stateId
+        && validCompanySite(request.resource.data)
+        && request.resource.data.employeeId is string
+        && request.resource.data.employeeId.size() > 0
+        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && request.resource.data.lastAction in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out']
+        && request.resource.data.lastPunchAtMs is number;
+    }
+
+    function branchlessHistoricalRead(data) {
+      return activeProfile()
+        && (isOwnerOrSuperAdmin() || isAdmin() || isManager())
+        && data.companyId == myCompanyId()
+        && noUsableBranch(data);
     }
 
     function workerOwnsRecord(data) {
@@ -331,6 +379,7 @@ service cloud.firestore {
         ))
         || (activeProfile() && (
           ((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data))
+          || branchlessHistoricalRead(resource.data)
           || workerOwnsRecord(resource.data)
         ));
 
@@ -343,13 +392,28 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /punchGuards/{guardId} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if publicPunchGuardCreate(guardId);
+      allow update, delete: if false;
+    }
+
+    match /punchStates/{stateId} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if publicPunchStateWrite(stateId);
+      allow delete: if false;
+    }
+
     match /punch_edits/{editId} {
       allow create: if activeProfile()
         && (hasEditPunchPermission() || hasDeletePunchPermission())
         && inScope(request.resource.data);
 
       allow read: if activeProfile()
-        && ((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data));
+        && (((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data))
+          || branchlessHistoricalRead(resource.data));
 
       allow update, delete: if false;
     }
@@ -357,6 +421,7 @@ service cloud.firestore {
     match /timesheets/{timesheetId} {
       allow read: if activeProfile() && (
         ((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data))
+        || branchlessHistoricalRead(resource.data)
         || workerOwnsRecord(resource.data)
       );
 

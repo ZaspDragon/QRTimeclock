@@ -17,6 +17,7 @@ import {
   getDocs,
   setDoc,
   addDoc,
+  runTransaction,
   updateDoc,
   writeBatch,
   serverTimestamp,
@@ -83,6 +84,10 @@ const state = {
   firestoreReadCounters: {},
   employeeListCache: new Map(),
   weeklyDataCache: new Map(),
+  weeklyLoadRequestId: 0,
+  selectedWeekLoadMeta: null,
+  historicalDuplicatePunchGroups: [],
+  loggedDuplicatePunchDiagnostics: new Set(),
   loadedTabs: new Set(),
   managerTimeLookup: null,
   agencyReview: {
@@ -215,6 +220,7 @@ const els = {
   gpsOutsideCount: document.getElementById('gpsOutsideCount'),
   gpsLowAccuracyCount: document.getElementById('gpsLowAccuracyCount'),
   timesheetBody: document.getElementById('timesheetBody'),
+  timesheetStatus: document.getElementById('timesheetStatus'),
   weekPicker: document.getElementById('weekPicker'),
   managerTabBtn: document.getElementById('managerTabBtn'),
   timesheetsTabBtn: document.getElementById('timesheetsTabBtn'),
@@ -599,6 +605,7 @@ function wireEvents() {
   });
   els.editWeekPicker?.addEventListener('change', () => {
     state.selectedWeekStart = normalizeWeekStartDate(els.editWeekPicker.value);
+    syncSelectedWeekInputs();
     loadSelectedWeekForManager({ force: true });
   });
 
@@ -613,6 +620,8 @@ function wireEvents() {
     if (state.me && isEmployee()) {
       clearMyTimecardListener();
       attachMyTimecardView();
+    } else if (state.me && isManager()) {
+      loadSelectedWeekForManager({ force: true, updateAgencyRange: false });
     }
   });
 
@@ -651,6 +660,7 @@ function wireEvents() {
   els.agencyLegacyWorkerSelect?.addEventListener('change', () => renderAgencyPreview());
   els.agencyWeekPicker?.addEventListener('change', () => {
     state.selectedWeekStart = normalizeWeekStartDate(els.agencyWeekPicker.value);
+    syncSelectedWeekInputs();
     state.agencyReview.page = 1;
     loadSelectedWeekForManager({ force: true });
   });
@@ -1404,6 +1414,158 @@ function positiveNumberOrDefault(value, fallback) {
   return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
+const PUBLIC_PUNCH_DUPLICATE_WINDOW_MS = 60 * 1000;
+
+function getPublicEmployeeMatchesForName(name, siteId = getPublicSiteId(), agencyId = '') {
+  const nameKey = normalizeName(name);
+  const normalizedAgencyId = String(agencyId || '').trim();
+  const normalizedSiteId = normalizeSiteId(siteId, getCurrentSiteId());
+  const source = [...new Map([
+    ...(state.publicEmployeeRecords || []),
+    ...(state.publicEmployees || []),
+  ].map((employee) => [employee.id || employee.employeeId || `${employee.nameKey}:${employee.employeeNumber}`, employee])).values()];
+  return source.filter((employee) => {
+    if (!isActiveEmployee(employee)) return false;
+    if (normalizeName(employee.name || employee.nameKey || '') !== nameKey) return false;
+    if (String(employee.agencyId || '').trim() !== normalizedAgencyId) return false;
+    const employeeSites = parseSiteIds([
+      employee.siteId,
+      employee.assignedSiteId,
+      employee.branchId,
+      ...(Array.isArray(employee.siteIds) ? employee.siteIds : []),
+    ], false);
+    return !employeeSites.length || employeeSites.includes(normalizedSiteId);
+  }).sort(compareEmployeeRecords);
+}
+
+function findSafePublicEmployeeMatchForNewWorker(name, siteId = getPublicSiteId(), agencyId = '') {
+  const matches = getPublicEmployeeMatchesForName(name, siteId, agencyId);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function duplicatePunchMessage(timestampMs) {
+  return `That punch was already recorded at ${formatDateTime(timestampMs)}. No second punch was created.`;
+}
+
+function invalidRepeatedPunchMessage(action, timestampMs) {
+  return `${prettyAction(action)} was already the last recorded action at ${formatDateTime(timestampMs)}. Ask a manager to correct the record if needed.`;
+}
+
+function buildPublicPunchGuardSource(payload) {
+  const boundedWindow = Math.floor(Number(payload.timestampMs || Date.now()) / PUBLIC_PUNCH_DUPLICATE_WINDOW_MS);
+  return [
+    payload.companyId || getCurrentCompanyId(),
+    payload.siteId || getCurrentSiteId(),
+    payload.agencyId || '',
+    payload.employeeId || payload.workerId || '',
+    payload.action || '',
+    boundedWindow,
+  ].join('|');
+}
+
+async function publicPunchGuardKey(payload) {
+  const hash = await hashIdentityKey(buildPublicPunchGuardSource(payload));
+  return `public_${hash.slice(0, 40)}`;
+}
+
+async function publicPunchStateKey(payload) {
+  const hash = await hashIdentityKey([
+    payload.companyId || getCurrentCompanyId(),
+    payload.siteId || getCurrentSiteId(),
+    payload.agencyId || '',
+    payload.employeeId || payload.workerId || '',
+  ].join('|'));
+  return `public_${hash.slice(0, 40)}`;
+}
+
+async function findLatestPublicPunchForEmployee(payload, scope = 'Put Away save') {
+  try {
+    const snapshot = await getDocsCounted(query(
+      collection(db, 'punches'),
+      where('companyId', '==', payload.companyId),
+      where('siteId', '==', payload.siteId),
+      where('employeeId', '==', payload.employeeId),
+      orderBy('timestampMs', 'desc'),
+      limit(1)
+    ), scope);
+    const row = snapshot.docs[0];
+    return row ? normalizePunchRecordForDisplay({ id: row.id, ...row.data() }) : null;
+  } catch (error) {
+    console.warn('Latest punch sequence lookup skipped:', error.message);
+    return null;
+  }
+}
+
+async function savePublicPunchWithIdempotency(payload, { recentPunch = null } = {}) {
+  const duplicateGuardKey = await publicPunchGuardKey(payload);
+  const workerStateKey = await publicPunchStateKey(payload);
+  const punchRef = doc(db, 'punches', duplicateGuardKey);
+  const guardRef = doc(db, 'punchGuards', duplicateGuardKey);
+  const stateRef = doc(db, 'punchStates', workerStateKey);
+  const nowMs = Number(payload.timestampMs || Date.now());
+
+  return runTransaction(db, async (transaction) => {
+    const guardSnap = await transaction.get(guardRef);
+    if (guardSnap.exists()) {
+      const guard = guardSnap.data();
+      return {
+        status: 'duplicate',
+        punchId: guard.punchId || duplicateGuardKey,
+        timestampMs: Number(guard.acceptedAtMs || nowMs),
+        action: guard.action || payload.action,
+      };
+    }
+
+    const stateSnap = await transaction.get(stateRef);
+    const stateData = stateSnap.exists() ? stateSnap.data() : null;
+    const lastAction = normalizePunchAction(stateData?.lastAction || recentPunch?.action || '');
+    const lastPunchAtMs = Number(stateData?.lastPunchAtMs || recentPunch?.timestampMs || 0);
+    if (lastAction && lastAction === payload.action) {
+      if (lastPunchAtMs && Math.abs(nowMs - lastPunchAtMs) <= PUBLIC_PUNCH_DUPLICATE_WINDOW_MS) {
+        return {
+          status: 'duplicate',
+          punchId: stateData?.lastPunchId || recentPunch?.id || '',
+          timestampMs: lastPunchAtMs,
+          action: lastAction,
+        };
+      }
+      throw new Error(invalidRepeatedPunchMessage(payload.action, lastPunchAtMs || nowMs));
+    }
+
+    const punchPayload = {
+      ...payload,
+      duplicateGuardKey,
+      idempotencyKey: duplicateGuardKey,
+      workerStateKey,
+    };
+    transaction.set(punchRef, punchPayload);
+    transaction.set(guardRef, {
+      duplicateGuardKey,
+      punchId: duplicateGuardKey,
+      companyId: payload.companyId,
+      siteId: payload.siteId,
+      agencyId: payload.agencyId || '',
+      employeeId: payload.employeeId,
+      action: payload.action,
+      acceptedAtMs: nowMs,
+      createdAt: serverTimestamp(),
+      expiresAtMs: nowMs + PUBLIC_PUNCH_DUPLICATE_WINDOW_MS,
+    });
+    transaction.set(stateRef, {
+      workerStateKey,
+      companyId: payload.companyId,
+      siteId: payload.siteId,
+      agencyId: payload.agencyId || '',
+      employeeId: payload.employeeId,
+      lastAction: payload.action,
+      lastPunchAtMs: nowMs,
+      lastPunchId: duplicateGuardKey,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    return { status: 'created', punchId: duplicateGuardKey, timestampMs: nowMs, action: payload.action };
+  });
+}
+
 async function handleWorkerPunch(action) {
   if (state.workerPunchSaving) return;
   resetFirestoreReadCounter('Put Away save');
@@ -1438,14 +1600,21 @@ async function handleWorkerPunch(action) {
 
   // Auto-create employee if new
   if (emp._isNew) {
-    const reusable = findReusableEmployee({
+    const directMatches = getPublicEmployeeMatchesForName(emp.name, publicSiteId, '');
+    const reusable = findSafePublicEmployeeMatchForNewWorker(emp.name, publicSiteId, '') || findReusableEmployee({
       name: emp.name,
       agencyId: '',
-      assignedSiteId: '',
-    }, state.publicEmployees);
+      assignedSiteId: publicSiteId,
+    }, [...(state.publicEmployeeRecords || []), ...(state.publicEmployees || [])]);
     if (reusable) {
       emp = reusable;
       state.workerEmployee = reusable;
+    } else if (directMatches.length > 1) {
+      state.workerEmployee = null;
+      updateWorkerPinField(null);
+      renderAutocomplete(directMatches, emp.name, true);
+      toast('More than one worker has that name. Select the correct employee before punching.', true);
+      return;
     }
   }
 
@@ -1502,6 +1671,12 @@ async function handleWorkerPunch(action) {
       }
     } catch (error) {
       console.warn('Auto-create employee skipped:', error.message);
+      if (/more than one active employee/i.test(error.message || '')) {
+        state.workerEmployee = null;
+        updateWorkerPinField(null);
+        toast('More than one worker has that name. Select the correct employee before punching.', true);
+        return;
+      }
       const identityHash = await hashIdentityKey(employeeScopeKey(emp));
       const existingSnap = await getDocCounted(doc(db, 'employees', `auto_${identityHash.slice(0, 24)}`), 'Put Away save');
       emp = existingSnap.exists()
@@ -1530,7 +1705,10 @@ async function handleWorkerPunch(action) {
     const duplicateKey = `lastPunch:${emp.employeeId || emp.id || nameKey}:${action}`;
     const previousPunchMs = Number(localStorage.getItem(duplicateKey) || 0);
     if (previousPunchMs && nowMs - previousPunchMs < 10000) {
-      throw new Error('That punch was already saved. Please wait a few seconds.');
+      const message = duplicatePunchMessage(previousPunchMs);
+      if (els.workerStatusMessage) els.workerStatusMessage.textContent = message;
+      toast(message);
+      return;
     }
     const payload = {
       ...buildPunchLocationPayload(emp, punchSiteId),
@@ -1552,7 +1730,21 @@ async function handleWorkerPunch(action) {
       qrSlug: state.siteContext.qrSlug || '',
     };
     validatePunchPayloadForSave(payload);
-    await addDoc(collection(db, 'punches'), payload);
+    const recentPunch = await findLatestPublicPunchForEmployee(payload);
+    const saveResult = await savePublicPunchWithIdempotency(payload, { recentPunch });
+
+    if (saveResult.status === 'duplicate') {
+      const message = duplicatePunchMessage(saveResult.timestampMs || nowMs);
+      if (els.workerLastActionValue) els.workerLastActionValue.textContent = prettyAction(saveResult.action || action);
+      if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = formatDateTime(saveResult.timestampMs || nowMs);
+      if (els.workerStatusValue) els.workerStatusValue.textContent = statusLabelForAction(saveResult.action || action);
+      if (els.workerStatusMessage) els.workerStatusMessage.textContent = message;
+      attachWorkerLiveView(name);
+      localStorage.setItem('workerPunchName', name);
+      localStorage.setItem(duplicateKey, String(saveResult.timestampMs || nowMs));
+      toast(message);
+      return;
+    }
 
     cacheWorkerPunch(emp, {
       name,
@@ -1590,7 +1782,8 @@ async function handleWorkerPunch(action) {
 
 function formatWorkerPunchError(error) {
   const message = String(error?.message || '').trim();
-  if (/already saved/i.test(message)) return 'That punch was already saved. Please wait a few seconds before trying again.';
+  if (/already recorded/i.test(message)) return message;
+  if (/already saved/i.test(message)) return 'That punch was already recorded. No second punch was created.';
   if (/select your/i.test(message)) return message;
   if (/permission|missing or insufficient/i.test(message)) return 'Punch could not be saved because access was denied. Ask a manager to check setup.';
   return message || 'Could not save punch. Check your connection and try again.';
@@ -1956,18 +2149,139 @@ async function fetchPunchesWithRange(baseConstraints, fromMs, toMs, options = {}
   return dedupePunches(rows);
 }
 
-function dedupePunches(punches) {
-  const unique = new Map();
-  punches.forEach((punch) => {
-    const key = punch.id || [
-      punch.employeeId || '',
-      punch.timestampMs || 0,
-      punch.action || '',
-      normalizeName(punch.name || punch.employeeName || ''),
-    ].join('|');
-    unique.set(key, punch);
+const DISPLAY_DUPLICATE_TOLERANCE_MS = 60 * 1000;
+
+function punchBranchFingerprint(punch = {}) {
+  return firstPresent(
+    punch.siteId,
+    punch.assignedSiteId,
+    punch.branchId,
+    Array.isArray(punch.siteIds) ? punch.siteIds[0] : '',
+    getCurrentSiteId()
+  );
+}
+
+function punchIdentityFingerprint(punch = {}) {
+  const employeeId = String(punch.employeeId || punch.workerId || '').trim();
+  if (employeeId) return `employee:${employeeId}`;
+  const employeeNumber = normalizeWorkerNumber(punch.employeeNumber || punch.workerNumber || '');
+  if (employeeNumber) return `number:${employeeNumber}`;
+  const nameKey = normalizeName(punch.nameKey || punch.name || punch.employeeName || punch.workerName || '');
+  return nameKey ? `name:${nameKey}` : '';
+}
+
+function punchDuplicateBaseKey(punch = {}) {
+  return [
+    punchIdentityFingerprint(punch),
+    normalizePunchAction(punch.action || punch.type || ''),
+    punch.companyId || getCurrentCompanyId(),
+    punchBranchFingerprint(punch),
+    String(punch.agencyId || ''),
+    isActivePunchRecord(punch) ? 'active' : 'deleted',
+  ].join('|');
+}
+
+function punchCompletenessScore(punch = {}) {
+  return [
+    punch.id,
+    punch.employeeId,
+    punch.employeeNumber,
+    punch.name,
+    punch.nameKey,
+    punch.timestampMs,
+    punch.timestamp,
+    punch.dateKey,
+    punch.weekKey,
+    punch.companyId,
+    punch.siteId,
+    punch.assignedSiteId,
+    punch.branchId,
+    punch.agencyId,
+    punch.source,
+    punch.createdAt,
+    punch.editedAt,
+    punch.managerSignedAt,
+  ].filter((value) => value !== undefined && value !== null && String(value).trim() !== '').length;
+}
+
+function preferCompletePunchRecord(punches) {
+  return [...punches].sort((left, right) => {
+    const scoreDiff = punchCompletenessScore(right) - punchCompletenessScore(left);
+    if (scoreDiff) return scoreDiff;
+    return String(left.id || '').localeCompare(String(right.id || ''));
+  })[0];
+}
+
+function classifyDuplicatePunches(punches) {
+  const normalized = (punches || [])
+    .map((punch) => normalizePunchRecordForDisplay(punch))
+    .filter((punch) => punchIdentityFingerprint(punch) && punch.action && Number(punch.timestampMs || 0));
+  const passthrough = (punches || [])
+    .map((punch) => normalizePunchRecordForDisplay(punch))
+    .filter((punch) => !punchIdentityFingerprint(punch) || !punch.action || !Number(punch.timestampMs || 0));
+  const buckets = new Map();
+  normalized.forEach((punch) => {
+    const key = punchDuplicateBaseKey(punch);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(punch);
   });
-  return [...unique.values()].sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
+
+  const deduped = [...passthrough];
+  const groups = [];
+  buckets.forEach((bucket, baseKey) => {
+    const sorted = [...bucket].sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
+    let group = [];
+    let anchorMs = 0;
+    const flush = () => {
+      if (!group.length) return;
+      const selected = preferCompletePunchRecord(group);
+      if (group.length > 1) {
+        const duplicateSourcePunches = group.map((punch) => ({ ...punch }));
+        const duplicateGroupKey = `${baseKey}|${Math.round(Number(selected.timestampMs || 0) / DISPLAY_DUPLICATE_TOLERANCE_MS)}`;
+        groups.push({
+          key: duplicateGroupKey,
+          punches: duplicateSourcePunches,
+          selectedPunchId: selected.id || '',
+        });
+        deduped.push({
+          ...selected,
+          duplicateGroupKey,
+          duplicateCount: group.length,
+          duplicateSourcePunches,
+          duplicatePunchIds: duplicateSourcePunches.map((punch) => punch.id).filter(Boolean),
+          duplicateDisplayWarning: true,
+        });
+      } else {
+        deduped.push(group[0]);
+      }
+      group = [];
+      anchorMs = 0;
+    };
+
+    sorted.forEach((punch) => {
+      const timestampMs = Number(punch.timestampMs || 0);
+      if (!group.length || timestampMs - anchorMs <= DISPLAY_DUPLICATE_TOLERANCE_MS) {
+        if (!group.length) anchorMs = timestampMs;
+        group.push(punch);
+      } else {
+        flush();
+        group.push(punch);
+        anchorMs = timestampMs;
+      }
+    });
+    flush();
+  });
+
+  return {
+    deduped: deduped.sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0)),
+    groups,
+  };
+}
+
+function dedupePunches(punches) {
+  const duplicateClassification = classifyDuplicatePunches(punches);
+  state.historicalDuplicatePunchGroups = duplicateClassification.groups || [];
+  return duplicateClassification.deduped;
 }
 
 function buildTimeRangeTotals(punches) {
@@ -3187,21 +3501,60 @@ async function loadWeeklyWorkspaceData({ weekStartDate = state.selectedWeekStart
     ];
     if (isAgencyUser()) tsConstraints.push(where('agencyId', '==', agencyScopeId()));
 
-    const [employees, punchSnap, timesheetSnap, compatibleRows] = await Promise.all([
+    const results = await Promise.allSettled([
       employeePromise,
       getDocsCounted(query(collection(db, 'punches'), ...punchConstraints), scope),
       getDocsCounted(query(collection(db, 'timesheets'), ...tsConstraints), scope),
-      loadCompatibleWeeklyPunchRows(normalizedWeekStart, scope)
+      loadCompatibleWeeklyPunchRowsDetailed(normalizedWeekStart, scope)
     ]);
 
-    const snapshotRows = punchSnap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() }));
+    const [employeeResult, punchResult, timesheetResult, compatibleResult] = results;
+    const employees = employeeResult.status === 'fulfilled' ? employeeResult.value : [];
+    if (employeeResult.status === 'rejected') {
+      console.warn('Weekly employee lookup failed:', employeeResult.reason?.message || employeeResult.reason);
+    }
+
+    const snapshotRows = punchResult.status === 'fulfilled'
+      ? punchResult.value.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data(), _sourceLookup: 'weekKey' }))
+      : [];
+    if (punchResult.status === 'rejected') {
+      console.warn('Optimized weekly punch lookup failed:', punchResult.reason?.message || punchResult.reason);
+    }
+
+    const compatiblePayload = compatibleResult.status === 'fulfilled'
+      ? compatibleResult.value
+      : { rows: [], failures: [{ label: 'compatibility', error: compatibleResult.reason }], attempted: 1 };
+    const compatibleRows = compatiblePayload.rows || [];
+    if (compatibleResult.status === 'rejected') {
+      console.warn('Compatible weekly punch lookup failed:', compatibleResult.reason?.message || compatibleResult.reason);
+    }
+
     const mergedRows = dedupePunches([...snapshotRows, ...compatibleRows]);
     const timesheets = {};
-    timesheetSnap.docs.forEach((d) => {
-      timesheets[d.id] = { id: d.id, ...d.data() };
-    });
+    if (timesheetResult.status === 'fulfilled') {
+      timesheetResult.value.docs.forEach((d) => {
+        timesheets[d.id] = { id: d.id, ...d.data() };
+      });
+    } else {
+      console.warn('Weekly timesheet lookup failed:', timesheetResult.reason?.message || timesheetResult.reason);
+    }
 
-    return { weekKey, employees, punches: mergedRows, timesheets };
+    const metadata = {
+      optimizedPunchQueryFailed: punchResult.status === 'rejected',
+      compatiblePunchQueryFailed: compatibleResult.status === 'rejected' || Boolean((compatiblePayload.failures || []).length && !(compatiblePayload.rows || []).length),
+      compatiblePunchFailures: compatiblePayload.failures || [],
+      compatibilityRowsLoaded: compatibleRows.length,
+      optimizedRowsLoaded: snapshotRows.length,
+      timesheetQueryFailed: timesheetResult.status === 'rejected',
+      timesheetsLoaded: Object.keys(timesheets).length,
+      duplicatePunchGroups: state.historicalDuplicatePunchGroups || [],
+    };
+    metadata.allHistoricalQueriesFailed = metadata.optimizedPunchQueryFailed
+      && metadata.compatiblePunchQueryFailed
+      && metadata.timesheetQueryFailed;
+    metadata.loadedOnlyCompatibilityPunches = !snapshotRows.length && compatibleRows.length > 0;
+
+    return { weekKey, employees, punches: mergedRows, timesheets, metadata };
   })();
 
   state.weeklyDataCache.set(cacheKey, { savedAt: Date.now(), data: pending });
@@ -3215,9 +3568,13 @@ async function loadWeeklyWorkspaceData({ weekStartDate = state.selectedWeekStart
   }
 }
 
-function applyWeeklyWorkspaceData(data, { resetAgencyRange = true } = {}) {
+function applyWeeklyWorkspaceData(data, { resetAgencyRange = true, requestId = null } = {}) {
+  const selectedWeekKey = formatDateKey(normalizeWeekStartDate(state.selectedWeekStart));
+  if (requestId && requestId !== state.weeklyLoadRequestId) return false;
+  if (data?.weekKey && data.weekKey !== selectedWeekKey) return false;
   state.allEmployees = data.employees || [];
   state.selectedWeekTimesheetDocs = data.timesheets || {};
+  state.selectedWeekLoadMeta = data.metadata || null;
   const weeklyPunches = data.punches || [];
   state.agencyReview.deletedPunchRows = weeklyPunches.filter((row) => !isActivePunchRecord(row));
   state.selectedWeekPunchRows = weeklyPunches.filter(isActivePunchRecord);
@@ -3228,46 +3585,99 @@ function applyWeeklyWorkspaceData(data, { resetAgencyRange = true } = {}) {
   renderManagerTimeWorkerOptions();
   if (isAdmin()) renderDuplicateWorkers(false);
   renderDerivedTimesheets();
+  reportDuplicatePunchDiagnostics(data.metadata?.duplicatePunchGroups || []);
   populateAgencyWorkerSelect();
   renderAgencyPreview();
   renderAgencyWorkbench();
+  return true;
 }
 
 function attachTimesheetView({ force = false } = {}) {
   state.selectedWeekStart = normalizeWeekStartDate(state.selectedWeekStart);
   syncSelectedWeekInputs();
+  const requestId = ++state.weeklyLoadRequestId;
+  const requestedWeekKey = formatDateKey(state.selectedWeekStart);
   state.selectedWeekPunchRowsLoaded = false;
   state.selectedWeekPunchRows = [];
+  state.selectedWeekLoadMeta = null;
+  setWeeklyLoadStatus('Loading weekly data...');
   renderEditPunchesTable(getEditablePunchRows());
   loadWeeklyWorkspaceData({ weekStartDate: state.selectedWeekStart, force, scope: 'Weekly Signoff' })
-    .then((data) => applyWeeklyWorkspaceData(data))
+    .then((data) => applyWeeklyWorkspaceData(data, { requestId }))
     .catch((error) => {
+      if (requestId !== state.weeklyLoadRequestId || requestedWeekKey !== formatDateKey(state.selectedWeekStart)) return;
       console.error(error);
       state.selectedWeekPunchRowsLoaded = true;
       state.selectedWeekPunchRows = [];
       renderEditPunchesTable(getEditablePunchRows());
+      setWeeklyLoadStatus('All historical queries failed. No weekly data was changed on screen.', true);
       toast(error.message || 'Could not load weekly signoff data.', true);
     });
 }
 
 async function loadCompatibleWeeklyPunchRows(weekStartDate, scope = 'Weekly Signoff') {
+  const result = await loadCompatibleWeeklyPunchRowsDetailed(weekStartDate, scope);
+  return result.rows;
+}
+
+function punchMatchesSelectedBranchCompatibility(punch, selectedBranch = getCurrentSiteId()) {
+  const branchOrder = [
+    punch.siteId,
+    punch.assignedSiteId,
+    punch.branchId,
+  ];
+  for (const branchValue of branchOrder) {
+    const normalized = String(branchValue || '').trim();
+    if (normalized) return normalized === selectedBranch;
+  }
+  if (Array.isArray(punch.siteIds) && punch.siteIds.length) {
+    return parseSiteIds(punch.siteIds, false).includes(selectedBranch);
+  }
+  return true;
+}
+
+async function loadCompatibleWeeklyPunchRowsDetailed(weekStartDate, scope = 'Weekly Signoff') {
   const weekStart = startOfLocalDay(normalizeWeekStartDate(weekStartDate));
   const weekEnd = addLocalDays(weekStart, 6);
   weekEnd.setHours(23, 59, 59, 999);
-  const constraints = [...branchConstraints()];
-  if (isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()));
-  try {
-    return await fetchPunchesWithRange(constraints, weekStart.getTime(), weekEnd.getTime(), { scope });
-  } catch (error) {
-    console.warn('Compatible weekly punch lookup failed:', error.message);
-    return [];
-  }
+  const selectedBranch = getCurrentSiteId();
+  const agencyConstraints = isAgencyUser() ? [where('agencyId', '==', agencyScopeId())] : [];
+  const sourceConstraints = [
+    { label: 'siteId', constraints: [where('companyId', '==', getCurrentCompanyId()), where('siteId', '==', selectedBranch), ...agencyConstraints] },
+    { label: 'assignedSiteId', constraints: [where('companyId', '==', getCurrentCompanyId()), where('assignedSiteId', '==', selectedBranch), ...agencyConstraints] },
+    { label: 'branchId', constraints: [where('companyId', '==', getCurrentCompanyId()), where('branchId', '==', selectedBranch), ...agencyConstraints] },
+    { label: 'siteIds', constraints: [where('companyId', '==', getCurrentCompanyId()), where('siteIds', 'array-contains', selectedBranch), ...agencyConstraints] },
+    { label: 'legacyBranchlessNull', constraints: [where('companyId', '==', getCurrentCompanyId()), where('siteId', '==', null), where('assignedSiteId', '==', null), where('branchId', '==', null), where('siteIds', '==', null), ...agencyConstraints] },
+    { label: 'legacyBranchlessBlank', constraints: [where('companyId', '==', getCurrentCompanyId()), where('siteId', '==', ''), where('assignedSiteId', '==', ''), where('branchId', '==', ''), where('siteIds', '==', []), ...agencyConstraints] },
+  ];
+  const settled = await Promise.allSettled(sourceConstraints.map((source) =>
+    fetchPunchesWithRange(source.constraints, weekStart.getTime(), weekEnd.getTime(), {
+      scope,
+      includeLegacyTimestampFallback: true,
+      sourceLabel: source.label,
+    }).then((rows) => ({ label: source.label, rows }))
+  ));
+  const rows = [];
+  const failures = [];
+  settled.forEach((result, index) => {
+    const label = sourceConstraints[index].label;
+    if (result.status === 'fulfilled') {
+      rows.push(...result.value.rows
+        .map((row) => ({ ...row, _sourceLookup: label }))
+        .filter((row) => punchMatchesSelectedBranchCompatibility(row, selectedBranch)));
+    } else {
+      failures.push({ label, error: result.reason });
+      console.warn(`Compatible weekly punch lookup skipped (${label}):`, result.reason?.message || result.reason);
+    }
+  });
+  return { rows: dedupePunches(rows), failures, attempted: sourceConstraints.length };
 }
 
 function renderDerivedTimesheets() {
   if (!els.timesheetBody) return;
 
   const rows = getCanonicalPayrollWorkers().map((worker) => worker.row);
+  renderWeeklyLoadStatus(rows);
 
   if (!rows.length) {
     els.timesheetBody.innerHTML = '<tr><td colspan="6">No timesheets yet.</td></tr>';
@@ -3306,11 +3716,66 @@ function renderDerivedTimesheets() {
   });
 }
 
+function setWeeklyLoadStatus(message, isError = false) {
+  if (!els.timesheetStatus) return;
+  els.timesheetStatus.textContent = message || '';
+  els.timesheetStatus.classList.toggle('hidden', !message);
+  els.timesheetStatus.classList.toggle('error-state', Boolean(isError));
+}
+
+function renderWeeklyLoadStatus(rows) {
+  const meta = state.selectedWeekLoadMeta || {};
+  if (meta.allHistoricalQueriesFailed) {
+    setWeeklyLoadStatus('All historical queries failed. Saved data could not be refreshed for the selected week.', true);
+    return;
+  }
+  if (meta.optimizedPunchQueryFailed && (meta.compatibilityRowsLoaded || meta.timesheetsLoaded)) {
+    setWeeklyLoadStatus('Historical time loaded using compatibility mode. One optimized query failed, but fallback historical data loaded successfully.');
+    return;
+  }
+  if (meta.loadedOnlyCompatibilityPunches) {
+    setWeeklyLoadStatus('Historical time loaded using compatibility mode.');
+    return;
+  }
+  if (meta.duplicatePunchGroups?.length) {
+    setWeeklyLoadStatus('Duplicate historical punch documents exist and are being displayed once.');
+    return;
+  }
+  if (!rows.length) {
+    setWeeklyLoadStatus('No punches or saved timesheet were found for the selected week.');
+    return;
+  }
+  setWeeklyLoadStatus('');
+}
+
+function reportDuplicatePunchDiagnostics(groups = []) {
+  if (!groups.length || !isAdmin()) return;
+  const weekKey = formatDateKey(state.selectedWeekStart);
+  groups.forEach((group) => {
+    const key = `${weekKey}|${group.key}`;
+    if (state.loggedDuplicatePunchDiagnostics.has(key)) return;
+    state.loggedDuplicatePunchDiagnostics.add(key);
+    console.warn('[QRTimeclock duplicate punch display group]', {
+      weekKey,
+      groupKey: group.key,
+      punchIds: (group.punches || []).map((punch) => punch.id).filter(Boolean),
+      selectedPunchId: group.selectedPunchId || '',
+    });
+    logAudit('duplicate_detected', 'punch_group', group.key, {}, {
+      weekKey,
+      punchIds: (group.punches || []).map((punch) => punch.id).filter(Boolean),
+      selectedPunchId: group.selectedPunchId || '',
+      displayedOnce: true,
+    }, 'Display-level punch deduplication');
+  });
+}
+
 function getDerivedTimesheetRows() {
   const weekKey = formatDateKey(state.selectedWeekStart);
   const grouped = new Map();
   const profileIndex = buildWorkerProfileIndex();
   const canonicalDirectory = buildCanonicalWorkerDirectory([], profileIndex);
+  const matchedSavedTimesheetIds = new Set();
 
   state.selectedWeekPunchRows.forEach((p) => {
     const key = getWorkerIdentityKey(p, canonicalDirectory, profileIndex);
@@ -3346,6 +3811,7 @@ function getDerivedTimesheetRows() {
       weekKey,
       allowLegacyNameFallback: (copiedNameKeyCounts.get(normalizeName(copiedPunchName)) || 0) <= 1
     });
+    if (saved?.id) matchedSavedTimesheetIds.add(saved.id);
     const copiedTimesheetName = getCopiedWorkerName(saved || {});
     const siteId = normalizeSiteId(firstPresent(
       firstPunch.siteId,
@@ -3405,6 +3871,41 @@ function getDerivedTimesheetRows() {
       status: saved?.status || 'open',
       managerSignedBy: saved?.managerSignedBy || '',
       managerSignedAt: saved?.managerSignedAt || null,
+    });
+  });
+
+  Object.values(state.selectedWeekTimesheetDocs || {}).forEach((saved) => {
+    if (!saved || saved.weekKey !== weekKey || matchedSavedTimesheetIds.has(saved.id)) return;
+    const displayName = saved.name || saved.workerName || saved.employeeName || saved.displayName || saved.nameKey || 'Saved timesheet';
+    const nameKey = normalizeName(saved.nameKey || displayName);
+    const workerIds = getRecordWorkerIds(saved);
+    const stableWorkerId = workerIds[0] || saved.employeeId || saved.workerId || nameKey;
+    rows.push({
+      id: saved.id || `${weekKey}_${sanitizeTimesheetIdPart(stableWorkerId || nameKey)}`,
+      identityKey: stableWorkerId ? `worker:${stableWorkerId}` : `name:${nameKey}`,
+      workerIds,
+      punchCount: 0,
+      name: displayName,
+      workerName: displayName,
+      nameKey,
+      weekKey,
+      companyId: saved.companyId || getCurrentCompanyId(),
+      agencyId: saved.agencyId || state.agencyId || '',
+      siteId: firstPresent(saved.siteId, saved.assignedSiteId, saved.branchId, getCurrentSiteId()),
+      branchId: firstPresent(saved.branchId, saved.siteId, saved.assignedSiteId, getCurrentSiteId()),
+      branchName: firstPresent(saved.branchName, saved.siteId, saved.assignedSiteId, getCurrentSiteId()),
+      employeeId: saved.employeeId || stableWorkerId || '',
+      workerId: saved.workerId || stableWorkerId || '',
+      copiedPunchName: '',
+      copiedTimesheetName: getCopiedWorkerName(saved),
+      weeklyHours: Number(saved.weeklyHours || 0),
+      daysWorked: Number(saved.daysWorked || 0),
+      dailyTotals: saved.dailyTotals || {},
+      lastPunchAction: saved.lastPunchAction || '-',
+      lastPunchAtMs: Number(saved.lastPunchAtMs || 0),
+      status: saved.status || 'open',
+      managerSignedBy: saved.managerSignedBy || '',
+      managerSignedAt: saved.managerSignedAt || null,
     });
   });
 
@@ -7328,7 +7829,12 @@ async function findExistingEmployeeForUpsert({ employeeNumber, nameKey, companyI
     ), 'Put Away save'));
   }
 
-  return matches[0] || null;
+  const uniqueMatches = [...new Map(matches.map((row) => [row.id || row.employeeId, row])).values()]
+    .sort(compareEmployeeRecords);
+  if (uniqueMatches.length > 1) {
+    throw new Error('More than one active employee matches that name. Select the correct employee before punching.');
+  }
+  return uniqueMatches[0] || null;
 }
 
 async function logAudit(action, entityType, entityId, oldValue = {}, newValue = {}, reason = '') {
