@@ -1723,6 +1723,7 @@ async function handleWorkerPunch(action) {
       source: 'public_qr',
       createdAt: serverTimestamp(),
       employeeId: verifiedEmployeeId,
+      workerId: emp.workerId || emp.id || verifiedEmployeeId,
       employeeNumber: emp.employeeNumber || '',
       agencyId: emp.agencyId || '',
       assignedSiteId: normalizeSiteId(firstPresent(emp.assignedSiteId, emp.siteId, punchSiteId), punchSiteId),
@@ -1754,6 +1755,10 @@ async function handleWorkerPunch(action) {
       dateKey,
       weekKey,
       employeeId: verifiedEmployeeId,
+      workerId: emp.workerId || emp.id || verifiedEmployeeId,
+      siteId: punchSiteId,
+      companyId: getCurrentCompanyId(),
+      agencyId: emp.agencyId || '',
     });
 
     const savedActionLabel = prettyAction(action);
@@ -1821,6 +1826,232 @@ async function hashIdentityKey(value) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+function addSetValue(set, value) {
+  const normalized = String(value || '').trim();
+  if (normalized) set.add(normalized);
+}
+
+function setHasAny(set, values) {
+  return (values || []).some((value) => set.has(String(value || '').trim()));
+}
+
+function getRecordCompanyId(record) {
+  return String(record?.companyId || getCurrentCompanyId()).trim();
+}
+
+function getRecordAgencyId(record) {
+  return String(record?.agencyId || '').trim();
+}
+
+function getRecordSiteIds(record, fallbackSiteId = getCurrentSiteId()) {
+  const ids = new Set();
+  const add = (value) => {
+    const normalized = normalizeSiteId(value, '');
+    if (normalized) ids.add(normalized);
+  };
+  add(record?.siteId);
+  add(record?.assignedSiteId);
+  add(record?.branchId);
+  add(record?.branchCode);
+  add(record?.branch);
+  if (Array.isArray(record?.siteIds)) record.siteIds.forEach(add);
+  if (Array.isArray(record?.branches)) record.branches.forEach(add);
+  if (!ids.size && fallbackSiteId) add(fallbackSiteId);
+  return ids;
+}
+
+function recordScopeCompatible(left, right) {
+  const leftCompany = getRecordCompanyId(left);
+  const rightCompany = getRecordCompanyId(right);
+  if (leftCompany && rightCompany && leftCompany !== rightCompany) return false;
+
+  const leftAgency = getRecordAgencyId(left);
+  const rightAgency = getRecordAgencyId(right);
+  if (leftAgency !== rightAgency) return false;
+
+  const leftSites = getRecordSiteIds(left);
+  const rightSites = getRecordSiteIds(right);
+  if (!leftSites.size || !rightSites.size) return true;
+  return [...leftSites].some((siteId) => rightSites.has(siteId));
+}
+
+function getRecordIdentityIds(record) {
+  return [
+    record?.id,
+    record?.employeeId,
+    record?.workerId,
+    record?.uid,
+    record?.userId,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function employeeNumberKey(record) {
+  return normalizeWorkerNumber(record?.employeeNumber || record?.workerNumber || record?.employeeNo || '');
+}
+
+function getRecordNormalizedName(record) {
+  return normalizeName(getWorkerProfileName(record) || record?.nameKey || record?.normalizedName || record?.name || record?.workerName || record?.employeeName || '');
+}
+
+function resolveEmployeeIdentitySet(employee, records = [], options = {}) {
+  const warnings = [];
+  const identity = {
+    canonicalEmployeeId: '',
+    employeeDocumentIds: new Set(),
+    employeeIds: new Set(),
+    workerIds: new Set(),
+    employeeNumbers: new Set(),
+    normalizedNames: new Set(),
+    mergedRecordIds: new Set(),
+    companyId: getRecordCompanyId(employee),
+    allowedSiteIds: getRecordSiteIds(employee),
+    agencyId: getRecordAgencyId(employee),
+    confidence: 'low',
+    warnings,
+    records: [],
+  };
+
+  const candidateMap = new Map();
+  [employee, ...(records || [])].filter(Boolean).forEach((record) => {
+    const key = record.id || record.employeeId || record.workerId || record.uid || `${getRecordNormalizedName(record)}|${employeeNumberKey(record)}|${getRecordAgencyId(record)}|${[...getRecordSiteIds(record)].join(',')}`;
+    if (key) candidateMap.set(key, record);
+  });
+
+  const seedIds = new Set(getRecordIdentityIds(employee));
+  const mergedInto = String(employee?.mergedInto || '').trim();
+  const primarySeed = mergedInto || employee?.id || employee?.employeeId || employee?.workerId || employee?.uid || '';
+  identity.canonicalEmployeeId = String(primarySeed || '').trim();
+  getRecordIdentityIds(employee).forEach((id) => {
+    addSetValue(identity.employeeDocumentIds, id === employee?.id ? id : '');
+    addSetValue(identity.employeeIds, id);
+    addSetValue(identity.workerIds, id);
+  });
+  addSetValue(identity.employeeDocumentIds, employee?.id);
+  addSetValue(identity.employeeIds, employee?.employeeId || employee?.id);
+  addSetValue(identity.workerIds, employee?.workerId);
+  addSetValue(identity.employeeNumbers, employeeNumberKey(employee));
+  addSetValue(identity.normalizedNames, getRecordNormalizedName(employee));
+  if (mergedInto) addSetValue(identity.mergedRecordIds, employee?.id);
+
+  const includeRecord = (record, reason) => {
+    if (!record || !recordScopeCompatible(employee, record)) return false;
+    const ids = getRecordIdentityIds(record);
+    addSetValue(identity.employeeDocumentIds, record.id);
+    addSetValue(identity.employeeIds, record.employeeId || record.id);
+    addSetValue(identity.workerIds, record.workerId);
+    addSetValue(identity.employeeNumbers, employeeNumberKey(record));
+    addSetValue(identity.normalizedNames, getRecordNormalizedName(record));
+    if (record.mergedInto || String(record.status || '').toLowerCase() === 'merged') {
+      addSetValue(identity.mergedRecordIds, record.id);
+    }
+    identity.records.push({ record, reason, ids });
+    if (!identity.canonicalEmployeeId && ids.length) identity.canonicalEmployeeId = ids[0];
+    return true;
+  };
+
+  includeRecord(employee, mergedInto ? 'merged-source' : 'selected');
+
+  const allRecords = [...candidateMap.values()];
+  allRecords.forEach((record) => {
+    const recordIds = getRecordIdentityIds(record);
+    const recordMergedInto = String(record.mergedInto || '').trim();
+    if (recordMergedInto && (recordMergedInto === identity.canonicalEmployeeId || seedIds.has(recordMergedInto))) {
+      includeRecord(record, 'merged identity');
+      return;
+    }
+    if (setHasAny(seedIds, recordIds) || setHasAny(identity.employeeIds, recordIds) || setHasAny(identity.workerIds, recordIds)) {
+      includeRecord(record, 'exact identity');
+    }
+  });
+
+  const targetNumber = employeeNumberKey(employee);
+  if (targetNumber) {
+    allRecords
+      .filter((record) => employeeNumberKey(record) === targetNumber)
+      .forEach((record) => includeRecord(record, 'employee number'));
+  }
+
+  const targetName = getRecordNormalizedName(employee);
+  if (options.allowNameFallback !== false && targetName) {
+    const scopedNameMatches = allRecords.filter((record) =>
+      getRecordNormalizedName(record) === targetName && recordScopeCompatible(employee, record)
+    );
+    const numberKeys = new Set(scopedNameMatches.map(employeeNumberKey).filter(Boolean));
+    if (numberKeys.size > 1) {
+      warnings.push('Ambiguous same-name employees with different employee numbers; name fallback restricted.');
+    } else {
+      scopedNameMatches.forEach((record) => includeRecord(record, 'scoped normalized name'));
+    }
+  }
+
+  if (identity.mergedRecordIds.size) identity.confidence = 'merged';
+  else if (identity.employeeDocumentIds.size || identity.employeeIds.size || identity.workerIds.size) identity.confidence = 'direct';
+  else if (identity.employeeNumbers.size) identity.confidence = 'employee-number';
+  else if (identity.normalizedNames.size) identity.confidence = warnings.length ? 'ambiguous' : 'name-scope';
+  if (!identity.canonicalEmployeeId) {
+    identity.canonicalEmployeeId = [...identity.employeeIds][0] || [...identity.workerIds][0] || [...identity.employeeDocumentIds][0] || '';
+  }
+
+  return {
+    ...identity,
+    employeeDocumentIds: [...identity.employeeDocumentIds],
+    employeeIds: [...identity.employeeIds],
+    workerIds: [...identity.workerIds],
+    employeeNumbers: [...identity.employeeNumbers],
+    normalizedNames: [...identity.normalizedNames],
+    mergedRecordIds: [...identity.mergedRecordIds],
+    allowedSiteIds: [...identity.allowedSiteIds],
+  };
+}
+
+function punchScopeCompatibleWithIdentity(punch, identity) {
+  if (!identity) return true;
+  if (identity.companyId && getRecordCompanyId(punch) && getRecordCompanyId(punch) !== identity.companyId) return false;
+  if (String(punch.agencyId || '').trim() !== String(identity.agencyId || '').trim()) return false;
+  const punchSites = getRecordSiteIds(punch);
+  const allowed = new Set(identity.allowedSiteIds || []);
+  if (!punchSites.size || !allowed.size) return true;
+  return [...punchSites].some((siteId) => allowed.has(siteId));
+}
+
+function annotatePunchForIdentity(punch, identity, options = {}) {
+  if (!punch || !punchScopeCompatibleWithIdentity(punch, identity)) return null;
+  if (!options.includeDeleted && !isActivePunchRecord(punch)) return null;
+  const employeeId = String(punch.employeeId || '').trim();
+  const workerId = String(punch.workerId || '').trim();
+  const employeeNumber = employeeNumberKey(punch);
+  const nameKey = normalizeName(punch.nameKey || punch.name || punch.workerName || punch.employeeName || '');
+  const employeeIds = new Set([...(identity?.employeeIds || []), ...(identity?.employeeDocumentIds || [])]);
+  const workerIds = new Set(identity?.workerIds || []);
+  const mergedIds = new Set(identity?.mergedRecordIds || []);
+  let reason = '';
+
+  if (employeeId && employeeIds.has(employeeId)) reason = mergedIds.has(employeeId) ? 'merged identity' : 'direct employee ID';
+  else if (workerId && workerIds.has(workerId)) reason = 'worker ID';
+  else if (employeeNumber && (identity?.employeeNumbers || []).includes(employeeNumber)) reason = 'employee number';
+  else if (options.allowLegacyNameFallback && nameKey && (identity?.normalizedNames || []).includes(nameKey)) {
+    if (employeeNumber && (identity?.employeeNumbers || []).length && !(identity?.employeeNumbers || []).includes(employeeNumber)) return null;
+    if (employeeId || workerId) {
+      reason = 'scoped duplicate profile';
+    } else {
+      reason = 'legacy name fallback';
+    }
+  }
+
+  if (!reason) return null;
+  return {
+    ...punch,
+    resolvedEmployeeId: identity?.canonicalEmployeeId || employeeId || workerId || '',
+    inclusionReason: reason,
+    identityWarnings: identity?.warnings || [],
+  };
+}
+
+function semanticDedupePunches(punches, options = {}) {
+  return classifyDuplicatePunches(punches, options).deduped
+    .sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
+}
+
 function getWorkerCacheKey(employee) {
   return `qrTimeclockWorkerPunches:name:${normalizeName(employee?.name || '')}`;
 }
@@ -1830,20 +2061,28 @@ function getLegacyWorkerCacheKey(employee) {
   return identity ? `qrTimeclockWorkerPunches:${identity}` : '';
 }
 
+function getCanonicalWorkerCacheKey(employee) {
+  const identity = resolveEmployeeIdentitySet(employee, state.publicEmployeeRecords || []).canonicalEmployeeId;
+  return identity ? `qrTimeclockWorkerPunches:employee:${identity}` : '';
+}
+
 function getCachedWorkerPunches(employee) {
   if (!employee?.name) return [];
   try {
-    const nameRows = JSON.parse(localStorage.getItem(getWorkerCacheKey(employee)) || '[]');
-    const legacyKey = getLegacyWorkerCacheKey(employee);
-    const legacyRows = legacyKey ? JSON.parse(localStorage.getItem(legacyKey) || '[]') : [];
-    const combined = [...(Array.isArray(legacyRows) ? legacyRows : []), ...(Array.isArray(nameRows) ? nameRows : [])];
-    const unique = new Map();
-    combined.forEach((row) => {
-      const normalized = normalizePunchRecordForDisplay(row);
-      const key = `${normalized.timestampMs || 0}:${normalized.action || ''}:${normalized.nameKey || normalizeName(normalized.name || '')}`;
-      unique.set(key, normalized);
+    const keys = [
+      getCanonicalWorkerCacheKey(employee),
+      getLegacyWorkerCacheKey(employee),
+      getWorkerCacheKey(employee),
+    ].filter(Boolean);
+    const identity = resolveEmployeeIdentitySet(employee, state.publicEmployeeRecords || []);
+    const combined = keys.flatMap((key) => {
+      const rows = JSON.parse(localStorage.getItem(key) || '[]');
+      return Array.isArray(rows) ? rows : [];
     });
-    return [...unique.values()].sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
+    return semanticDedupePunches(combined
+      .map((row) => normalizePunchRecordForDisplay(row))
+      .map((row) => annotatePunchForIdentity(row, identity, { allowLegacyNameFallback: true, includeDeleted: false }))
+      .filter(Boolean));
   } catch (_) {
     return [];
   }
@@ -1853,7 +2092,8 @@ function cacheWorkerPunch(employee, punch) {
   const rows = getCachedWorkerPunches(employee);
   rows.push(punch);
   rows.sort((left, right) => Number(left.timestampMs || 0) - Number(right.timestampMs || 0));
-  localStorage.setItem(getWorkerCacheKey(employee), JSON.stringify(rows.slice(-250)));
+  const canonicalKey = getCanonicalWorkerCacheKey(employee) || getLegacyWorkerCacheKey(employee) || getWorkerCacheKey(employee);
+  localStorage.setItem(canonicalKey, JSON.stringify(semanticDedupePunches(rows).slice(-250)));
 }
 
 function getSelectedWorkerByName() {
@@ -2008,15 +2248,10 @@ function readDateRange(fromInput, toInput) {
 }
 
 async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {}) {
-  const primaryId = employee.id || employee.employeeId || '';
-  const workerIds = new Set([primaryId, employee.employeeId].filter(Boolean));
-  const directWorkerIds = new Set([primaryId, employee.employeeId].filter(Boolean));
   const employeeSiteId = normalizeSiteId(firstPresent(employee.siteId, employee.assignedSiteId, getCurrentSiteId()), getCurrentSiteId());
   const historyScope = scopedPunchHistoryConstraints(employeeSiteId);
-  getCompatibleWorkerRecords(employee).forEach((record) => {
-    if (record.id) workerIds.add(record.id);
-    if (record.employeeId) workerIds.add(record.employeeId);
-  });
+  const records = getCompatibleWorkerRecords(employee);
+  const primaryId = employee.id || employee.employeeId || '';
   if (primaryId) {
     const mergedConstraints = state.me && isManager()
       ? [where('mergedInto', '==', primaryId)]
@@ -2039,54 +2274,65 @@ async function loadPunchesForEmployeeRange(employee, fromMs, toMs, options = {})
         return;
       }
       result.value.docs.forEach((record) => {
-        workerIds.add(record.id);
-        directWorkerIds.add(record.id);
+        records.push({ id: record.id, ...record.data() });
       });
     });
   }
 
+  const identity = resolveEmployeeIdentitySet(employee, records, { allowNameFallback: options.allowLegacyNameFallback !== false });
   const rows = [];
-  let nameQuerySucceeded = false;
-  if (employee.name) {
-    try {
-      const nameRows = await fetchPunchesWithRange(
-        [...historyScope, where('nameKey', '==', normalizeName(employee.name))],
-        fromMs,
-        toMs
-      );
-      rows.push(...nameRows.filter((punch) => {
-        const punchEmployeeId = String(punch.employeeId || '');
-        return !punchEmployeeId || workerIds.has(punchEmployeeId);
-      }));
-      nameQuerySucceeded = true;
-    } catch (error) {
-      console.warn('Normalized-name history lookup unavailable:', error.message);
-    }
-  }
+  const queryJobs = [];
+  const addQueryJob = (constraints, reason) => {
+    queryJobs.push(
+      fetchPunchesWithRange(constraints, fromMs, toMs, { scope: options.scope || 'History search' })
+        .then((punches) => punches.map((punch) => ({ ...punch, queryReason: reason })))
+        .catch((error) => {
+          console.warn(`${reason} history lookup skipped:`, error.message);
+          return [];
+        })
+    );
+  };
 
-  const idsToQuery = nameQuerySucceeded ? [...directWorkerIds] : [...workerIds];
-  const idRows = await Promise.all(idsToQuery.map((workerId) =>
-    fetchPunchesWithRange([...historyScope, where('employeeId', '==', workerId)], fromMs, toMs)
-  ));
-  idRows.forEach((workerRows) => rows.push(...workerRows));
+  identity.employeeIds.forEach((employeeId) => {
+    addQueryJob([...historyScope, where('employeeId', '==', employeeId)], 'direct employee ID');
+  });
+  identity.employeeDocumentIds.forEach((employeeId) => {
+    addQueryJob([...historyScope, where('employeeId', '==', employeeId)], 'employee document ID');
+  });
+  identity.workerIds.forEach((workerId) => {
+    addQueryJob([...historyScope, where('workerId', '==', workerId)], 'worker ID');
+  });
+  identity.employeeNumbers.forEach((employeeNumber) => {
+    addQueryJob([...historyScope, where('employeeNumber', '==', employeeNumber)], 'employee number');
+  });
 
   if (options.allowLegacyNameFallback && employee.name) {
-    const legacyConstraints = state.me && isManager()
-      ? []
-      : [where('employeeId', '==', '')];
-    const legacyRows = await fetchPunchesWithRange(
-      [...historyScope, ...legacyConstraints],
-      fromMs,
-      toMs
-    );
-    const normalizedName = normalizeName(employee.name);
-    rows.push(...legacyRows.filter((punch) =>
-      normalizeName(punch.name || punch.employeeName || '') === normalizedName ||
-      String(punch.nameKey || '').trim().toLowerCase() === normalizedName
-    ));
+    identity.normalizedNames.forEach((nameKey) => {
+      addQueryJob([...historyScope, where('nameKey', '==', nameKey)], 'legacy name fallback');
+    });
   }
 
-  return dedupePunches(rows);
+  const queryResults = await Promise.all(queryJobs);
+  queryResults.forEach((workerRows) => rows.push(...workerRows));
+
+  const accepted = rows
+    .map((punch) => annotatePunchForIdentity(punch, identity, {
+      allowLegacyNameFallback: options.allowLegacyNameFallback,
+      includeDeleted: options.includeDeleted === true,
+    }))
+    .filter(Boolean)
+    .map((punch) => ({
+      ...punch,
+      historyDiagnostics: {
+        inclusionReason: punch.inclusionReason,
+        queryReason: punch.queryReason || punch.inclusionReason,
+        identityConfidence: identity.confidence,
+        identityWarnings: identity.warnings,
+        canonicalEmployeeId: identity.canonicalEmployeeId,
+      },
+    }));
+
+  return semanticDedupePunches(accepted);
 }
 
 function getCompatibleWorkerRecords(employee) {
@@ -2097,25 +2343,19 @@ function getCompatibleWorkerRecords(employee) {
     : state.publicEmployeeRecords;
   sourceRecords.forEach((record) => sourceMap.set(record.id, record));
   const source = [...sourceMap.values()];
-  const normalizedName = normalizeIdentityPart(employee.name || employee.nameKey);
-  const sameName = source.filter((record) =>
-    isActiveEmployee(record) &&
-    normalizeIdentityPart(record.name || record.nameKey) === normalizedName
-  );
-  const nonBlankScopes = new Set(
-    sameName.map((record) => {
-      const agency = normalizeIdentityPart(record.agencyId);
-      const site = normalizeIdentityPart(record.assignedSiteId || record.siteId);
-      return agency || site ? `${agency}|${site}` : '';
-    }).filter(Boolean)
-  );
-  if (nonBlankScopes.size <= 1) return sameName;
-  const targetAgency = normalizeIdentityPart(employee.agencyId);
-  const targetSite = normalizeIdentityPart(employee.assignedSiteId || employee.siteId);
-  return sameName.filter((record) =>
-    normalizeIdentityPart(record.agencyId) === targetAgency &&
-    normalizeIdentityPart(record.assignedSiteId || record.siteId) === targetSite
-  );
+  const employeeIds = new Set(getRecordIdentityIds(employee));
+  const targetName = getRecordNormalizedName(employee);
+  const targetNumber = employeeNumberKey(employee);
+  return source.filter((record) => {
+    if (!recordScopeCompatible(employee, record)) return false;
+    const recordIds = getRecordIdentityIds(record);
+    if (setHasAny(employeeIds, recordIds)) return true;
+    if (record.mergedInto && employeeIds.has(String(record.mergedInto).trim())) return true;
+    if (targetNumber && employeeNumberKey(record) === targetNumber) return true;
+    if (!targetName || getRecordNormalizedName(record) !== targetName) return false;
+    const recordNumber = employeeNumberKey(record);
+    return !targetNumber || !recordNumber || recordNumber === targetNumber;
+  });
 }
 
 async function fetchPunchesWithRange(baseConstraints, fromMs, toMs, options = {}) {
@@ -2162,6 +2402,8 @@ function punchBranchFingerprint(punch = {}) {
 }
 
 function punchIdentityFingerprint(punch = {}) {
+  const resolvedEmployeeId = String(punch.resolvedEmployeeId || punch._resolvedEmployeeId || '').trim();
+  if (resolvedEmployeeId) return `resolved:${resolvedEmployeeId}`;
   const employeeId = String(punch.employeeId || punch.workerId || '').trim();
   if (employeeId) return `employee:${employeeId}`;
   const employeeNumber = normalizeWorkerNumber(punch.employeeNumber || punch.workerNumber || '');
@@ -2236,8 +2478,8 @@ function classifyDuplicatePunches(punches) {
       if (!group.length) return;
       const selected = preferCompletePunchRecord(group);
       if (group.length > 1) {
-        const duplicateSourcePunches = group.map((punch) => ({ ...punch }));
         const duplicateGroupKey = `${baseKey}|${Math.round(Number(selected.timestampMs || 0) / DISPLAY_DUPLICATE_TOLERANCE_MS)}`;
+        const duplicateSourcePunches = group.map((punch) => ({ ...punch, duplicateGroupKey }));
         groups.push({
           key: duplicateGroupKey,
           punches: duplicateSourcePunches,
@@ -2286,7 +2528,8 @@ function dedupePunches(punches) {
 
 function buildTimeRangeTotals(punches) {
   const grouped = new Map();
-  dedupePunches(punches).forEach((punch) => {
+  const duplicateClassification = classifyDuplicatePunches((punches || []).filter(isActivePunchRecord));
+  duplicateClassification.deduped.forEach((punch) => {
     const timestampMs = Number(punch.timestampMs || 0);
     if (!timestampMs) return;
     const dateKey = punch.dateKey || formatDateKey(new Date(timestampMs));
@@ -2307,27 +2550,57 @@ function buildTimeRangeTotals(punches) {
       clock_out: [],
     };
     let activeStart = null;
+    let lunchStart = null;
     let minutes = 0;
+    const warnings = new Set();
+    const rawPunches = sorted.flatMap((punch) => punch.duplicateSourcePunches || [punch]);
+    const duplicateGroups = sorted.filter((punch) => Number(punch.duplicateCount || 0) > 1);
+    if (duplicateGroups.length) warnings.add('Possible duplicate punch');
 
     sorted.forEach((punch) => {
       if (actionTimes[punch.action]) actionTimes[punch.action].push(punch.timestampMs);
-      if (punch.action === 'clock_in') activeStart = punch.timestampMs;
-      if (punch.action === 'start_lunch') {
-        if (activeStart) minutes += Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
-        activeStart = null;
+      if (Number(punch.duplicateCount || 0) > 1) warnings.add(`Duplicate ${prettyAction(punch.action)}`);
+      if (punch.action === 'clock_in') {
+        if (activeStart) warnings.add('Overlapping shift');
+        activeStart = punch.timestampMs;
       }
-      if (punch.action === 'end_lunch') activeStart = punch.timestampMs;
+      if (punch.action === 'start_lunch') {
+        if (activeStart) {
+          minutes += Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
+        } else {
+          warnings.add('Start Lunch has no Clock In');
+        }
+        activeStart = null;
+        lunchStart = punch.timestampMs;
+      }
+      if (punch.action === 'end_lunch') {
+        if (!lunchStart) warnings.add('End Lunch has no Start Lunch');
+        lunchStart = null;
+        activeStart = punch.timestampMs;
+      }
       if (punch.action === 'clock_out') {
-        if (activeStart) minutes += Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
+        if (activeStart) {
+          if (punch.timestampMs < activeStart) warnings.add('Clock Out occurred before Clock In');
+          minutes += Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
+        } else {
+          warnings.add('Missing Clock In');
+        }
         activeStart = null;
       }
     });
 
-    const warnings = [];
-    if (actionTimes.clock_in.length && !actionTimes.clock_out.length) warnings.push('Missing Clock Out');
-    if (actionTimes.clock_out.length && !actionTimes.clock_in.length) warnings.push('Missing Clock In');
-    if (actionTimes.start_lunch.length && !actionTimes.end_lunch.length) warnings.push('Missing Lunch In');
-    if (actionTimes.end_lunch.length && !actionTimes.start_lunch.length) warnings.push('Missing Lunch Out');
+    if (activeStart) warnings.add('Missing Clock Out');
+    if (lunchStart) warnings.add('Start Lunch has no End Lunch');
+    if (actionTimes.clock_out.length && !actionTimes.clock_in.length) warnings.add('Missing Clock In');
+    if (actionTimes.clock_in.length && !actionTimes.clock_out.length) warnings.add('Missing Clock Out');
+    if (actionTimes.start_lunch.length && !actionTimes.end_lunch.length) warnings.add('Missing End Lunch');
+    if (actionTimes.end_lunch.length && !actionTimes.start_lunch.length) warnings.add('Missing Start Lunch');
+    const actionCounts = Object.entries(actionTimes).filter(([, times]) => times.length > 1);
+    actionCounts.forEach(([action]) => warnings.add(`Duplicate ${prettyAction(action)}`));
+    if (sorted.some((punch) => (punch.identityWarnings || []).length)) {
+      warnings.add('Punches found under multiple employee profiles');
+      warnings.add('Manager review required');
+    }
 
     const weekKey = formatDateKey(getMondayDate(new Date(`${dateKey}T12:00:00`)));
     weeklyMinutes.set(weekKey, (weeklyMinutes.get(weekKey) || 0) + minutes);
@@ -2336,7 +2609,10 @@ function buildTimeRangeTotals(punches) {
       actionTimes,
       minutes,
       hours: Number((minutes / 60).toFixed(2)),
-      warnings,
+      warnings: [...warnings],
+      punches: sorted,
+      rawPunches,
+      duplicateGroups,
     };
   });
 
@@ -2349,7 +2625,8 @@ function buildTimeRangeTotals(punches) {
 
   return {
     daily,
-    punches: dedupePunches(punches),
+    punches: duplicateClassification.deduped,
+    duplicateGroups: duplicateClassification.groups,
     daysWorked: Object.keys(daily).length,
     totalHours: Number((totalMinutes / 60).toFixed(2)),
     regularHours: Number((regularMinutes / 60).toFixed(2)),
@@ -2367,6 +2644,7 @@ function renderTimeRangeSummary({
   resultsElement,
   emptyMessage,
   statusPrefix = '',
+  showDiagnostics = false,
 }) {
   if (totalElement) totalElement.textContent = Number(totals.totalHours || 0).toFixed(2);
   if (regularElement) regularElement.textContent = Number(totals.regularHours || 0).toFixed(2);
@@ -2380,15 +2658,41 @@ function renderTimeRangeSummary({
   );
   if (!resultsElement) return;
   resultsElement.innerHTML = dateKeys.length
-    ? dateKeys.map((dateKey) => renderTimeResultCard(dateKey, totals.daily[dateKey])).join('')
+    ? dateKeys.map((dateKey) => renderTimeResultCard(dateKey, totals.daily[dateKey], { showDiagnostics })).join('')
     : `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
 }
 
-function renderTimeResultCard(dateKey, day) {
+function renderTimeResultCard(dateKey, day, options = {}) {
   const actionLabel = (action) => {
     const times = day.actionTimes[action] || [];
     return times.length ? times.map(formatTime).join(', ') : '-';
   };
+  const diagnostics = options.showDiagnostics && (day.rawPunches || []).length
+    ? `<details class="time-diagnostics">
+        <summary>Manager repair details</summary>
+        <div class="mini-table-wrap">
+          <table>
+            <thead><tr><th>Doc ID</th><th>Action</th><th>Time</th><th>Source</th><th>Employee ID</th><th>Worker ID</th><th>Site</th><th>Agency</th><th>Reason</th><th>Duplicate</th></tr></thead>
+            <tbody>
+              ${(day.rawPunches || []).map((punch) => `
+                <tr>
+                  <td>${escapeHtml(punch.id || '-')}</td>
+                  <td>${prettyAction(punch.action)}</td>
+                  <td>${formatDateTime(punch.timestampMs)}</td>
+                  <td>${escapeHtml(punch.source || '-')}</td>
+                  <td>${escapeHtml(punch.employeeId || '-')}</td>
+                  <td>${escapeHtml(punch.workerId || '-')}</td>
+                  <td>${escapeHtml(punch.siteId || punch.assignedSiteId || '-')}</td>
+                  <td>${escapeHtml(punch.agencyId || 'Direct')}</td>
+                  <td>${escapeHtml(punch.inclusionReason || punch.historyDiagnostics?.inclusionReason || '-')}</td>
+                  <td>${escapeHtml(punch.duplicateGroupKey || '-')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>`
+    : '';
   return `
     <article class="time-result-card">
       <div class="time-result-card-head">
@@ -2404,6 +2708,7 @@ function renderTimeResultCard(dateKey, day) {
       ${day.warnings.length
         ? `<div class="time-warning">${day.warnings.map(escapeHtml).join(' · ')}</div>`
         : ''}
+      ${diagnostics}
     </article>
   `;
 }
@@ -2587,29 +2892,30 @@ async function handleManualPunchSubmit(event) {
   }
 }
 
-function attachWorkerLiveView(name) {
+async function attachWorkerLiveView(nameOrEmployee) {
   if (state.workerUnsub) {
     try { state.workerUnsub(); } catch (_) {}
     state.workerUnsub = null;
   }
 
+  const selectedEmployee = typeof nameOrEmployee === 'object' && nameOrEmployee
+    ? nameOrEmployee
+    : (
+      state.workerEmployee?.name && normalizeName(state.workerEmployee.name) === normalizeName(nameOrEmployee)
+        ? state.workerEmployee
+        : { name: String(nameOrEmployee || '') }
+    );
+  const name = selectedEmployee.name || String(nameOrEmployee || '');
   const nameKey = normalizeName(name);
   if (!nameKey) return;
 
-  const todayKey = formatDateKey(new Date());
-
-  const q = query(
-    collection(db, 'punches'),
-    ...branchConstraints(getPublicSiteId()),
-    where('nameKey', '==', nameKey),
-    where('dateKey', '==', todayKey),
-    orderBy('timestampMs', 'desc'),
-    limit(20)
-  );
-
-  state.workerUnsub = onSnapshot(q, (snap) => {
-    const rows = snap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() }));
-
+  const todayStart = startOfLocalDay(new Date());
+  const todayEnd = addLocalDays(todayStart, 1).getTime() - 1;
+  try {
+    const rows = (await loadPunchesForEmployeeRange(selectedEmployee, todayStart.getTime(), todayEnd, {
+      allowLegacyNameFallback: true,
+      scope: 'Public worker live view',
+    })).sort((left, right) => Number(right.timestampMs || 0) - Number(left.timestampMs || 0)).slice(0, 20);
     if (!rows.length) {
       if (els.workerLastActionValue) els.workerLastActionValue.textContent = '-';
       if (els.workerLastPunchValue) els.workerLastPunchValue.textContent = '-';
@@ -2642,7 +2948,7 @@ function attachWorkerLiveView(name) {
         </tr>
       `).join('');
     }
-  }, (error) => {
+  } catch (error) {
     // Permission errors are expected for unauthenticated workers (original rules restrict reads to managers)
     if (error.code === 'permission-denied' || (error.message && error.message.includes('permissions'))) {
       console.info('Live punch view not available (read requires authentication). Punch data was saved.');
@@ -2650,7 +2956,7 @@ function attachWorkerLiveView(name) {
       console.error('Live view error:', error);
       toast(error.message || 'Could not load worker punches.', true);
     }
-  });
+  }
 }
 
 function findLatestClockInTime(rows) {
@@ -4062,82 +4368,28 @@ function buildCurrentTimesheetRow(timesheetId, weekKey) {
 }
 
 function buildWeekTotals(punches) {
-  const sorted = [...punches].sort((a, b) => (a.timestampMs || 0) - (b.timestampMs || 0));
-  const byDay = {};
-  let currentIn = null;
-  let weeklyMinutes = 0;
-  let lastAction = '-';
-  let lastPunchAtMs = 0;
-
-  sorted.forEach((punch) => {
-    const timeMs = punch.timestampMs || 0;
-    const dateKey = punch.dateKey || formatDateKey(new Date(timeMs));
-
-    if (!byDay[dateKey]) {
-      byDay[dateKey] = {
-        clock_in: '',
-        start_lunch: '',
-        end_lunch: '',
-        clock_out: '',
-        minutes: 0
-      };
-    }
-
-    lastAction = punch.action;
-    lastPunchAtMs = Math.max(lastPunchAtMs, timeMs);
-
-    if (punch.action === 'clock_in') {
-      byDay[dateKey].clock_in = formatTime(timeMs);
-      currentIn = timeMs;
-    }
-
-    if (punch.action === 'start_lunch') {
-      byDay[dateKey].start_lunch = formatTime(timeMs);
-      if (currentIn) {
-        const diff = Math.max(0, Math.round((timeMs - currentIn) / 60000));
-        weeklyMinutes += diff;
-        byDay[dateKey].minutes += diff;
-        currentIn = null;
-      }
-    }
-
-    if (punch.action === 'end_lunch') {
-      byDay[dateKey].end_lunch = formatTime(timeMs);
-      currentIn = timeMs;
-    }
-
-    if (punch.action === 'clock_out') {
-      byDay[dateKey].clock_out = formatTime(timeMs);
-      if (currentIn) {
-        const diff = Math.max(0, Math.round((timeMs - currentIn) / 60000));
-        weeklyMinutes += diff;
-        byDay[dateKey].minutes += diff;
-        currentIn = null;
-      }
-    }
-  });
-
-  const dailyTotals = Object.fromEntries(
-    Object.entries(byDay).map(([dateKey, value]) => [
-      dateKey,
-      {
-        clock_in: value.clock_in,
-        start_lunch: value.start_lunch,
-        end_lunch: value.end_lunch,
-        clock_out: value.clock_out,
-        hours: Number((value.minutes / 60).toFixed(2))
-      }
-    ])
-  );
-
-  const daysWorked = Object.keys(dailyTotals).length;
+  const totals = buildTimeRangeTotals(punches);
+  const sorted = [...(totals.punches || [])].sort((a, b) => Number(a.timestampMs || 0) - Number(b.timestampMs || 0));
+  const dailyTotals = Object.fromEntries(Object.entries(totals.daily || {}).map(([dateKey, value]) => {
+    const firstTime = (action) => (value.actionTimes[action] || [])[0];
+    const lastTime = (action) => (value.actionTimes[action] || []).at(-1);
+    return [dateKey, {
+      clock_in: firstTime('clock_in') ? formatTime(firstTime('clock_in')) : '',
+      start_lunch: firstTime('start_lunch') ? formatTime(firstTime('start_lunch')) : '',
+      end_lunch: firstTime('end_lunch') ? formatTime(firstTime('end_lunch')) : '',
+      clock_out: lastTime('clock_out') ? formatTime(lastTime('clock_out')) : '',
+      hours: Number(value.hours || 0),
+      warnings: value.warnings || [],
+    }];
+  }));
+  const lastPunch = sorted.at(-1) || {};
 
   return {
     dailyTotals,
-    weeklyHours: Number((weeklyMinutes / 60).toFixed(2)),
-    daysWorked,
-    lastAction,
-    lastPunchAtMs,
+    weeklyHours: Number(totals.totalHours || 0),
+    daysWorked: totals.daysWorked,
+    lastAction: lastPunch.action || '-',
+    lastPunchAtMs: Number(lastPunch.timestampMs || 0),
   };
 }
 
@@ -4165,27 +4417,29 @@ function attachMyTimecardView() {
     return;
   }
 
-  // Query punches by employeeId (preferred) or nameKey (legacy fallback)
-  const constraints = [where('weekKey', '==', weekKey)];
-  if (employeeId) {
-    constraints.push(where('employeeId', '==', employeeId));
-  } else {
-    constraints.push(where('nameKey', '==', nameKey));
-  }
-  constraints.push(...branchConstraints());
-  constraints.push(orderBy('timestampMs', 'asc'));
-
-  const q = query(collection(db, 'punches'), ...constraints);
-
-  state._myTcUnsub = onSnapshot(q, (snap) => {
-    const rows = snap.docs.map((d) => normalizePunchRecordForDisplay({ id: d.id, ...d.data() })).filter(isActivePunchRecord);
-    renderMyTimecard(rows);
-  }, (error) => {
-    console.error(error);
-    toast(error.message || 'Could not load your timecard.', true);
-  });
-
-  state.unsubscribers.push(state._myTcUnsub);
+  const weekEnd = addLocalDays(weekStart, 6);
+  weekEnd.setHours(23, 59, 59, 999);
+  loadPunchesForEmployeeRange({
+    id: employeeId || state.profile?.uid || '',
+    employeeId,
+    workerId: state.profile?.workerId || '',
+    uid: state.me?.uid || '',
+    name: state.profile?.name || '',
+    nameKey,
+    companyId: getCurrentCompanyId(),
+    agencyId: state.agencyId || state.profile?.agencyId || '',
+    siteId: getCurrentSiteId(),
+    assignedSiteId: getCurrentSiteId(),
+    siteIds: getAllowedSiteIds(state.profile),
+  }, weekStart.getTime(), weekEnd.getTime(), {
+    allowLegacyNameFallback: true,
+    scope: 'My Timecard',
+  })
+    .then((rows) => renderMyTimecard(rows))
+    .catch((error) => {
+      console.error(error);
+      toast(error.message || 'Could not load your timecard.', true);
+    });
 }
 
 function clearMyTimecardListener() {
@@ -4681,6 +4935,7 @@ async function lookupManagerTimeRange() {
       statusElement: els.managerTimeRangeStatus,
       resultsElement: els.managerTimeRangeResults,
       emptyMessage: 'No punches were found for this worker and date range.',
+      showDiagnostics: true,
       statusPrefix: `${employee.name} · `,
     });
     if (els.managerTimeExportBtn) els.managerTimeExportBtn.disabled = !totals.daysWorked;
@@ -6085,85 +6340,39 @@ function buildAgencyReviewRow(identityKey, employee, punches) {
 }
 
 function buildAgencyPunchTotals(punches) {
-  const byDay = new Map();
-  punches.forEach((punch) => {
-    const dateKey = punch.dateKey || formatDateKey(new Date(Number(punch.timestampMs || 0)));
-    if (!byDay.has(dateKey)) byDay.set(dateKey, []);
-    byDay.get(dateKey).push(punch);
-  });
-
-  let workedMinutes = 0;
-  let lunchMinutes = 0;
+  const totals = buildTimeRangeTotals(punches);
   let lateArrivals = 0;
+  let lunchMinutes = 0;
   const warnings = new Set();
-  const daySummaries = [];
-
-  byDay.forEach((dayPunches, dateKey) => {
-    const sorted = [...dayPunches].sort((a, b) => Number(a.timestampMs || 0) - Number(b.timestampMs || 0));
-    let activeStart = null;
-    let lunchStart = null;
-    let dayWorked = 0;
-    let dayLunch = 0;
-    const actionTimes = { clock_in: [], start_lunch: [], end_lunch: [], clock_out: [] };
-
-    sorted.forEach((punch) => {
-      if (actionTimes[punch.action]) actionTimes[punch.action].push(punch.timestampMs);
-      if (punch.action === 'clock_in') activeStart = punch.timestampMs;
-      if (punch.action === 'start_lunch') {
-        if (activeStart) {
-          const diff = Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
-          dayWorked += diff;
-          workedMinutes += diff;
-        }
-        activeStart = null;
-        lunchStart = punch.timestampMs;
-      }
-      if (punch.action === 'end_lunch') {
-        if (lunchStart) {
-          const diff = Math.max(0, Math.round((punch.timestampMs - lunchStart) / 60000));
-          dayLunch += diff;
-          lunchMinutes += diff;
-        }
-        lunchStart = null;
-        activeStart = punch.timestampMs;
-      }
-      if (punch.action === 'clock_out') {
-        if (activeStart) {
-          const diff = Math.max(0, Math.round((punch.timestampMs - activeStart) / 60000));
-          dayWorked += diff;
-          workedMinutes += diff;
-        }
-        activeStart = null;
-      }
-    });
-
-    const dayWarnings = [];
-    if (activeStart) dayWarnings.push('Missing Clock Out');
-    if (lunchStart) dayWarnings.push('Missing Lunch In');
-    if (actionTimes.clock_in.length && !actionTimes.clock_out.length) dayWarnings.push('Missing Clock Out');
-    if (dayWorked >= 360 && (!actionTimes.start_lunch.length || !actionTimes.end_lunch.length)) dayWarnings.push('Missing Lunch');
-    const firstClockIn = actionTimes.clock_in[0];
+  const daySummaries = Object.entries(totals.daily || {}).map(([dateKey, day]) => {
+    const startLunch = (day.actionTimes.start_lunch || [])[0];
+    const endLunch = (day.actionTimes.end_lunch || [])[0];
+    const dayLunch = startLunch && endLunch && endLunch > startLunch
+      ? Math.round((endLunch - startLunch) / 60000)
+      : 0;
+    lunchMinutes += dayLunch;
+    const firstClockIn = (day.actionTimes.clock_in || [])[0];
     if (firstClockIn) {
       const d = new Date(firstClockIn);
       if (d.getHours() > 8 || (d.getHours() === 8 && d.getMinutes() > 5)) lateArrivals += 1;
     }
-    dayWarnings.forEach((warning) => warnings.add(warning));
-    daySummaries.push({
+    (day.warnings || []).forEach((warning) => warnings.add(warning));
+    return {
       dateKey,
-      punches: sorted,
-      actionTimes,
-      workedHours: Number((dayWorked / 60).toFixed(2)),
+      punches: day.punches || [],
+      actionTimes: day.actionTimes,
+      workedHours: Number(day.hours || 0),
       lunchMinutes: dayLunch,
-      overtimeHours: Number((Math.max(0, dayWorked - 480) / 60).toFixed(2)),
-      warnings: [...new Set(dayWarnings)],
-    });
+      overtimeHours: Number((Math.max(0, Number(day.minutes || 0) - 480) / 60).toFixed(2)),
+      warnings: day.warnings || [],
+    };
   });
 
-  if (workedMinutes > 2400) warnings.add('Overtime');
+  if (Number(totals.totalHours || 0) > 40) warnings.add('Overtime');
   return {
-    workedHours: Number((workedMinutes / 60).toFixed(2)),
+    workedHours: Number(totals.totalHours || 0),
     lunchMinutes,
-    daysWorked: byDay.size,
+    daysWorked: totals.daysWorked,
     lateArrivals,
     warnings: [...warnings],
     daySummaries: daySummaries.sort((a, b) => a.dateKey.localeCompare(b.dateKey)),
