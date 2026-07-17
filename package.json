@@ -1,0 +1,13 @@
+{
+  "scripts": {
+    "check": "node --check app.js && node --check scripts/branch-backfill-preview.js && node --check scripts/payroll-snapshot-regression.mjs && node --check scripts/payroll-critical-regression.mjs && node --check scripts/punch-identity-regression.mjs && node --check scripts/public-punch-regression.mjs && node --check scripts/weekly-selected-week-regression.mjs && node --check scripts/firestore-public-punch-rules.test.mjs && node scripts/payroll-critical-regression.mjs && node scripts/punch-identity-regression.mjs && node scripts/public-punch-regression.mjs && node scripts/weekly-selected-week-regression.mjs",
+    "test:rules": "npx firebase-tools emulators:exec --only firestore \"node scripts/firestore-public-punch-rules.test.mjs\"",
+    "test:payroll": "node scripts/payroll-snapshot-regression.mjs",
+    "test:payroll-critical": "node scripts/payroll-critical-regression.mjs",
+    "build": "npm run check"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "firebase": "^12.16.0"
+  }
+}

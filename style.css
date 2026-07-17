@@ -101,6 +101,16 @@ input, select {
   background: rgba(255,255,255,0.05);
   color: var(--text);
 }
+select option {
+  background: #ffffff;
+  color: #111827;
+}
+select option:checked,
+select option:hover,
+select option:focus {
+  background: #dbeafe;
+  color: #07121e;
+}
 input::placeholder { color: rgba(255,255,255,0.45); }
 
 button {
@@ -109,11 +119,30 @@ button {
   padding: 12px 15px;
   cursor: pointer;
   font-weight: 700;
+  transition: transform 0.16s ease, border-color 0.16s ease, opacity 0.16s ease, background 0.16s ease;
 }
 
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px) scale(0.99);
+}
+
+button[aria-busy="true"] {
+  position: relative;
+  color: transparent;
+}
+
+button[aria-busy="true"]::after {
+  content: "Saving...";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text);
 }
 
 .primary-btn {
@@ -230,6 +259,15 @@ button:disabled {
   margin: 0;
 }
 
+#appVersion {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 3px 8px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  color: #d3eeff;
+}
+
 .site-footer nav {
   display: flex;
   flex-wrap: wrap;
@@ -300,6 +338,16 @@ button:disabled {
   color: var(--text);
   border-color: rgba(102, 184, 255, 0.3);
 }
+.tab.coming-soon::after {
+  content: attr(data-badge);
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 202, 87, 0.16);
+  color: #ffe7a8;
+  font-size: 0.72rem;
+}
 .tab-panel { display: block; }
 .hidden { display: none !important; }
 
@@ -334,6 +382,10 @@ button:disabled {
   background: rgba(255,255,255,0.05);
 }
 .status-box { padding: 14px; margin: 10px 0 16px; }
+.status-box.error-state {
+  border-color: rgba(255, 107, 107, 0.45);
+  color: #ffd8d8;
+}
 .worker-self-service {
   padding: 18px;
   border-radius: 14px;
@@ -760,28 +812,56 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
 /* ─── Employee mobile-first punch screen ─── */
 #workerCard .button-grid {
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 14px;
 }
 
 #workerCard .button-grid button {
-  min-height: 64px;
-  font-size: 1rem;
+  min-height: 68px;
+  font-size: 1.05rem;
   font-weight: 800;
   border-radius: 16px;
 }
 
+#workerCard {
+  overflow: hidden;
+}
+
+#workerCard .status-box {
+  line-height: 1.45;
+}
+
+#workerCard.is-saving {
+  border-color: rgba(102, 184, 255, 0.36);
+}
+
+.phase1-placeholder {
+  border-style: dashed;
+}
+
 @media (max-width: 480px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+    padding-top: 18px;
+  }
+
+  .card {
+    padding: 16px;
+    border-radius: 14px;
+  }
+
   #workerCard .button-grid {
     grid-template-columns: 1fr;
     gap: 10px;
   }
 
   #workerCard .button-grid button {
-    min-height: 72px;
+    min-height: 76px;
     font-size: 1.1rem;
   }
 
-  #workerCard input {
+  #workerCard input,
+  #workerCard select {
     font-size: 1.1rem;
     padding: 14px 16px;
   }
@@ -856,4 +936,394 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
 .autocomplete-list li.new-worker {
   color: #3bd576;
   font-style: italic;
+}
+
+/* Public worker clock-in mobile ergonomics */
+#workerCard {
+  width: min(100%, 680px);
+  margin-inline: auto;
+}
+
+#workerCard .card-head h2 {
+  font-size: clamp(1.35rem, 6vw, 1.8rem);
+}
+
+#workerCard label span {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+#workerCard input,
+#workerCard select {
+  min-height: 52px;
+}
+
+#workerCard .worker-self-service-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+#workerCard .worker-self-service-actions button {
+  min-height: 48px;
+}
+
+@media (max-width: 700px) {
+  body {
+    background: linear-gradient(180deg, #102855 0%, #0b1120 46%, #08101e 100%);
+  }
+
+  .bg-orb {
+    display: none;
+  }
+
+  .topbar,
+  .shell {
+    width: min(100% - 16px, 680px);
+  }
+
+  .topbar {
+    gap: 8px;
+    padding: 12px 0 6px;
+  }
+
+  .topbar h1 {
+    font-size: 1.55rem;
+    margin-bottom: 2px;
+  }
+
+  .topbar p {
+    font-size: 0.9rem;
+    line-height: 1.35;
+  }
+
+  .shell {
+    gap: 12px;
+    padding-top: 8px;
+    padding-bottom: 22px;
+  }
+
+  #workerCard {
+    padding: 14px;
+    border-radius: 12px;
+  }
+
+  #workerCard .card-head {
+    margin-bottom: 12px;
+  }
+
+  #workerCard .card-head p {
+    font-size: 0.92rem;
+    line-height: 1.35;
+  }
+
+  #workerCard .stack.gap16 {
+    gap: 12px;
+  }
+
+  #workerCard .button-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  #workerCard .button-grid button {
+    min-height: 72px;
+    padding: 12px 8px;
+    border-radius: 14px;
+    font-size: 1rem;
+    line-height: 1.12;
+  }
+
+  #workerCard .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  #workerCard .stat-card {
+    min-height: 74px;
+    padding: 10px;
+  }
+
+  #workerCard .stat-card span {
+    font-size: 0.74rem;
+  }
+
+  #workerCard .stat-card strong {
+    font-size: 0.96rem;
+    overflow-wrap: anywhere;
+  }
+
+  #workerCard .status-box {
+    padding: 10px 12px;
+    font-size: 0.92rem;
+  }
+
+  #workerCard .optional-location-box {
+    gap: 10px;
+    padding: 10px;
+  }
+
+  #workerCard .worker-self-service-actions {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  #workerCard .worker-self-service-actions button {
+    width: 100%;
+  }
+
+  #workerCard .mini-table-wrap {
+    max-height: 220px;
+  }
+
+  .autocomplete-list {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    top: auto;
+    max-height: min(48vh, 360px);
+    z-index: 90;
+    border-radius: 12px;
+  }
+
+  .autocomplete-list li {
+    padding: 14px 16px;
+    font-size: 1rem;
+  }
+}
+
+@media (max-width: 380px) {
+  #workerCard .button-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #workerCard .button-grid button {
+    min-height: 66px;
+  }
+
+  #workerCard .stats-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Agency Export manager workbench */
+.agency-workbench-card {
+  overflow: visible;
+}
+
+.agency-sticky-tools {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  gap: 12px;
+  margin: 14px 0 16px;
+  padding: 14px;
+  background: rgba(11, 18, 32, 0.96);
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 8px;
+  backdrop-filter: blur(12px);
+}
+
+.agency-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.agency-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+}
+
+.agency-toggle-row label {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  min-height: 32px;
+}
+
+.agency-column-chooser {
+  color: var(--muted);
+}
+
+.agency-column-chooser summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.agency-stats-grid {
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+  margin-bottom: 16px;
+}
+
+.agency-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 420px);
+  gap: 16px;
+  align-items: start;
+}
+
+.agency-table-wrap {
+  max-height: 62vh;
+}
+
+.agency-review-table {
+  min-width: 980px;
+}
+
+.agency-review-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #111a2b;
+  cursor: pointer;
+  user-select: none;
+}
+
+.agency-review-table tbody tr {
+  cursor: pointer;
+}
+
+.agency-review-table tbody tr.selected-row,
+.agency-review-table tbody tr:focus {
+  outline: 2px solid rgba(102, 184, 255, 0.55);
+  background: rgba(102, 184, 255, 0.09);
+}
+
+.column-hidden {
+  display: none;
+}
+
+.agency-pagination {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.agency-employee-panel {
+  position: sticky;
+  top: 12px;
+  max-height: 78vh;
+  overflow: auto;
+  padding: 14px;
+  background: rgba(13, 21, 36, 0.98);
+  border: 1px solid rgba(102, 184, 255, 0.24);
+  border-radius: 8px;
+  box-shadow: 0 18px 40px rgba(0,0,0,0.24);
+}
+
+.agency-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 12px;
+}
+
+.agency-panel-head h3,
+.agency-panel-head p {
+  margin: 0;
+}
+
+.agency-panel-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.agency-panel-tabs .tab {
+  padding: 8px 10px;
+  font-size: 0.86rem;
+}
+
+.agency-panel-content {
+  display: grid;
+  gap: 12px;
+}
+
+.agency-timeline {
+  display: grid;
+  gap: 12px;
+}
+
+.agency-day {
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+}
+
+.agency-day h4 {
+  margin: 0 0 10px;
+}
+
+.agency-punch-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 0;
+  border-top: 1px solid rgba(255,255,255,0.07);
+}
+
+.agency-punch-row:first-of-type {
+  border-top: 0;
+}
+
+.agency-punch-row span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.agency-punch-row .form-actions {
+  flex-wrap: nowrap;
+}
+
+.agency-print-preview {
+  margin-top: 18px;
+}
+
+.agency-print-preview summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+@media (max-width: 980px) {
+  .agency-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .agency-employee-panel {
+    position: fixed;
+    inset: 10px;
+    z-index: 60;
+    max-height: none;
+  }
+
+  .agency-sticky-tools {
+    position: static;
+  }
+}
+
+@media (max-width: 620px) {
+  .agency-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agency-panel-head,
+  .agency-punch-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .agency-punch-row .form-actions {
+    flex-wrap: wrap;
+  }
 }

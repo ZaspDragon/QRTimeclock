@@ -102,20 +102,41 @@ service cloud.firestore {
         && data.siteId in ['OH01', 'OHC'];
     }
 
+    function validEmployeeCompanySite(data) {
+      return data.companyId == 'chadwell'
+        && (
+          (data.siteId is string && data.siteId in ['OH01', 'OHC'])
+          || (data.assignedSiteId is string && data.assignedSiteId in ['OH01', 'OHC'])
+          || (data.siteIds is list && data.siteIds.hasAny(['OH01', 'OHC']))
+        );
+    }
+
     function sameCompanyAndSite(data) {
       return activeProfile()
-        && validCompanySite(data)
         && data.companyId == myCompanyId()
-        && mySiteIds().hasAny([data.siteId]);
+        && (
+          (data.siteId is string && mySiteIds().hasAny([data.siteId]))
+          || (data.assignedSiteId is string && mySiteIds().hasAny([data.assignedSiteId]))
+          || (data.branchId is string && mySiteIds().hasAny([data.branchId]))
+          || (data.siteIds is list && data.siteIds.hasAny(mySiteIds()))
+        );
+    }
+
+    function noUsableBranch(data) {
+      return (!('siteId' in data) || data.siteId == null || data.siteId == '')
+        && (!('assignedSiteId' in data) || data.assignedSiteId == null || data.assignedSiteId == '')
+        && (!('branchId' in data) || data.branchId == null || data.branchId == '')
+        && (!('siteIds' in data) || !(data.siteIds is list) || data.siteIds.size() == 0);
     }
 
     function sameAgency(data) {
-      return isAgencyAdmin()
-        ? (data.agencyId is string && data.agencyId != '' && myProfile().agencyId == data.agencyId)
-        : (!('agencyId' in data)
-          || data.agencyId == null
-          || data.agencyId == ''
-          || myProfile().agencyId == data.agencyId);
+      return !isAgencyAdmin()
+        || (
+          data.agencyId is string
+          && data.agencyId != ''
+          && myProfile().agencyId is string
+          && myProfile().agencyId == data.agencyId
+        );
     }
 
     function inScope(data) {
@@ -134,9 +155,10 @@ service cloud.firestore {
     }
 
     function activeEmployee(data) {
-      return validCompanySite(data)
-        && data.status == 'active'
-        && data.active != false;
+      return validEmployeeCompanySite(data)
+        && data.active != false
+        && (!('status' in data) || !(data.status in ['inactive', 'removed', 'terminated', 'disabled', 'archived', 'merged']))
+        && (data.status == 'active' || data.active == true);
     }
 
     function publicEmployeeWrite() {
@@ -151,9 +173,15 @@ service cloud.firestore {
         && request.resource.data.employeeNumber is string;
     }
 
-    function publicPunchCreate() {
+    function publicPunchCreate(punchId) {
       return validCompanySite(request.resource.data)
+        && request.resource.data.duplicateGuardKey == punchId
+        && request.resource.data.idempotencyKey == punchId
         && request.resource.data.source == 'public_qr'
+        && request.resource.data.employeeId is string
+        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && publicPunchHasMatchingGuard(punchId)
+        && publicPunchHasMatchingState(punchId)
         && request.resource.data.name is string
         && request.resource.data.name.size() >= 2
         && request.resource.data.name.size() <= 80
@@ -162,7 +190,93 @@ service cloud.firestore {
         && request.resource.data.action in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out']
         && request.resource.data.dateKey is string
         && request.resource.data.weekKey is string
-        && request.resource.data.timestampMs is number;
+        && request.resource.data.timestampMs is number
+        && request.resource.data.workerStateKey is string;
+    }
+
+    function publicPunchGuardCreate(guardId) {
+      return request.resource.data.duplicateGuardKey == guardId
+        && request.resource.data.punchId == guardId
+        && validCompanySite(request.resource.data)
+        && request.resource.data.employeeId is string
+        && request.resource.data.employeeId.size() > 0
+        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && request.resource.data.action in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out']
+        && request.resource.data.acceptedAtMs is number;
+    }
+
+    function publicPunchStateCommon(stateId) {
+      return request.resource.data.workerStateKey == stateId
+        && validCompanySite(request.resource.data)
+        && request.resource.data.employeeId is string
+        && request.resource.data.employeeId.size() > 0
+        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && request.resource.data.lastAction in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out']
+        && request.resource.data.lastPunchAtMs is number
+        && request.resource.data.lastPunchId is string
+        && publicStateMatchesPunch(stateId);
+    }
+
+    function publicPunchStateCreate(stateId) {
+      return publicPunchStateCommon(stateId);
+    }
+
+    function publicPunchStateUpdate(stateId) {
+      return publicPunchStateCommon(stateId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'workerStateKey',
+          'companyId',
+          'siteId',
+          'agencyId',
+          'employeeId',
+          'lastAction',
+          'lastPunchAtMs',
+          'lastPunchId',
+          'updatedAt'
+        ])
+        && request.resource.data.lastPunchAtMs >= resource.data.get('lastPunchAtMs', 0);
+    }
+
+    function branchlessHistoricalRead(data) {
+      return activeProfile()
+        && (isOwnerOrSuperAdmin() || isAdmin() || isManager())
+        && data.companyId == myCompanyId()
+        && noUsableBranch(data);
+    }
+
+    function publicPunchHasMatchingGuard(punchId) {
+      let guard = getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey));
+      return request.resource.data.duplicateGuardKey is string
+        && request.resource.data.duplicateGuardKey == punchId
+        && existsAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey))
+        && guard.data.employeeId == request.resource.data.employeeId
+        && guard.data.action == request.resource.data.action
+        && guard.data.companyId == request.resource.data.companyId
+        && guard.data.siteId == request.resource.data.siteId
+        && guard.data.punchId == punchId;
+    }
+
+    function publicPunchHasMatchingState(punchId) {
+      let punchState = getAfter(/databases/$(database)/documents/punchStates/$(request.resource.data.workerStateKey));
+      return request.resource.data.workerStateKey is string
+        && existsAfter(/databases/$(database)/documents/punchStates/$(request.resource.data.workerStateKey))
+        && punchState.data.employeeId == request.resource.data.employeeId
+        && punchState.data.lastAction == request.resource.data.action
+        && punchState.data.lastPunchAtMs == request.resource.data.timestampMs
+        && punchState.data.lastPunchId == punchId
+        && punchState.data.companyId == request.resource.data.companyId
+        && punchState.data.siteId == request.resource.data.siteId;
+    }
+
+    function publicStateMatchesPunch(stateId) {
+      let punch = getAfter(/databases/$(database)/documents/punches/$(request.resource.data.lastPunchId));
+      return existsAfter(/databases/$(database)/documents/punches/$(request.resource.data.lastPunchId))
+        && punch.data.workerStateKey == stateId
+        && punch.data.employeeId == request.resource.data.employeeId
+        && punch.data.action == request.resource.data.lastAction
+        && punch.data.timestampMs == request.resource.data.lastPunchAtMs
+        && punch.data.companyId == request.resource.data.companyId
+        && punch.data.siteId == request.resource.data.siteId;
     }
 
     function workerOwnsRecord(data) {
@@ -319,7 +433,7 @@ service cloud.firestore {
     }
 
     match /punches/{punchId} {
-      allow create: if publicPunchCreate()
+      allow create: if publicPunchCreate(punchId)
         || (activeProfile() && (
           (hasEditPunchPermission() && inScope(request.resource.data))
           || (isWorker() && workerOwnsRecord(request.resource.data))
@@ -331,6 +445,7 @@ service cloud.firestore {
         ))
         || (activeProfile() && (
           ((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data))
+          || branchlessHistoricalRead(resource.data)
           || workerOwnsRecord(resource.data)
         ));
 
@@ -343,13 +458,29 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /punchGuards/{guardId} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if publicPunchGuardCreate(guardId);
+      allow update, delete: if false;
+    }
+
+    match /punchStates/{stateId} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if publicPunchStateCreate(stateId);
+      allow update: if publicPunchStateUpdate(stateId);
+      allow delete: if false;
+    }
+
     match /punch_edits/{editId} {
       allow create: if activeProfile()
         && (hasEditPunchPermission() || hasDeletePunchPermission())
         && inScope(request.resource.data);
 
       allow read: if activeProfile()
-        && ((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data));
+        && (((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data))
+          || branchlessHistoricalRead(resource.data));
 
       allow update, delete: if false;
     }
@@ -357,6 +488,7 @@ service cloud.firestore {
     match /timesheets/{timesheetId} {
       allow read: if activeProfile() && (
         ((isOwnerOrSuperAdmin() || isAdmin() || isManager()) && inScope(resource.data))
+        || branchlessHistoricalRead(resource.data)
         || workerOwnsRecord(resource.data)
       );
 
@@ -419,3 +551,4 @@ service cloud.firestore {
     }
   }
 }
+   

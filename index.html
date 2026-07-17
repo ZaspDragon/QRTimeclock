@@ -17,9 +17,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260615-1" />
+  <link rel="stylesheet" href="style.css?v=20260717-2" />
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
-  <script type="module" src="app.js?v=20260615-1"></script>
+  <script type="module" src="app.js?v=20260717-2"></script>
 </head>
 <body>
   <div class="bg-orb orb-1"></div>
@@ -75,8 +75,8 @@
 
         <div class="button-grid">
           <button class="primary-btn worker-action-btn" data-action="clock_in" type="button">Clock In</button>
-          <button class="secondary-btn worker-action-btn" data-action="start_lunch" type="button">Start Lunch</button>
-          <button class="secondary-btn worker-action-btn" data-action="end_lunch" type="button">End Lunch</button>
+          <button class="secondary-btn worker-action-btn" data-action="start_lunch" type="button">Lunch Out</button>
+          <button class="secondary-btn worker-action-btn" data-action="end_lunch" type="button">Lunch In</button>
           <button class="danger-btn worker-action-btn" data-action="clock_out" type="button">Clock Out</button>
         </div>
 
@@ -304,7 +304,8 @@
         <button class="tab" data-tab="editPunchesTab" type="button" id="editPunchesTabBtn">Edit Punches</button>
         <button class="tab" data-tab="approvalsTab" type="button" id="approvalsTabBtn">Approvals</button>
         <button class="tab" data-tab="employeesTab" type="button" id="employeesTabBtn">Employees</button>
-        <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Users</button>
+        <button class="tab hidden" data-tab="reportsTab" type="button" id="reportsTabBtn" disabled>Reports</button>
+        <button class="tab hidden" data-tab="adminTab" type="button" id="adminTabBtn">Settings</button>
         <button class="tab" data-tab="agencyTab" type="button" id="agencyTabBtn">Agency Export</button>
       </nav>
 
@@ -465,6 +466,8 @@
             </div>
           </div>
 
+          <div id="timesheetStatus" class="status-box hidden"></div>
+
           <div class="mini-table-wrap tall">
             <table>
               <thead>
@@ -528,6 +531,10 @@
             </div>
 
             <div class="stack gap16">
+              <label>
+                <span>Week start</span>
+                <input id="editWeekPicker" type="date" />
+              </label>
               <label>
                 <span>Filter by name</span>
                 <input id="editFilterNameInput" type="text" placeholder="Type a name or leave blank" />
@@ -678,6 +685,8 @@
               </label>
             </div>
 
+            <div id="duplicateWorkerWarning" class="status-box hidden" style="margin-bottom:12px;"></div>
+
             <div class="mini-table-wrap tall">
               <table>
                 <thead>
@@ -712,6 +721,33 @@
               <tbody id="inactiveWorkerListBody"><tr><td colspan="7">No removed or inactive workers.</td></tr></tbody>
             </table>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Worker Name Repair</h2>
+            <p>Employee profile names are the source of truth. Repairs update copied punch/timesheet names only and preserve all hours, signatures, and history.</p>
+          </div>
+          <div id="workerNameRepairStatus" class="status-box">Enter a worker ID to repair copied names or safely rename one worker profile.</div>
+          <form id="workerNameRepairForm" class="grid-form" style="margin-top:12px;">
+            <label>
+              <span>Worker ID</span>
+              <input id="repairWorkerIdInput" type="text" placeholder="employee_direct_oh01_1234" required />
+            </label>
+            <label>
+              <span>New profile name</span>
+              <input id="repairWorkerNameInput" type="text" placeholder="Ervin Wilson" />
+            </label>
+            <label>
+              <span>Week start for copied-name repair</span>
+              <input id="repairWeekStartInput" type="date" />
+            </label>
+            <div class="form-actions full-width">
+              <button id="repairRenameWorkerBtn" class="secondary-btn" type="button">Rename Worker Profile</button>
+              <button id="repairCopiedNamesBtn" class="primary-btn" type="button">Repair Copied Names</button>
+              <button id="repairKnownErvinBtn" class="ghost-btn" type="button">Prepare Ervin Wilson Rename</button>
+            </div>
+          </form>
         </div>
 
         <div class="card">
@@ -904,30 +940,44 @@
         </div>
       </section>
 
-      <section id="agencyTab" class="tab-panel hidden">
-        <div class="card">
+      <section id="reportsTab" class="tab-panel hidden">
+        <div class="card phase1-placeholder">
           <div class="card-head">
-            <h2>Temp Agency Export</h2>
-            <p>Preview exactly what the agency will receive, then print or save it as a PDF.</p>
+            <h2>Reports</h2>
+            <p>Coming Soon. Payroll reports remain disabled until the payrollReports feature flag is enabled.</p>
           </div>
+          <div class="status-box">Phase 1 does not load or calculate payroll report data.</div>
+        </div>
+      </section>
 
-          <div class="grid-form compact-form" style="margin-bottom:16px;">
-            <label>
-              <span>Worker</span>
-              <select id="agencyWorkerSelect">
-                <option value="">Select a worker</option>
-              </select>
-            </label>
-
-            <div class="form-actions full-width">
-              <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
-              <button id="agencyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
+      <section id="agencyTab" class="tab-panel hidden">
+        <div class="card agency-legacy-card">
+          <div class="card-head split-head">
+            <div>
+              <h2>Agency Export</h2>
+              <p>Legacy weekly sheet preview and print/export.</p>
             </div>
           </div>
 
-          <div id="agencyPreviewWrap" class="mini-table-wrap">
-            <div id="agencyPreview" style="padding:18px;">
-              <div class="empty-state">Choose a worker and click Preview Sheet.</div>
+          <div class="agency-print-preview legacy-primary">
+            <div class="grid-form compact-form" style="margin:16px 0;">
+              <label>
+                <span>Worker</span>
+                <select id="agencyLegacyWorkerSelect">
+                  <option value="">Select a worker</option>
+                </select>
+              </label>
+
+              <div class="form-actions full-width">
+                <button id="agencyPreviewBtn" class="primary-btn" type="button">Preview Sheet</button>
+                <button id="agencyLegacyPrintBtn" class="secondary-btn" type="button">Print / Save PDF</button>
+              </div>
+            </div>
+
+            <div id="agencyPreviewWrap" class="mini-table-wrap">
+              <div id="agencyPreview" style="padding:18px;">
+                <div class="empty-state">Choose a worker and click Preview Sheet.</div>
+              </div>
             </div>
           </div>
         </div>
@@ -936,7 +986,7 @@
   </main>
 
   <footer class="site-footer">
-    <p>&copy; 2026 QR TimeClock Pro. Built and owned by Brandon Evanshine. All rights reserved.</p>
+    <p>&copy; 2026 QR TimeClock Pro. Built and owned by Brandon Evanshine. All rights reserved. <span id="appVersion">v2026.07.05-phase1</span></p>
     <nav aria-label="Legal">
       <a href="terms.html">Terms of Use</a>
       <a href="privacy.html">Privacy Policy</a>
