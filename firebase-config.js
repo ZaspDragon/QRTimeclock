@@ -32,5 +32,8 @@ if (typeof window !== 'undefined') {
     import('./punch-exceptions-dashboard.js?v=20260717-1').catch((error) => {
       console.warn('Punch exception dashboard failed to load:', error.message);
     });
+    import('./agency-export-dropdown-dedupe.js?v=20260717-1').catch((error) => {
+      console.warn('Agency export dropdown dedupe failed to load:', error.message);
+    });
   });
 }
