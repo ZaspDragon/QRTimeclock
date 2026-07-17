@@ -37,3 +37,8 @@ if (document.readyState === 'loading') {
 } else {
   initializeLunchLabels();
 }
+
+// Trial branch only: load the read-only scheduled punch correction dashboard.
+import('./correction-dashboard.js?v=20260717-1').catch((error) => {
+  console.warn('Trial correction dashboard failed to load:', error.message);
+});
