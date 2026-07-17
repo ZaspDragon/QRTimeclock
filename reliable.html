@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reliable Timeclock</title>
+  <link rel="stylesheet" href="style.css?v=20260717-reliable" />
+  <style>
+    .reliable-shell{max-width:1100px;margin:0 auto;padding:20px}.reliable-grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}.slot-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.slot{padding:12px;border:1px solid rgba(255,255,255,.15);border-radius:12px}.slot strong,.slot span{display:block}.schedule-btn{width:100%;margin-top:8px}.notice{padding:12px;border-radius:10px;background:rgba(59,130,246,.12);margin:10px 0}.success{background:rgba(34,197,94,.14)}.error{background:rgba(239,68,68,.14)}.hidden{display:none!important}@media(max-width:600px){.slot-grid{grid-template-columns:1fr}}
+  </style>
+  <script type="module" src="reliable.js?v=20260717-1"></script>
+</head>
+<body>
+  <header class="topbar"><div><h1>Reliable Timeclock</h1><p>First punch wins. Managers can fill missing punches from the daily schedule.</p></div><a class="ghost-btn" href="index.html">Original App</a></header>
+  <main class="reliable-shell">
+    <div class="reliable-grid">
+      <section class="card">
+        <div class="card-head"><h2>Worker Punch</h2><p>Your first punch of each type for the day is kept.</p></div>
+        <label><span>Name</span><input id="workerName" autocomplete="off" placeholder="First and last name" /></label>
+        <label><span>Branch</span><select id="workerSite"><option value="OH01">OH01</option><option value="OHC">OHC</option></select></label>
+        <div class="button-grid">
+          <button class="primary-btn punch-btn" data-action="clock_in">Clock In</button>
+          <button class="secondary-btn punch-btn" data-action="start_lunch">Lunch Out</button>
+          <button class="secondary-btn punch-btn" data-action="end_lunch">Lunch In</button>
+          <button class="danger-btn punch-btn" data-action="clock_out">Clock Out</button>
+        </div>
+        <div id="workerStatus" class="notice">Enter your name and select a punch.</div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>Manager Sign In</h2><p>Owner, admin, manager, and supervisor access is role-protected.</p></div>
+        <form id="loginForm">
+          <label><span>Email</span><input id="email" type="email" required /></label>
+          <label><span>Password</span><input id="password" type="password" required /></label>
+          <div class="form-actions"><button class="primary-btn" type="submit">Sign In</button><button id="signOut" class="ghost-btn hidden" type="button">Sign Out</button></div>
+        </form>
+        <div id="managerStatus" class="notice">Not signed in.</div>
+      </section>
+    </div>
+
+    <section id="managerPanel" class="card hidden" style="margin-top:18px">
+      <div class="card-head"><h2>Fill Missing Scheduled Punches</h2><p>This only creates missing punches. Existing punches are never overwritten.</p></div>
+      <div class="grid-form">
+        <label><span>Employee</span><select id="employeeSelect"></select></label>
+        <label><span>Date</span><input id="workDate" type="date" /></label>
+        <label><span>Branch</span><select id="managerSite"><option value="OH01">OH01</option><option value="OHC">OHC</option></select></label>
+        <div class="form-actions"><button id="loadDay" class="primary-btn" type="button">Load Day</button><button id="fillAll" class="secondary-btn" type="button">Fill All Missing</button></div>
+      </div>
+      <div id="dayStatus" class="notice">Choose an employee and date.</div>
+      <div id="slots" class="slot-grid"></div>
+    </section>
+  </main>
+</body>
+</html>
