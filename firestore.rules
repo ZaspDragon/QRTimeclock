@@ -130,12 +130,13 @@ service cloud.firestore {
     }
 
     function sameAgency(data) {
-      return isAgencyAdmin()
-        ? (data.agencyId is string && data.agencyId != '' && myProfile().agencyId == data.agencyId)
-        : (!('agencyId' in data)
-          || data.agencyId == null
-          || data.agencyId == ''
-          || myProfile().agencyId == data.agencyId);
+      return !isAgencyAdmin()
+        || (
+          data.agencyId is string
+          && data.agencyId != ''
+          && myProfile().agencyId is string
+          && myProfile().agencyId == data.agencyId
+        );
     }
 
     function inScope(data) {
@@ -550,3 +551,4 @@ service cloud.firestore {
     }
   }
 }
+   
