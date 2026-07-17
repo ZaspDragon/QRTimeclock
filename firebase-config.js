@@ -29,7 +29,7 @@ if (typeof window !== 'undefined') {
     import('./new-worker-first-punch-hotfix.js?v=20260717-1').catch((error) => {
       console.warn('New-worker first-punch hotfix failed to load:', error.message);
     });
-    import('./punch-exceptions-dashboard.js?v=20260717-1').catch((error) => {
+    import('./punch-exceptions-dashboard-v2.js?v=20260717-2').catch((error) => {
       console.warn('Punch exception dashboard failed to load:', error.message);
     });
     import('./agency-export-dropdown-dedupe.js?v=20260717-1').catch((error) => {
