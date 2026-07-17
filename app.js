@@ -957,12 +957,29 @@ async function loadBranchEmployees({ siteId = getCurrentSiteId(), agencyId = isA
 
 async function loadPublicEmployees() {
   try {
-    const activeEmployees = await loadBranchEmployees({
-      siteId: getPublicSiteId(),
-      status: 'active',
-      agencyId: '',
-      scope: 'startup'
-    });
+    const [statusResult, activeResult] = await Promise.allSettled([
+      loadBranchEmployees({
+        siteId: getPublicSiteId(),
+        status: 'active',
+        agencyId: '',
+        scope: 'startup'
+      }),
+      getDocsCounted(query(
+        collection(db, 'employees'),
+        ...branchConstraints(getPublicSiteId()),
+        where('active', '==', true)
+      ), 'startup')
+    ]);
+    const statusRows = statusResult.status === 'fulfilled' ? statusResult.value : [];
+    const activeRows = activeResult.status === 'fulfilled'
+      ? activeResult.value.docs.map((d) => ({ id: d.id, ...d.data() }))
+      : [];
+    if (statusResult.status === 'rejected') console.warn('Public employee status lookup skipped:', statusResult.reason?.message || statusResult.reason);
+    if (activeResult.status === 'rejected') console.warn('Public employee active lookup skipped:', activeResult.reason?.message || activeResult.reason);
+    const activeEmployees = [...new Map([...statusRows, ...activeRows]
+      .filter(isActiveEmployeeRecord)
+      .map((employee) => [employee.id || employee.employeeId || employeeScopeKey(employee), employee])
+    ).values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     state.publicEmployeeRecords = activeEmployees;
     state.publicEmployees = collapseDuplicateEmployees(activeEmployees);
   } catch (error) {
@@ -1583,7 +1600,7 @@ async function handleWorkerPunch(action) {
     return;
   }
 
-  if (['inactive', 'terminated', 'removed'].includes(String(emp.status || '').toLowerCase())) {
+  if (!isActiveEmployeeRecord(emp)) {
     toast('Your employee record is not active. Contact your manager.', true);
     return;
   }
@@ -1774,7 +1791,10 @@ async function handleWorkerPunch(action) {
     localStorage.setItem(duplicateKey, String(nowMs));
     toast(`${savedActionLabel} saved successfully.`);
   } catch (error) {
-    console.error(error);
+    logPublicPunchFailure(error, {
+      operation: 'savePublicPunchWithIdempotency',
+      collections: ['punches', 'punchGuards', 'punchStates']
+    });
     if (els.workerStatusMessage) {
       els.workerStatusMessage.textContent = formatWorkerPunchError(error);
     }
@@ -1787,11 +1807,25 @@ async function handleWorkerPunch(action) {
 
 function formatWorkerPunchError(error) {
   const message = String(error?.message || '').trim();
+  const code = String(error?.code || '').trim();
   if (/already recorded/i.test(message)) return message;
   if (/already saved/i.test(message)) return 'That punch was already recorded. No second punch was created.';
+  if (/not active|inactive|terminated|removed/i.test(message)) return 'Your employee record is not active. Contact your manager.';
+  if (/not found|unknown employee|could not be verified/i.test(message)) return 'Your worker profile could not be verified. Ask a manager to add or reactivate you before punching.';
+  if (/already the last recorded action|invalid repeated/i.test(message)) return message;
   if (/select your/i.test(message)) return message;
-  if (/permission|missing or insufficient/i.test(message)) return 'Punch could not be saved because access was denied. Ask a manager to check setup.';
+  if (code === 'permission-denied' || /permission|missing or insufficient/i.test(message)) return 'Punch could not be saved because access was denied. Ask a manager to check employee setup.';
+  if (code === 'unavailable' || code === 'deadline-exceeded' || /network|offline|failed to fetch/i.test(message)) return 'Network connection failed before the punch could be saved. Check signal and try again.';
   return message || 'Could not save punch. Check your connection and try again.';
+}
+
+function logPublicPunchFailure(error, { operation, collections }) {
+  console.warn('[QRTimeclock public punch failed]', {
+    operation,
+    code: error?.code || '',
+    message: error?.message || '',
+    collections,
+  });
 }
 
 function setWorkerPunchBusy(busy) {
@@ -3860,7 +3894,7 @@ async function loadWeeklyWorkspaceData({ weekStartDate = state.selectedWeekStart
       && metadata.timesheetQueryFailed;
     metadata.loadedOnlyCompatibilityPunches = !snapshotRows.length && compatibleRows.length > 0;
 
-    return { weekKey, employees, punches: mergedRows, timesheets, metadata };
+    return { weekKey, employees, punches: getValidPunchesForSelectedWeek(mergedRows, normalizedWeekStart), timesheets, metadata };
   })();
 
   state.weeklyDataCache.set(cacheKey, { savedAt: Date.now(), data: pending });
@@ -3881,9 +3915,9 @@ function applyWeeklyWorkspaceData(data, { resetAgencyRange = true, requestId = n
   state.allEmployees = data.employees || [];
   state.selectedWeekTimesheetDocs = data.timesheets || {};
   state.selectedWeekLoadMeta = data.metadata || null;
-  const weeklyPunches = data.punches || [];
+  const weeklyPunches = (data.punches || []).map(normalizePunchRecordForDisplay);
   state.agencyReview.deletedPunchRows = weeklyPunches.filter((row) => !isActivePunchRecord(row));
-  state.selectedWeekPunchRows = weeklyPunches.filter(isActivePunchRecord);
+  state.selectedWeekPunchRows = getValidPunchesForSelectedWeek(weeklyPunches, state.selectedWeekStart);
   state.selectedWeekPunchRowsLoaded = true;
   if (resetAgencyRange) state.agencyReview.rangePunchRows = null;
   renderEditPunchesTable(getEditablePunchRows());
@@ -3943,9 +3977,7 @@ function punchMatchesSelectedBranchCompatibility(punch, selectedBranch = getCurr
 }
 
 async function loadCompatibleWeeklyPunchRowsDetailed(weekStartDate, scope = 'Weekly Signoff') {
-  const weekStart = startOfLocalDay(normalizeWeekStartDate(weekStartDate));
-  const weekEnd = addLocalDays(weekStart, 6);
-  weekEnd.setHours(23, 59, 59, 999);
+  const weekRange = selectedWeekRange(weekStartDate);
   const selectedBranch = getCurrentSiteId();
   const agencyConstraints = isAgencyUser() ? [where('agencyId', '==', agencyScopeId())] : [];
   const sourceConstraints = [
@@ -3957,7 +3989,7 @@ async function loadCompatibleWeeklyPunchRowsDetailed(weekStartDate, scope = 'Wee
     { label: 'legacyBranchlessBlank', constraints: [where('companyId', '==', getCurrentCompanyId()), where('siteId', '==', ''), where('assignedSiteId', '==', ''), where('branchId', '==', ''), where('siteIds', '==', []), ...agencyConstraints] },
   ];
   const settled = await Promise.allSettled(sourceConstraints.map((source) =>
-    fetchPunchesWithRange(source.constraints, weekStart.getTime(), weekEnd.getTime(), {
+    fetchPunchesWithRange(source.constraints, weekRange.startMs, weekRange.endMs - 1, {
       scope,
       includeLegacyTimestampFallback: true,
       sourceLabel: source.label,
@@ -3976,7 +4008,7 @@ async function loadCompatibleWeeklyPunchRowsDetailed(weekStartDate, scope = 'Wee
       console.warn(`Compatible weekly punch lookup skipped (${label}):`, result.reason?.message || result.reason);
     }
   });
-  return { rows: dedupePunches(rows), failures, attempted: sourceConstraints.length };
+  return { rows: getValidPunchesForSelectedWeek(rows, weekStartDate), failures, attempted: sourceConstraints.length };
 }
 
 function renderDerivedTimesheets() {
@@ -4048,7 +4080,7 @@ function renderWeeklyLoadStatus(rows) {
     return;
   }
   if (!rows.length) {
-    setWeeklyLoadStatus('No punches or saved timesheet were found for the selected week.');
+    setWeeklyLoadStatus('No valid punches were found for the selected week.');
     return;
   }
   setWeeklyLoadStatus('');
@@ -4078,27 +4110,23 @@ function reportDuplicatePunchDiagnostics(groups = []) {
 
 function getDerivedTimesheetRows() {
   const weekKey = formatDateKey(state.selectedWeekStart);
-  const grouped = new Map();
   const profileIndex = buildWorkerProfileIndex();
   const canonicalDirectory = buildCanonicalWorkerDirectory([], profileIndex);
   const matchedSavedTimesheetIds = new Set();
-
-  state.selectedWeekPunchRows.forEach((p) => {
-    const key = getWorkerIdentityKey(p, canonicalDirectory, profileIndex);
-    if (!key) return;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(p);
+  const workedGroups = buildWorkedWorkerGroups(state.selectedWeekPunchRows, {
+    profileIndex,
+    directory: canonicalDirectory
   });
 
   const copiedNameKeyCounts = new Map();
-  grouped.forEach((personPunches) => {
-    const copiedKey = normalizeName(getCopiedWorkerName(personPunches[0]));
+  workedGroups.forEach((group) => {
+    const copiedKey = normalizeName(getCopiedWorkerName(group.punches[0]));
     if (copiedKey) copiedNameKeyCounts.set(copiedKey, (copiedNameKeyCounts.get(copiedKey) || 0) + 1);
   });
 
   const rows = [];
 
-  grouped.forEach((personPunches, identityKey) => {
+  workedGroups.forEach(({ identityKey, punches: personPunches }) => {
     const employee = findTimesheetEmployee(personPunches, identityKey, profileIndex);
     const firstPunch = personPunches[0] || {};
     const copiedPunchName = getCopiedWorkerName(firstPunch);
@@ -4177,41 +4205,6 @@ function getDerivedTimesheetRows() {
       status: saved?.status || 'open',
       managerSignedBy: saved?.managerSignedBy || '',
       managerSignedAt: saved?.managerSignedAt || null,
-    });
-  });
-
-  Object.values(state.selectedWeekTimesheetDocs || {}).forEach((saved) => {
-    if (!saved || saved.weekKey !== weekKey || matchedSavedTimesheetIds.has(saved.id)) return;
-    const displayName = saved.name || saved.workerName || saved.employeeName || saved.displayName || saved.nameKey || 'Saved timesheet';
-    const nameKey = normalizeName(saved.nameKey || displayName);
-    const workerIds = getRecordWorkerIds(saved);
-    const stableWorkerId = workerIds[0] || saved.employeeId || saved.workerId || nameKey;
-    rows.push({
-      id: saved.id || `${weekKey}_${sanitizeTimesheetIdPart(stableWorkerId || nameKey)}`,
-      identityKey: stableWorkerId ? `worker:${stableWorkerId}` : `name:${nameKey}`,
-      workerIds,
-      punchCount: 0,
-      name: displayName,
-      workerName: displayName,
-      nameKey,
-      weekKey,
-      companyId: saved.companyId || getCurrentCompanyId(),
-      agencyId: saved.agencyId || state.agencyId || '',
-      siteId: firstPresent(saved.siteId, saved.assignedSiteId, saved.branchId, getCurrentSiteId()),
-      branchId: firstPresent(saved.branchId, saved.siteId, saved.assignedSiteId, getCurrentSiteId()),
-      branchName: firstPresent(saved.branchName, saved.siteId, saved.assignedSiteId, getCurrentSiteId()),
-      employeeId: saved.employeeId || stableWorkerId || '',
-      workerId: saved.workerId || stableWorkerId || '',
-      copiedPunchName: '',
-      copiedTimesheetName: getCopiedWorkerName(saved),
-      weeklyHours: Number(saved.weeklyHours || 0),
-      daysWorked: Number(saved.daysWorked || 0),
-      dailyTotals: saved.dailyTotals || {},
-      lastPunchAction: saved.lastPunchAction || '-',
-      lastPunchAtMs: Number(saved.lastPunchAtMs || 0),
-      status: saved.status || 'open',
-      managerSignedBy: saved.managerSignedBy || '',
-      managerSignedAt: saved.managerSignedAt || null,
     });
   });
 
@@ -6192,35 +6185,15 @@ function renderAgencyRecoveryStatus() {
 }
 
 function buildAgencyReviewRows() {
-  const punches = getAgencySourcePunches();
+  const punches = getValidPunchesForSelectedWeek(getAgencySourcePunches(), state.selectedWeekStart);
   const employeeRows = getAgencyEmployeeRowsForReview();
   const profileIndex = buildWorkerProfileIndex(employeeRows, state.allUsers || []);
   const directory = buildAgencyWorkerDirectory([...punches, ...employeeRows, ...(state.allUsers || [])], profileIndex);
-  const grouped = new Map();
-
-  punches.forEach((punch) => {
-    const normalized = normalizePunchRecordForDisplay(punch);
-    const key = getWorkerIdentityKey(normalized, directory, profileIndex);
-    if (!key) return;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(normalized);
-  });
 
   const rows = new Map();
-  grouped.forEach((personPunches, identityKey) => {
+  buildWorkedWorkerGroups(punches, { profileIndex, directory }).forEach(({ identityKey, punches: personPunches }) => {
     const employee = findAgencyReviewEmployee(personPunches, identityKey, profileIndex, employeeRows);
     rows.set(identityKey, buildAgencyReviewRow(identityKey, employee, personPunches));
-  });
-
-  employeeRows.forEach((employee) => {
-    const rowAgency = getRecordAgencyIdentity(employee);
-    const allowedAgency = normalizeIdentityToken(agencyScopeId());
-    if (isAgencyUser() && rowAgency && rowAgency !== allowedAgency) return;
-    const workerBranch = getWorkerBranchId(employee) || getCurrentSiteId();
-    if (!canUseSite(workerBranch)) return;
-    const key = getWorkerIdentityKey(employee, directory) || `employee:${employee.id || employee.employeeId || employee.workerId || normalizeName(employee.name || employee.displayName)}`;
-    if (!key || rows.has(key)) return;
-    rows.set(key, buildAgencyReviewRow(key, employee, []));
   });
 
   return [...rows.values()];
@@ -7642,7 +7615,53 @@ function punchTimestampMs(row) {
   if (row?.timestamp?.toMillis instanceof Function) return row.timestamp.toMillis();
   if (row?.createdAt?.toMillis instanceof Function) return row.createdAt.toMillis();
   const parsed = Date.parse(String(row?.timestamp || row?.createdAt || ''));
-  return Number.isFinite(parsed) ? parsed : 0;
+  if (Number.isFinite(parsed)) return parsed;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(row?.dateKey || ''))) {
+    const dateKeyMs = new Date(`${row.dateKey}T12:00:00`).getTime();
+    return Number.isFinite(dateKeyMs) ? dateKeyMs : 0;
+  }
+  return 0;
+}
+
+function selectedWeekRange(selectedWeekStart = state.selectedWeekStart) {
+  const start = startOfLocalDay(normalizeWeekStartDate(selectedWeekStart));
+  const end = addLocalDays(start, 7);
+  return { start, end, startMs: start.getTime(), endMs: end.getTime(), weekKey: formatDateKey(start) };
+}
+
+function getValidPunchesForSelectedWeek(allPunchRows, selectedWeekStart = state.selectedWeekStart) {
+  const range = selectedWeekRange(selectedWeekStart);
+  return dedupePunches((allPunchRows || [])
+    .map(normalizePunchRecordForDisplay)
+    .filter((punch) => {
+      const timestamp = Number(punch.timestampMs || 0);
+      return isActivePunchRecord(punch)
+        && ['clock_in', 'start_lunch', 'end_lunch', 'clock_out'].includes(punch.action)
+        && timestamp >= range.startMs
+        && timestamp < range.endMs;
+    }));
+}
+
+function workedWorkerIdentityKey(row, directory = buildCanonicalWorkerDirectory(), profileIndex = buildWorkerProfileIndex()) {
+  const ids = getTrustedRecordWorkerIds(row, profileIndex);
+  if (ids.length) return `worker:${ids[0]}`;
+  return getWorkerIdentityKey(row, directory, profileIndex);
+}
+
+function buildWorkedWorkerGroups(weekPunches, { profileIndex = buildWorkerProfileIndex(), directory = null } = {}) {
+  const validPunches = getValidPunchesForSelectedWeek(weekPunches, state.selectedWeekStart);
+  const canonicalDirectory = directory || buildCanonicalWorkerDirectory(validPunches, profileIndex);
+  const grouped = new Map();
+  validPunches.forEach((punch) => {
+    const key = workedWorkerIdentityKey(punch, canonicalDirectory, profileIndex);
+    if (!key) return;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(punch);
+  });
+  return [...grouped.entries()].map(([identityKey, punches]) => ({
+    identityKey,
+    punches: punches.sort((a, b) => Number(a.timestampMs || 0) - Number(b.timestampMs || 0))
+  }));
 }
 
 function normalizePunchAction(action) {
