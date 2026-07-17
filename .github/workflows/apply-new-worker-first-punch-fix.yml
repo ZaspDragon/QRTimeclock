@@ -1,0 +1,60 @@
+name: Apply new-worker first-punch fix
+
+on:
+  push:
+    branches:
+      - agent/fix-new-worker-first-punch
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/fix-new-worker-first-punch
+          fetch-depth: 0
+
+      - name: Patch app.js
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('app.js')
+          text = path.read_text()
+          old = """  if (!isActiveEmployeeRecord(emp)) {
+            toast('Your employee record is not active. Contact your manager.', true);
+            return;
+          }
+          """
+          new = """  // Existing employees must be active. New workers are allowed through so
+          // their employee record and first punch can be created in the same attempt.
+          if (!emp._isNew && !isActiveEmployeeRecord(emp)) {
+            toast('Your employee record is not active. Contact your manager.', true);
+            return;
+          }
+          """
+          if old not in text:
+              raise SystemExit('Expected active-employee guard was not found; no files changed.')
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected exactly one active-employee guard, found {text.count(old)}.')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Validate JavaScript
+        run: node --check app.js
+
+      - name: Remove one-time workflow
+        run: rm .github/workflows/apply-new-worker-first-punch-fix.yml
+
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js .github/workflows/apply-new-worker-first-punch-fix.yml
+          git commit -m "Fix new worker first punch"
+          git push origin HEAD:agent/fix-new-worker-first-punch
