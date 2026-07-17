@@ -1,6 +1,7 @@
 name: Apply new-worker first-punch fix
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
