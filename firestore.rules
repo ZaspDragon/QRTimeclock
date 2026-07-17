@@ -165,6 +165,9 @@ service cloud.firestore {
     function publicPunchCreate() {
       return validCompanySite(request.resource.data)
         && request.resource.data.source == 'public_qr'
+        && request.resource.data.employeeId is string
+        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && publicPunchHasMatchingGuard()
         && request.resource.data.name is string
         && request.resource.data.name.size() >= 2
         && request.resource.data.name.size() <= 80
@@ -173,16 +176,7 @@ service cloud.firestore {
         && request.resource.data.action in ['clock_in', 'start_lunch', 'end_lunch', 'clock_out']
         && request.resource.data.dateKey is string
         && request.resource.data.weekKey is string
-        && request.resource.data.timestampMs is number
-        && request.resource.data.employeeId is string
-        && request.resource.data.employeeId.size() > 0
-        && publicEmployeeIsActive(request.resource.data.employeeId)
-        && request.resource.data.duplicateGuardKey is string
-        && existsAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey))
-        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.employeeId == request.resource.data.employeeId
-        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.action == request.resource.data.action
-        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.companyId == request.resource.data.companyId
-        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.siteId == request.resource.data.siteId;
+        && request.resource.data.timestampMs is number;
     }
 
     function publicPunchGuardCreate(guardId) {
@@ -211,6 +205,15 @@ service cloud.firestore {
         && (isOwnerOrSuperAdmin() || isAdmin() || isManager())
         && data.companyId == myCompanyId()
         && noUsableBranch(data);
+    }
+
+    function publicPunchHasMatchingGuard() {
+      return request.resource.data.duplicateGuardKey is string
+        && existsAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey))
+        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.employeeId == request.resource.data.employeeId
+        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.action == request.resource.data.action
+        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.companyId == request.resource.data.companyId
+        && getAfter(/databases/$(database)/documents/punchGuards/$(request.resource.data.duplicateGuardKey)).data.siteId == request.resource.data.siteId;
     }
 
     function workerOwnsRecord(data) {
