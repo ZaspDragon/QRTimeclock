@@ -275,6 +275,9 @@ service cloud.firestore {
         && request.resource.data.name.size() <= 80
         && request.resource.data.nameKey is string
         && request.resource.data.nameKey.size() >= 2
+        && request.resource.data.employeeId is string
+        && request.resource.data.employeeId.size() > 0
+        && publicEmployeeIsActive(request.resource.data.employeeId)
         && request.resource.data.action in [
           'clock_in',
           'start_lunch',
@@ -357,6 +360,91 @@ service cloud.firestore {
             /databases/$(database)/documents/employees/$(employeeId)
           ).data
         );
+    }
+
+
+    function publicPunchGuardWrite(guardId) {
+      return request.resource.data.keys().hasOnly([
+          'duplicateGuardKey',
+          'punchId',
+          'companyId',
+          'siteId',
+          'branch',
+          'agencyId',
+          'employeeId',
+          'action',
+          'acceptedAtMs',
+          'createdAt',
+          'expiresAtMs'
+        ])
+        && validCompanySite(request.resource.data)
+        && request.resource.data.duplicateGuardKey is string
+        && request.resource.data.duplicateGuardKey == guardId
+        && request.resource.data.punchId is string
+        && request.resource.data.punchId == guardId
+        && request.resource.data.employeeId is string
+        && request.resource.data.employeeId.size() > 0
+        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && request.resource.data.action in [
+          'clock_in',
+          'start_lunch',
+          'end_lunch',
+          'clock_out'
+        ]
+        && request.resource.data.acceptedAtMs is number
+        && request.resource.data.expiresAtMs is number
+        && request.resource.data.expiresAtMs
+          >= request.resource.data.acceptedAtMs;
+    }
+
+    function publicPunchStateWrite(stateId) {
+      return request.resource.data.keys().hasOnly([
+          'workerStateKey',
+          'companyId',
+          'siteId',
+          'branch',
+          'agencyId',
+          'employeeId',
+          'lastAction',
+          'lastPunchAtMs',
+          'lastPunchId',
+          'updatedAt'
+        ])
+        && validCompanySite(request.resource.data)
+        && request.resource.data.workerStateKey is string
+        && request.resource.data.workerStateKey == stateId
+        && request.resource.data.employeeId is string
+        && request.resource.data.employeeId.size() > 0
+        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && request.resource.data.lastAction in [
+          'clock_in',
+          'start_lunch',
+          'end_lunch',
+          'clock_out'
+        ]
+        && request.resource.data.lastPunchAtMs is number
+        && request.resource.data.lastPunchId is string;
+    }
+
+    function safePublicPunchStateUpdate(stateId) {
+      return publicPunchStateWrite(stateId)
+        && request.resource.data.workerStateKey
+          == resource.data.workerStateKey
+        && request.resource.data.companyId
+          == resource.data.companyId
+        && request.resource.data.siteId
+          == resource.data.siteId
+        && request.resource.data.employeeId
+          == resource.data.employeeId
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'lastAction',
+            'lastPunchAtMs',
+            'lastPunchId',
+            'updatedAt'
+          ]);
     }
 
     function isSafeMergedEmployeeUpdate() {
@@ -578,6 +666,26 @@ service cloud.firestore {
             && inScope(request.resource.data)
           )
         );
+
+      allow delete: if false;
+    }
+
+    match /punchGuards/{guardId} {
+      allow get: if true;
+      allow list: if false;
+
+      allow create: if publicPunchGuardWrite(guardId);
+
+      allow update, delete: if false;
+    }
+
+    match /punchStates/{stateId} {
+      allow get: if true;
+      allow list: if false;
+
+      allow create: if publicPunchStateWrite(stateId);
+
+      allow update: if safePublicPunchStateUpdate(stateId);
 
       allow delete: if false;
     }
