@@ -7937,6 +7937,22 @@ function getWorkerIdentityKey(row, directory = buildCanonicalWorkerDirectory(), 
   if (emailPrimaryId) return `worker:${emailPrimaryId}`;
   if (email) return `email:${email}`;
 
+  // Legacy records may be missing agency/branch fields even though the active roster
+  // supplies that scope. Resolve only when one active profile has this exact name and
+  // its branch matches the selected branch. This does not use a same-name merge when
+  // multiple profiles exist.
+  if (rowName) {
+    const selectedBranch = normalizeIdentityToken(getCurrentSiteId());
+    const uniqueRosterMatches = (state.allEmployees || []).filter((employee) =>
+      isActiveEmployee(employee)
+      && normalizeName(getWorkerProfileName(employee)) === rowName
+      && (!selectedBranch || getRecordBranchIdentity(employee) === selectedBranch)
+    );
+    if (uniqueRosterMatches.length === 1 && uniqueRosterMatches[0]?.id) {
+      return `worker:${uniqueRosterMatches[0].id}`;
+    }
+  }
+
   // Keep an unknown legacy ID separate when no controlled match exists.
   // This prevents workers with the same name from being merged accidentally.
   const stableId = recordIds[0] || '';
