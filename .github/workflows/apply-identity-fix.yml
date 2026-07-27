@@ -1,0 +1,37 @@
+name: Apply canonical worker identity fix
+
+on:
+  push:
+    branches:
+      - fix/canonical-worker-identity
+    paths:
+      - scripts/apply_identity_fix.py
+      - .github/workflows/apply-identity-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/canonical-worker-identity
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply safe identity patch
+        run: python scripts/apply_identity_fix.py
+      - name: Commit generated app update
+        run: |
+          if git diff --quiet -- app.js; then
+            echo "No app.js changes were needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js
+          git commit -m "Fix canonical worker identity matching"
+          git push origin HEAD:fix/canonical-worker-identity
