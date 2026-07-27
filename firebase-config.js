@@ -35,5 +35,8 @@ if (typeof window !== 'undefined') {
     import('./agency-export-dropdown-dedupe.js?v=20260717-1').catch((error) => {
       console.warn('Agency export dropdown dedupe failed to load:', error.message);
     });
+    import('./temp-self-service-compat.js?v=20260726-1').catch((error) => {
+      console.warn('Temp worker self-service compatibility failed to load:', error.message);
+    });
   });
 }
