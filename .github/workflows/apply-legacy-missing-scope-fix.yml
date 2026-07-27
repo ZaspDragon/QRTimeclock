@@ -1,0 +1,37 @@
+name: Apply legacy missing-scope identity fix
+
+on:
+  push:
+    branches:
+      - fix/legacy-punch-missing-scope
+    paths:
+      - scripts/apply_legacy_missing_scope_fix.py
+      - .github/workflows/apply-legacy-missing-scope-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/legacy-punch-missing-scope
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guarded patch
+        run: python scripts/apply_legacy_missing_scope_fix.py
+      - name: Commit generated update
+        run: |
+          if git diff --quiet -- app.js index.html; then
+            echo "No app changes were needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js index.html
+          git commit -m "Resolve legacy punches missing agency or branch scope"
+          git push origin HEAD:fix/legacy-punch-missing-scope
