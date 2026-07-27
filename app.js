@@ -7895,6 +7895,8 @@ function buildCanonicalWorkerDirectory(records = [], profileIndex = buildWorkerP
 
 function getWorkerIdentityKey(row, directory = buildCanonicalWorkerDirectory(), profileIndex = buildWorkerProfileIndex()) {
   const recordIds = getDirectoryWorkerIds(row, profileIndex);
+
+  // 1. Canonical profile ID or an explicitly linked legacy ID.
   for (const recordId of recordIds) {
     const profile = profileIndex.get(recordId);
     if (profile) {
@@ -7903,25 +7905,44 @@ function getWorkerIdentityKey(row, directory = buildCanonicalWorkerDirectory(), 
     }
   }
 
-  const stableId = recordIds[0] || '';
-  if (stableId) return `worker:${stableId}`;
-
+  // 2. Employee number, but only when it identifies exactly one profile.
   const employeeNumber = normalizeWorkerNumber(row?.employeeNumber || row?.empNumber || '');
   if (employeeNumber) {
-    const matchingProfile = (state.allEmployees || []).find((employee) =>
+    const numberMatches = (state.allEmployees || []).filter((employee) =>
       normalizeWorkerNumber(employee.employeeNumber) === employeeNumber
     );
-    if (matchingProfile?.id) return `worker:${matchingProfile.id}`;
+    if (numberMatches.length === 1 && numberMatches[0]?.id) {
+      return `worker:${numberMatches[0].id}`;
+    }
   }
 
+  // 3. Controlled fallback: normalized name + agency + branch must identify one profile.
+  const rowName = normalizeName(getCopiedWorkerName(row));
+  const rowAgency = getRecordAgencyIdentity(row);
+  const rowBranch = getRecordBranchIdentity(row);
+  if (rowName && rowAgency && rowBranch) {
+    const controlledMatches = (state.allEmployees || []).filter((employee) =>
+      normalizeName(getWorkerProfileName(employee)) === rowName
+      && getRecordAgencyIdentity(employee) === rowAgency
+      && getRecordBranchIdentity(employee) === rowBranch
+    );
+    if (controlledMatches.length === 1 && controlledMatches[0]?.id) {
+      return `worker:${controlledMatches[0].id}`;
+    }
+  }
+
+  // Email remains a safer fallback than an unrecognized historical worker ID.
   const email = getRecordEmail(row);
   const emailPrimaryId = email ? directory.emailPrimary.get(email) : '';
   if (emailPrimaryId) return `worker:${emailPrimaryId}`;
   if (email) return `email:${email}`;
 
+  // Keep an unknown legacy ID separate when no controlled match exists.
+  // This prevents workers with the same name from being merged accidentally.
+  const stableId = recordIds[0] || '';
+  if (stableId) return `worker:${stableId}`;
+
   const signature = getWorkerSignature(row);
-  const signaturePrimaryId = signature ? directory.signaturePrimary.get(signature) : '';
-  if (signaturePrimaryId) return `worker:${signaturePrimaryId}`;
   return signature ? `person:${signature}` : '';
 }
 
