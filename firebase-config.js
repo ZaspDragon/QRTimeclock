@@ -14,6 +14,9 @@ export const appSettings = {
 
 if (typeof window !== 'undefined') {
   queueMicrotask(() => {
+    import('./theme-toggle.js?v=20260728-1').catch((error) => {
+      console.warn('Theme controls failed to load:', error.message);
+    });
     import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
       console.warn('Manual punch agency fix failed to load:', error.message);
     });
