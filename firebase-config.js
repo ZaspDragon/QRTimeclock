@@ -1,3 +1,5 @@
+import './theme-toggle.js?v=20260728-2';
+
 export const firebaseConfig = {
   apiKey: "AIzaSyB4xdaxbkXDRILPe2nGZuGCS-PXf35bk3o",
   authDomain: "qrtimeclock-42764.firebaseapp.com",
@@ -14,9 +16,6 @@ export const appSettings = {
 
 if (typeof window !== 'undefined') {
   queueMicrotask(() => {
-    import('./theme-toggle.js?v=20260728-1').catch((error) => {
-      console.warn('Theme controls failed to load:', error.message);
-    });
     import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
       console.warn('Manual punch agency fix failed to load:', error.message);
     });
