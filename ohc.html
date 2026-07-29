@@ -13,7 +13,33 @@
   </style>
 </head>
 <body>
-  <div class="banner">OHC TIME CLOCK<small>Select OHC in the Branch field before punching.</small></div>
-  <iframe src="./index.html?v=20260729-ohc-mobile-fix" title="OHC Time Clock" allow="geolocation" scrolling="yes"></iframe>
+  <div class="banner">OHC TIME CLOCK<small>Branch is automatically set to OHC.</small></div>
+  <iframe id="clockFrame" src="./index.html?site=OHC&v=20260729-branch-lock2" title="OHC Time Clock" allow="geolocation" scrolling="yes"></iframe>
+  <script>
+    const frame = document.getElementById('clockFrame');
+    frame.addEventListener('load', () => {
+      let attempts = 0;
+      const timer = setInterval(() => {
+        attempts += 1;
+        try {
+          const select = frame.contentDocument?.getElementById('workerBranchSelect');
+          if (select) {
+            select.value = 'OHC';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            select.disabled = true;
+            select.setAttribute('aria-label', 'Branch locked to OHC');
+            const label = select.closest('label')?.querySelector('span');
+            if (label) label.textContent = 'Branch (OHC — automatically selected)';
+            clearInterval(timer);
+          } else if (attempts >= 30) {
+            clearInterval(timer);
+          }
+        } catch (error) {
+          clearInterval(timer);
+          console.error('Could not apply OHC branch context', error);
+        }
+      }, 150);
+    });
+  </script>
 </body>
 </html>
