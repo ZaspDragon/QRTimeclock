@@ -4,55 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>OH01 Time Clock</title>
-  <style>
-    html, body { margin: 0; width: 100%; min-height: 100%; font-family: Arial, sans-serif; background: #fff; }
-    body { display: flex; flex-direction: column; min-height: 100dvh; }
-    .branch-banner { flex: 0 0 auto; min-height: 54px; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 10px; padding: 8px 14px; box-sizing: border-box; background: #123a63; color: #fff; font-weight: 800; letter-spacing: .04em; box-shadow: 0 2px 8px rgba(0,0,0,.25); text-align: center; }
-    .branch-banner small { font-weight: 600; opacity: .9; letter-spacing: 0; }
-    iframe { display: block; flex: 1 1 auto; width: 100%; min-height: calc(100dvh - 54px); border: 0; background: #fff; touch-action: manipulation; }
-  </style>
+  <meta http-equiv="refresh" content="0; url=./index.html?site=OH01" />
+  <script>
+    window.location.replace('./index.html?site=OH01');
+  </script>
 </head>
 <body>
-  <div class="branch-banner">OH01 TIME CLOCK <small>All punches from this QR code are for OH01</small></div>
-  <iframe id="clockFrame" src="./index.html?clockSite=OH01" title="OH01 Time Clock" allow="geolocation"></iframe>
-  <script>
-    (() => {
-      const BRANCH = 'OH01';
-      const frame = document.getElementById('clockFrame');
-
-      function lockBranch() {
-        try {
-          const doc = frame.contentDocument;
-          if (!doc) return false;
-          const select = doc.getElementById('workerBranchSelect');
-          if (!select) return false;
-
-          if (select.value !== BRANCH) {
-            select.value = BRANCH;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-
-          select.disabled = true;
-          select.setAttribute('aria-disabled', 'true');
-          select.title = 'Branch is locked by this QR code';
-
-          const labelText = select.closest('label')?.querySelector('span');
-          if (labelText) labelText.textContent = `Branch (locked to ${BRANCH})`;
-          return true;
-        } catch (error) {
-          console.error('Unable to lock branch context', error);
-          return false;
-        }
-      }
-
-      frame.addEventListener('load', () => {
-        let attempts = 0;
-        const timer = setInterval(() => {
-          attempts += 1;
-          if (lockBranch() || attempts >= 20) clearInterval(timer);
-        }, 150);
-      });
-    })();
-  </script>
+  <p>Opening the OH01 Time Clock…</p>
+  <p><a href="./index.html?site=OH01">Tap here if it does not open automatically.</a></p>
 </body>
 </html>
