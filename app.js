@@ -6213,6 +6213,7 @@ function getAgencyEmployeeRowsForReview() {
   ];
   const unique = new Map();
   rows.forEach((row) => {
+    if (!agencyExportRecordInCurrentSite(row)) return;
     const key = agencyRosterRecordKey(row);
     if (key && !unique.has(key)) unique.set(key, row);
   });
@@ -6357,10 +6358,25 @@ function buildAgencyPunchTotals(punches) {
   };
 }
 
+function getAgencyRecordSiteId(record) {
+  return String(record?.siteId || record?.assignedSiteId || record?.branch || '').trim();
+}
+
+function agencyExportAllowsMultipleSites() {
+  return normalizedRole() === 'agency_admin';
+}
+
+function agencyExportRecordInCurrentSite(record) {
+  if (agencyExportAllowsMultipleSites()) return true;
+  const recordSiteId = getAgencyRecordSiteId(record);
+  return !recordSiteId || recordSiteId === getCurrentSiteId();
+}
+
 function getAgencySourcePunches() {
-  return Array.isArray(state.agencyReview.rangePunchRows)
+  const rows = Array.isArray(state.agencyReview.rangePunchRows)
     ? state.agencyReview.rangePunchRows
     : state.selectedWeekPunchRows;
+  return (Array.isArray(rows) ? rows : []).filter(agencyExportRecordInCurrentSite);
 }
 
 function logAgencyPunchCoverage(rows, punches) {
