@@ -18,10 +18,15 @@ const db = getFirestore(app);
 const COMPANY_ID = 'chadwell';
 const VALID_SITES = new Set(['OH01', 'OHC']);
 const VALID_ACTIONS = new Set(['clock_in', 'start_lunch', 'end_lunch', 'clock_out']);
+const VALID_AGENCIES = new Map([
+  ['sterling_staffing', 'Sterling Staffing'],
+  ['excel_staffing', 'Excel Staffing'],
+  ['lifestyle_staffing', 'Lifestyle Staffing'],
+]);
 const ACTION_LABELS = {
   clock_in: 'Clock In',
-  start_lunch: 'Start Lunch',
-  end_lunch: 'End Lunch',
+  start_lunch: 'Lunch Out',
+  end_lunch: 'Lunch In',
   clock_out: 'Clock Out',
 };
 let saving = false;
@@ -87,12 +92,63 @@ function setButtonsDisabled(disabled) {
   });
 }
 
+function installAgencyControls() {
+  const employeeAgencySelect = document.getElementById('empAgencySelect');
+  if (employeeAgencySelect) {
+    const directOption = [...employeeAgencySelect.options].find((option) => option.value === '');
+    if (directOption) directOption.textContent = 'Select staffing agency';
+    VALID_AGENCIES.forEach((label, value) => {
+      if (![...employeeAgencySelect.options].some((option) => option.value === value)) {
+        employeeAgencySelect.add(new Option(label, value));
+      }
+    });
+
+    document.getElementById('employeeForm')?.addEventListener('submit', (event) => {
+      if (!employeeAgencySelect.value) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setMessage('Choose Sterling, Excel, or Lifestyle Staffing before saving a temp employee.', true);
+        employeeAgencySelect.focus();
+      }
+    }, true);
+  }
+
+  if (document.getElementById('workerAgencySelect')) return;
+  const branchSelect = document.getElementById('workerBranchSelect');
+  const branchLabel = branchSelect?.closest('label');
+  if (!branchLabel) return;
+
+  const label = document.createElement('label');
+  label.id = 'workerAgencyField';
+  label.innerHTML = `
+    <span>Staffing agency <small>(new workers only)</small></span>
+    <select id="workerAgencySelect">
+      <option value="">Choose only if this is your first day</option>
+      ${[...VALID_AGENCIES.entries()].map(([value, text]) => `<option value="${value}">${text}</option>`).join('')}
+    </select>
+  `;
+  branchLabel.insertAdjacentElement('afterend', label);
+}
+
+function selectedAgencyId() {
+  const value = String(document.getElementById('workerAgencySelect')?.value || '').trim();
+  return VALID_AGENCIES.has(value) ? value : '';
+}
+
 async function findExistingEmployee(normalizedName, siteId) {
   const searches = [
     query(
       collection(db, 'employees'),
       where('companyId', '==', COMPANY_ID),
       where('siteId', '==', siteId),
+      where('active', '==', true),
+      where('nameKey', '==', normalizedName),
+      limit(2),
+    ),
+    query(
+      collection(db, 'employees'),
+      where('companyId', '==', COMPANY_ID),
+      where('assignedSiteId', '==', siteId),
       where('active', '==', true),
       where('nameKey', '==', normalizedName),
       limit(2),
@@ -136,7 +192,12 @@ async function resolveEmployee(name, siteId) {
     };
   }
 
-  const employeeId = `auto_${safeIdPart(siteId)}_${safeIdPart(normalizedName)}`;
+  const agencyId = selectedAgencyId();
+  if (!agencyId) {
+    throw new Error('New workers must choose Sterling, Excel, or Lifestyle Staffing before the first punch. Existing workers can leave agency blank.');
+  }
+
+  const employeeId = `auto_${safeIdPart(siteId)}_${safeIdPart(agencyId)}_${safeIdPart(normalizedName)}`;
   const employeeNumber = `AUTO-${safeIdPart(siteId).toUpperCase()}-${safeIdPart(normalizedName).toUpperCase()}`.slice(0, 60);
   const employee = {
     name,
@@ -145,7 +206,7 @@ async function resolveEmployee(name, siteId) {
     employeeNumber,
     employeeNumberKey: employeeNumber.toLowerCase(),
     companyId: COMPANY_ID,
-    agencyId: '',
+    agencyId,
     assignedSiteId: siteId,
     siteId,
     siteIds: [siteId],
@@ -166,12 +227,8 @@ async function saveOneClickPunch(action) {
   const selectedSite = document.getElementById('workerBranchSelect')?.value;
   const siteId = VALID_SITES.has(selectedSite) ? selectedSite : 'OH01';
 
-  if (!name || name.length < 2) {
-    throw new Error('Type your name before clocking in.');
-  }
-  if (!VALID_ACTIONS.has(action)) {
-    throw new Error('That punch type is not valid.');
-  }
+  if (!name || name.length < 2) throw new Error('Type your name before clocking in.');
+  if (!VALID_ACTIONS.has(action)) throw new Error('That punch type is not valid.');
 
   const employee = await resolveEmployee(name, siteId);
   const now = new Date();
@@ -243,3 +300,9 @@ document.addEventListener('click', async (event) => {
     setButtonsDisabled(false);
   }
 }, true);
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', installAgencyControls, { once: true });
+} else {
+  installAgencyControls();
+}
