@@ -13,7 +13,33 @@
   </style>
 </head>
 <body>
-  <div class="banner">OH01 TIME CLOCK<small>Use OH01 in the Branch field before punching.</small></div>
-  <iframe src="./index.html?v=20260729-oh01-mobile-fix" title="OH01 Time Clock" allow="geolocation" scrolling="yes"></iframe>
+  <div class="banner">OH01 TIME CLOCK<small>Branch is automatically set to OH01.</small></div>
+  <iframe id="clockFrame" src="./index.html?site=OH01&v=20260729-branch-lock2" title="OH01 Time Clock" allow="geolocation" scrolling="yes"></iframe>
+  <script>
+    const frame = document.getElementById('clockFrame');
+    frame.addEventListener('load', () => {
+      let attempts = 0;
+      const timer = setInterval(() => {
+        attempts += 1;
+        try {
+          const select = frame.contentDocument?.getElementById('workerBranchSelect');
+          if (select) {
+            select.value = 'OH01';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            select.disabled = true;
+            select.setAttribute('aria-label', 'Branch locked to OH01');
+            const label = select.closest('label')?.querySelector('span');
+            if (label) label.textContent = 'Branch (OH01 — automatically selected)';
+            clearInterval(timer);
+          } else if (attempts >= 30) {
+            clearInterval(timer);
+          }
+        } catch (error) {
+          clearInterval(timer);
+          console.error('Could not apply OH01 branch context', error);
+        }
+      }, 150);
+    });
+  </script>
 </body>
 </html>
