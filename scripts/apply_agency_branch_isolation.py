@@ -21,7 +21,7 @@ function agencyExportAllowsMultipleSites() {
 function agencyExportRecordInCurrentSite(record) {
   if (agencyExportAllowsMultipleSites()) return true;
   const recordSiteId = getAgencyRecordSiteId(record);
-  return !recordSiteId || recordSiteId === getCurrentSiteId();
+  return recordSiteId === getCurrentSiteId();
 }
 
 function getAgencySourcePunches() {
@@ -49,14 +49,24 @@ new_rows = """  rows.forEach((row) => {
 }
 """
 
-if old_source not in text:
-    raise SystemExit("Expected getAgencySourcePunches block was not found; no file changed.")
-if old_rows not in text:
+permissive_scope = "return !recordSiteId || recordSiteId === getCurrentSiteId();"
+strict_scope = "return recordSiteId === getCurrentSiteId();"
+
+patched = text
+if old_source in patched:
+    patched = patched.replace(old_source, new_source, 1)
+elif permissive_scope in patched:
+    patched = patched.replace(permissive_scope, strict_scope, 1)
+elif strict_scope not in patched:
+    raise SystemExit("Expected agency export source block was not found; no file changed.")
+
+if old_rows in patched:
+    patched = patched.replace(old_rows, new_rows, 1)
+elif "if (!agencyExportRecordInCurrentSite(row)) return;" not in patched:
     raise SystemExit("Expected agency employee-row block was not found; no file changed.")
 
-patched = text.replace(old_source, new_source, 1).replace(old_rows, new_rows, 1)
 if patched == text:
-    raise SystemExit("Patch produced no change.")
-
-APP_PATH.write_text(patched, encoding="utf-8")
-print("Applied agency export branch isolation without changing stored data.")
+    print("Strict agency branch isolation is already applied.")
+else:
+    APP_PATH.write_text(patched, encoding="utf-8")
+    print("Applied strict agency export branch isolation without changing stored data.")
