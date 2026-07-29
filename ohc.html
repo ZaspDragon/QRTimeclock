@@ -2,18 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>OHC Time Clock</title>
   <style>
-    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; font-family: Arial, sans-serif; }
-    .branch-banner { position: fixed; inset: 0 0 auto 0; z-index: 10; min-height: 54px; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 8px 14px; box-sizing: border-box; background: #123a63; color: #fff; font-weight: 800; letter-spacing: .04em; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+    html, body { margin: 0; width: 100%; min-height: 100%; font-family: Arial, sans-serif; background: #fff; }
+    body { display: flex; flex-direction: column; min-height: 100dvh; }
+    .branch-banner { flex: 0 0 auto; min-height: 54px; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 10px; padding: 8px 14px; box-sizing: border-box; background: #123a63; color: #fff; font-weight: 800; letter-spacing: .04em; box-shadow: 0 2px 8px rgba(0,0,0,.25); text-align: center; }
     .branch-banner small { font-weight: 600; opacity: .9; letter-spacing: 0; }
-    iframe { position: fixed; inset: 54px 0 0 0; width: 100%; height: calc(100% - 54px); border: 0; background: #fff; }
+    iframe { display: block; flex: 1 1 auto; width: 100%; min-height: calc(100dvh - 54px); border: 0; background: #fff; touch-action: manipulation; }
   </style>
 </head>
 <body>
   <div class="branch-banner">OHC TIME CLOCK <small>All punches from this QR code are for OHC</small></div>
-  <iframe id="clockFrame" src="./index.html" title="OHC Time Clock"></iframe>
+  <iframe id="clockFrame" src="./index.html?clockSite=OHC" title="OHC Time Clock" allow="geolocation"></iframe>
   <script>
     (() => {
       const BRANCH = 'OHC';
@@ -22,31 +23,34 @@
       function lockBranch() {
         try {
           const doc = frame.contentDocument;
-          if (!doc) return;
+          if (!doc) return false;
           const select = doc.getElementById('workerBranchSelect');
-          if (!select) return;
+          if (!select) return false;
+
           if (select.value !== BRANCH) {
             select.value = BRANCH;
             select.dispatchEvent(new Event('change', { bubbles: true }));
           }
+
           select.disabled = true;
           select.setAttribute('aria-disabled', 'true');
           select.title = 'Branch is locked by this QR code';
 
-          const label = doc.querySelector('label[for="workerBranchSelect"]');
-          if (label) label.textContent = `Branch (locked to ${BRANCH})`;
+          const labelText = select.closest('label')?.querySelector('span');
+          if (labelText) labelText.textContent = `Branch (locked to ${BRANCH})`;
+          return true;
         } catch (error) {
           console.error('Unable to lock branch context', error);
+          return false;
         }
       }
 
       frame.addEventListener('load', () => {
-        lockBranch();
-        const doc = frame.contentDocument;
-        if (!doc) return;
-        const observer = new MutationObserver(lockBranch);
-        observer.observe(doc.documentElement, { childList: true, subtree: true, attributes: true });
-        setInterval(lockBranch, 1000);
+        let attempts = 0;
+        const timer = setInterval(() => {
+          attempts += 1;
+          if (lockBranch() || attempts >= 20) clearInterval(timer);
+        }, 150);
       });
     })();
   </script>
