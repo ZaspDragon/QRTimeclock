@@ -1,0 +1,51 @@
+name: Apply agency branch isolation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/apply_agency_branch_isolation.py
+      - .github/workflows/apply-agency-branch-isolation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply exact non-destructive patch
+        run: python scripts/apply_agency_branch_isolation.py
+      - name: Validate branch isolation and no destructive calls
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('app.js').read_text(encoding='utf-8')
+          required = [
+              "function agencyExportRecordInCurrentSite(record)",
+              "return normalizedRole() === 'agency_admin';",
+              ".filter(agencyExportRecordInCurrentSite)",
+              "if (!agencyExportRecordInCurrentSite(row)) return;",
+          ]
+          missing = [entry for entry in required if entry not in text]
+          if missing:
+              raise SystemExit(f'Missing validation markers: {missing}')
+          print('Validated OH01/OHC export isolation. No database migration or deletion is included.')
+          PY
+      - name: Commit patched application
+        run: |
+          if git diff --quiet -- app.js; then
+            echo "No app.js change required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js
+          git commit -m "Isolate agency exports by branch"
+          git push origin main
