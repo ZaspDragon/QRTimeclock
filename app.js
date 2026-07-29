@@ -6369,7 +6369,7 @@ function agencyExportAllowsMultipleSites() {
 function agencyExportRecordInCurrentSite(record) {
   if (agencyExportAllowsMultipleSites()) return true;
   const recordSiteId = getAgencyRecordSiteId(record);
-  return !recordSiteId || recordSiteId === getCurrentSiteId();
+  return recordSiteId === getCurrentSiteId();
 }
 
 function getAgencySourcePunches() {
