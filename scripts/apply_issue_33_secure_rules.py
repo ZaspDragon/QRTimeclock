@@ -110,12 +110,37 @@ replace_once(
 )
 
 replace_once(
-"""        && request.resource.data.employeeId is string
+"""    function publicPunchCreate() {
+      return validCompanySite(request.resource.data)
+        && request.resource.data.source == 'public_qr'
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.nameKey is string
+        && request.resource.data.nameKey.size() >= 2
+        && request.resource.data.employeeId is string
         && request.resource.data.employeeId.size() > 0
         && publicEmployeeIsActive(request.resource.data.employeeId)
         && request.resource.data.action in [
+          'clock_in',
+          'start_lunch',
+          'end_lunch',
+          'clock_out'
+        ]
+        && request.resource.data.dateKey is string
+        && request.resource.data.weekKey is string
+        && request.resource.data.timestampMs is number;
+    }
 """,
-"""        && request.resource.data.employeeId is string
+"""    function publicPunchCreate() {
+      return validCompanySite(request.resource.data)
+        && request.resource.data.source == 'public_qr'
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.nameKey is string
+        && request.resource.data.nameKey.size() >= 2
+        && request.resource.data.employeeId is string
         && request.resource.data.employeeId.size() > 0
         && validAgencyId(request.resource.data.agencyId)
         && publicEmployeeAgencyMatches(
@@ -123,8 +148,17 @@ replace_once(
           request.resource.data.agencyId
         )
         && request.resource.data.action in [
+          'clock_in',
+          'start_lunch',
+          'end_lunch',
+          'clock_out'
+        ]
+        && request.resource.data.dateKey is string
+        && request.resource.data.weekKey is string
+        && request.resource.data.timestampMs is number;
+    }
 """,
-'bind public punches to employee agency',
+'bind only publicPunchCreate to employee agency',
 )
 
 replace_once(
@@ -181,18 +215,22 @@ replace_once(
 'remove unauthenticated punch-history reads',
 )
 
+punch_block = text.split('match /punches/{punchId} {', 1)[1].split(
+    'match /punchGuards/{guardId} {', 1
+)[0]
 for forbidden in [
     "resource.data.get('employeeId', '') == ''",
-    "validCompanySite(resource.data)\n          && (\n            publicEmployeeIsActive",
+    'validCompanySite(resource.data)\n          && (\n            publicEmployeeIsActive',
 ]:
-    if forbidden in text:
+    if forbidden in punch_block:
         raise SystemExit(f'Unsafe public punch read marker remains: {forbidden!r}')
 
 required = [
     'function publicEmployeeAgencyAssignment(employeeId)',
     'function publicEmployeeAgencyMatches(employeeId, agencyId)',
+    'function publicPunchCreate()',
     'validAgencyId(request.resource.data.agencyId)',
-    'allow update: if (\n          publicEmployeeWrite()',
+    'publicEmployeeAgencyAssignment(employeeId)',
 ]
 missing = [marker for marker in required if marker not in text]
 if missing:
