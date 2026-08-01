@@ -9,7 +9,17 @@ const db = getFirestore();
 
 const COMPANY_ID = 'chadwell';
 const VALID_SITES = new Set(['OH01', 'OHC']);
+const VALID_AGENCIES = new Set([
+  'sterling_staffing',
+  'excel_staffing',
+  'lifestyle_staffing',
+]);
 const VALID_ACTIONS = new Set(['clock_in', 'start_lunch', 'end_lunch', 'clock_out']);
+const ALLOWED_ORIGINS = new Set([
+  'https://zaspdragon.github.io',
+  'https://qrtimeclock-42764.web.app',
+  'https://qrtimeclock-42764.firebaseapp.com',
+]);
 const MAX_RANGE_DAYS = 31;
 const MAX_ROWS = 400;
 const RATE_WINDOW_MS = 60_000;
@@ -35,11 +45,14 @@ function timestampMs(data) {
   return 0;
 }
 
-function cors(res) {
-  res.set('Access-Control-Allow-Origin', '*');
+function setCors(req, res) {
+  const origin = String(req.headers.origin || '');
+  if (ALLOWED_ORIGINS.has(origin)) res.set('Access-Control-Allow-Origin', origin);
+  res.set('Vary', 'Origin');
   res.set('Access-Control-Allow-Headers', 'Content-Type');
   res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.set('Cache-Control', 'no-store');
+  res.set('Cache-Control', 'no-store, max-age=0');
+  res.set('X-Content-Type-Options', 'nosniff');
 }
 
 function clientKey(req) {
@@ -72,12 +85,20 @@ function uniqueRows(rows) {
 }
 
 function workerSiteMatches(worker, siteId) {
-  const sites = [worker.siteId, worker.assignedSiteId, ...(Array.isArray(worker.siteIds) ? worker.siteIds : [])]
-    .filter(Boolean);
+  const sites = [
+    worker.siteId,
+    worker.assignedSiteId,
+    worker.branch,
+    ...(Array.isArray(worker.siteIds) ? worker.siteIds : []),
+  ].filter(Boolean);
   return sites.length === 0 || sites.includes(siteId);
 }
 
-async function resolveWorker(name, siteId) {
+function workerAgencyId(worker) {
+  return String(worker?.agencyId || worker?.staffingAgencyId || '').trim();
+}
+
+async function resolveWorker(name, siteId, agencyId) {
   const normalized = normalizeName(name);
   const keys = [...new Set([normalized, compactNameKey(name)])];
   const jobs = [];
@@ -85,40 +106,49 @@ async function resolveWorker(name, siteId) {
     jobs.push(runQuery('employees', 'nameKey', key));
     jobs.push(runQuery('employees', 'normalizedName', key));
   }
+
   const matches = uniqueRows((await Promise.all(jobs)).flat()).filter((worker) => {
     const workerName = normalizeName(worker.name || worker.employeeName || worker.nameKey || worker.normalizedName);
     const companyMatches = !worker.companyId || worker.companyId === COMPANY_ID;
     const active = worker.active === true || String(worker.status || '').toLowerCase() === 'active';
-    return workerName === normalized && companyMatches && active && workerSiteMatches(worker, siteId);
+    return workerName === normalized
+      && companyMatches
+      && active
+      && workerSiteMatches(worker, siteId)
+      && workerAgencyId(worker) === agencyId;
   });
 
   if (matches.length === 0) {
-    const error = new Error('No active worker was found for that exact name and branch.');
+    const error = new Error('No active worker matched that exact name, branch, and staffing agency.');
     error.status = 404;
     throw error;
   }
   if (matches.length > 1) {
-    const error = new Error('More than one active profile has that name. Ask a manager to link the duplicate profiles.');
+    const error = new Error('More than one active profile matched. Ask a manager to link the duplicate profiles.');
     error.status = 409;
     throw error;
   }
   return matches[0];
 }
 
-async function loadPunches(worker, siteId, fromMs, toMs) {
+async function loadPunches(worker, siteId, agencyId, fromMs, toMs) {
   const ids = [...new Set([
     worker.id,
+    worker.canonicalEmployeeId,
     worker.employeeId,
     worker.employeeID,
     worker.workerId,
+    ...(Array.isArray(worker.linkedWorkerIds) ? worker.linkedWorkerIds : []),
     ...(Array.isArray(worker.aliases) ? worker.aliases : []),
     ...(Array.isArray(worker.legacyWorkerIds) ? worker.legacyWorkerIds : []),
+    ...(Array.isArray(worker.identityAliases) ? worker.identityAliases : []),
   ].map((value) => String(value || '').trim()).filter(Boolean))];
   const employeeNumbers = [...new Set([
     worker.employeeNumber,
     worker.employeeNo,
   ].map((value) => String(value || '').trim()).filter(Boolean))];
   const jobs = [];
+
   for (const id of ids) {
     jobs.push(runQuery('punches', 'employeeId', id));
     jobs.push(runQuery('punches', 'workerId', id));
@@ -135,6 +165,10 @@ async function loadPunches(worker, siteId, fromMs, toMs) {
     .filter((row) => {
       const rowSite = row.siteId || row.assignedSiteId || row.branch || '';
       return !rowSite || rowSite === siteId;
+    })
+    .filter((row) => {
+      const rowAgency = String(row.agencyId || '').trim();
+      return !rowAgency || rowAgency === agencyId;
     })
     .filter((row) => VALID_ACTIONS.has(row.action))
     .filter((row) => {
@@ -156,18 +190,24 @@ async function loadPunches(worker, siteId, fromMs, toMs) {
 }
 
 exports.publicWorkerTimeLookup = onRequest({ region: 'us-central1', cors: false }, async (req, res) => {
-  cors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).send('');
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST required.' });
+
+  const origin = String(req.headers.origin || '');
+  if (origin && !ALLOWED_ORIGINS.has(origin)) return res.status(403).json({ error: 'Origin not allowed.' });
   if (!rateAllowed(req)) return res.status(429).json({ error: 'Too many lookup attempts. Try again shortly.' });
 
   try {
     const name = String(req.body?.name || '').trim();
-    const siteId = String(req.body?.siteId || '').trim();
+    const siteId = String(req.body?.siteId || '').trim().toUpperCase();
+    const agencyId = String(req.body?.agencyId || '').trim();
     const fromMs = Number(req.body?.fromMs);
     const toMs = Number(req.body?.toMs);
+
     if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Enter your first and last name.' });
     if (!VALID_SITES.has(siteId)) return res.status(400).json({ error: 'Choose a valid branch.' });
+    if (!VALID_AGENCIES.has(agencyId)) return res.status(400).json({ error: 'Choose your staffing agency.' });
     if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs > toMs) {
       return res.status(400).json({ error: 'Choose a valid date range.' });
     }
@@ -175,8 +215,8 @@ exports.publicWorkerTimeLookup = onRequest({ region: 'us-central1', cors: false 
       return res.status(400).json({ error: `Time lookup is limited to ${MAX_RANGE_DAYS} days at a time.` });
     }
 
-    const worker = await resolveWorker(name, siteId);
-    const punches = await loadPunches(worker, siteId, fromMs, toMs);
+    const worker = await resolveWorker(name, siteId, agencyId);
+    const punches = await loadPunches(worker, siteId, agencyId, fromMs, toMs);
     return res.status(200).json({
       worker: { name: worker.name || name, siteId },
       punches,
