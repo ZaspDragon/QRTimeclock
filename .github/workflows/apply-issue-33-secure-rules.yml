@@ -59,3 +59,5 @@ jobs:
           git add firestore.rules
           git commit -m "Restrict unauthenticated punch-history reads"
           git push origin HEAD:fix/issue-33-secure-punch-history-20260801
+
+# Workflow is trusted from main; this branch update intentionally retriggers it.
