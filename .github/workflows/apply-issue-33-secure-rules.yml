@@ -1,9 +1,8 @@
 name: Apply issue 33 secure punch-history rules
 
 on:
-  push:
-    branches:
-      - main
+  pull_request_target:
+    types: [opened, synchronize, reopened]
     paths:
       - scripts/apply_issue_33_secure_rules.py
 
@@ -21,7 +20,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Apply guarded rules patch
+      - name: Apply guarded rules patch from trusted main
         run: python scripts/apply_issue_33_secure_rules.py
       - name: Validate public history is closed
         run: |
