@@ -1,6 +1,7 @@
 name: Apply issue 33 secure punch-history rules
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - fix/issue-33-secure-punch-history-20260801
