@@ -1,3 +1,4 @@
+# Guarded, non-destructive repository rules patch; this note retriggers validation.
 from pathlib import Path
 
 RULES_PATH = Path('firestore.rules')
