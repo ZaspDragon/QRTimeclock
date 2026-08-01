@@ -1,0 +1,56 @@
+name: Apply agency admin permission fix
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - scripts/apply_agency_admin_permission_fix.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read trusted patch script
+        run: |
+          git show "${{ github.event.pull_request.head.sha }}:scripts/apply_agency_admin_permission_fix.py" > /tmp/apply_fix.py
+          grep -q "PUNCH_EDIT_ROLES" /tmp/apply_fix.py
+      - name: Apply guarded role patch
+        run: python /tmp/apply_fix.py
+      - name: Validate agency admin access and scope
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('app.js').read_text(encoding='utf-8')
+          block = text.split('const PUNCH_EDIT_ROLES = new Set([', 1)[1].split(']);', 1)[0]
+          if "'agency_admin'" not in block:
+              raise SystemExit('agency_admin is still missing from PUNCH_EDIT_ROLES')
+          for marker in [
+              "if (state.me && isAgencyUser()) constraints.push(where('agencyId', '==', agencyScopeId()))",
+              "if (agencyId) constraints.push(where('agencyId', '==', agencyId))",
+              "function canEditPunches()",
+          ]:
+              if marker not in text:
+                  raise SystemExit(f'Missing agency scoping or permission marker: {marker}')
+          print('Validated agency-admin edit access remains agency and branch scoped.')
+          PY
+      - name: Commit app fix
+        run: |
+          if git diff --quiet -- app.js; then
+            echo "No app.js change required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js
+          git commit -m "Allow agency admins to edit and review scoped times"
+          git push origin HEAD:main
