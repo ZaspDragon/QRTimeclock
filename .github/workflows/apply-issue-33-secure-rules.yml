@@ -4,7 +4,7 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
     paths:
-      - scripts/apply_issue_33_secure_rules.py
+      - scripts/**
 
 permissions:
   contents: write
