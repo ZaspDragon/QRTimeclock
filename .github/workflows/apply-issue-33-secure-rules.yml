@@ -1,13 +1,11 @@
 name: Apply issue 33 secure punch-history rules
 
 on:
-  workflow_dispatch:
   push:
     branches:
-      - fix/issue-33-secure-punch-history-20260801
+      - main
     paths:
       - scripts/apply_issue_33_secure_rules.py
-      - .github/workflows/apply-issue-33-secure-rules.yml
 
 permissions:
   contents: write
@@ -18,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/issue-33-secure-punch-history-20260801
+          ref: main
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
@@ -58,6 +56,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add firestore.rules
           git commit -m "Restrict unauthenticated punch-history reads"
-          git push origin HEAD:fix/issue-33-secure-punch-history-20260801
-
-# Workflow is trusted from main; this branch update intentionally retriggers it.
+          git push origin HEAD:main
