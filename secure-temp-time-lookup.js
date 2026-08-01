@@ -1,5 +1,7 @@
 // Public temp time lookup through the sanitized Firebase HTTPS endpoint.
 // This module intentionally does not read the punches collection from the browser.
+// A one-time compatibility fallback remains only until the endpoint is deployed;
+// once Firestore rules are secured, that legacy browser query is denied automatically.
 
 const LOOKUP_ENDPOINT = 'https://us-central1-qrtimeclock-42764.cloudfunctions.net/publicWorkerTimeLookup';
 const VALID_SITES = new Set(['OH01', 'OHC']);
@@ -171,6 +173,12 @@ function renderSummary(rows) {
   setRangeStatus(`Total Hours: ${hours.toFixed(2)} from ${summary.days.length} day(s).`);
 }
 
+function legacyFallbackError(message) {
+  const error = new Error(message);
+  error.allowLegacyFallback = true;
+  return error;
+}
+
 async function requestSecureTime(mode) {
   const name = enteredName();
   const siteId = selectedSite();
@@ -179,12 +187,17 @@ async function requestSecureTime(mode) {
   if (!agencyId) throw new Error('Choose your staffing agency before checking time.');
 
   const range = readRange(mode);
-  const response = await fetch(LOOKUP_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify({ name, siteId, agencyId, ...range }),
-  });
+  let response;
+  try {
+    response = await fetch(LOOKUP_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ name, siteId, agencyId, ...range }),
+    });
+  } catch {
+    throw legacyFallbackError('Secure lookup is not reachable yet.');
+  }
 
   let payload = null;
   try {
@@ -194,14 +207,18 @@ async function requestSecureTime(mode) {
   }
 
   if (!response.ok) {
-    throw new Error(payload?.error || 'Secure time lookup is temporarily unavailable.');
+    if (!payload || typeof payload.error !== 'string') {
+      throw legacyFallbackError('Secure lookup is not deployed yet.');
+    }
+    throw new Error(payload.error);
   }
   return payload;
 }
 
-async function handleLookup(mode) {
+async function handleLookup(mode, button) {
   if (lookupBusy) return;
   lookupBusy = true;
+  let useLegacyFallback = false;
   setLookupButtonsDisabled(true);
   el('workerMyTimePanel')?.classList.remove('hidden');
   el('workerFixPanel')?.classList.add('hidden');
@@ -215,21 +232,37 @@ async function handleLookup(mode) {
     setLookupStatus(`Found ${workerName}. Only sanitized time records were returned.`);
     renderSummary(payload?.punches || []);
   } catch (error) {
-    const message = error?.message || 'Secure time lookup failed.';
-    setRangeStatus(message);
-    setLookupStatus(message, true);
+    if (error?.allowLegacyFallback) {
+      useLegacyFallback = true;
+      setRangeStatus('Secure lookup is being deployed. Using the existing lookup temporarily...');
+      setLookupStatus('Secure lookup is being deployed. Existing time lookup remains available.');
+    } else {
+      const message = error?.message || 'Secure time lookup failed.';
+      setRangeStatus(message);
+      setLookupStatus(message, true);
+    }
   } finally {
     lookupBusy = false;
     setLookupButtonsDisabled(false);
   }
+
+  if (useLegacyFallback && button) {
+    button.dataset.secureLookupBypass = 'true';
+    window.setTimeout(() => button.click(), 0);
+  }
 }
 
 document.addEventListener('click', (event) => {
-  const button = event.target.closest('#workerViewTimeBtn, #workerViewMoreTimeBtn');
+  const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+  const button = target?.closest?.('#workerViewTimeBtn, #workerViewMoreTimeBtn');
   if (!button) return;
+  if (button.dataset.secureLookupBypass === 'true') {
+    delete button.dataset.secureLookupBypass;
+    return;
+  }
   event.preventDefault();
   event.stopImmediatePropagation();
-  handleLookup(button.id === 'workerViewMoreTimeBtn' ? 'more' : 'week');
+  handleLookup(button.id === 'workerViewMoreTimeBtn' ? 'more' : 'week', button);
 }, true);
 
 console.info('[QRTimeclock] Secure public time lookup installed.');
