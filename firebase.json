@@ -1,4 +1,8 @@
 {
+  "functions": {
+    "source": "functions",
+    "runtime": "nodejs20"
+  },
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
@@ -11,7 +15,8 @@
       "**/node_modules/**",
       "README.md",
       "firestore.rules",
-      "firestore.indexes.json"
+      "firestore.indexes.json",
+      "functions/**"
     ],
     "cleanUrls": true,
     "headers": [
