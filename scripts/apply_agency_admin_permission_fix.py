@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Exact-match patch: no employee, punch, timesheet, approval, or audit data is touched.
 path = Path('app.js')
 text = path.read_text(encoding='utf-8')
 
