@@ -1,4 +1,5 @@
 import './theme-toggle.js?v=20260728-2';
+import './public-clock-context.js?v=20260801-1';
 
 export const firebaseConfig = {
   apiKey: "AIzaSyB4xdaxbkXDRILPe2nGZuGCS-PXf35bk3o",
@@ -10,7 +11,7 @@ export const firebaseConfig = {
 };
 
 export const appSettings = {
-  companyName: "Chadwell",              // fallback if company doc not loaded
+  companyName: "Chadwell",
   defaultAppUrl: "https://qrtimeclock-42764.web.app"
 };
 
@@ -28,7 +29,7 @@ if (typeof window !== 'undefined') {
     import('./lunch-labels.js?v=20260711-1').catch((error) => {
       console.warn('Lunch label update failed to load:', error.message);
     });
-    import('./new-worker-first-punch-hotfix.js?v=20260729-1').catch((error) => {
+    import('./new-worker-first-punch-hotfix.js?v=20260801-2').catch((error) => {
       console.warn('New-worker first-punch hotfix failed to load:', error.message);
     });
     import('./punch-exceptions-dashboard-v2.js?v=20260717-2').catch((error) => {
