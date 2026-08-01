@@ -52,11 +52,14 @@ function applyAgencyContext() {
   const savedAgency = String(localStorage.getItem('workerPunchAgency') || '').trim();
   if (!agencySelect.value && AGENCY_LABELS.has(savedAgency)) agencySelect.value = savedAgency;
 
-  agencySelect.addEventListener('change', () => {
-    if (AGENCY_LABELS.has(agencySelect.value)) {
-      localStorage.setItem('workerPunchAgency', agencySelect.value);
-    }
-  });
+  if (agencySelect.dataset.agencyContextBound !== 'true') {
+    agencySelect.dataset.agencyContextBound = 'true';
+    agencySelect.addEventListener('change', () => {
+      if (AGENCY_LABELS.has(agencySelect.value)) {
+        localStorage.setItem('workerPunchAgency', agencySelect.value);
+      }
+    });
+  }
 }
 
 function applyPublicClockContext() {
