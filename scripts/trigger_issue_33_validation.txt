@@ -1,0 +1,2 @@
+This file exists only to trigger the trusted issue #33 Firestore rules validation workflow.
+It changes no application or database behavior and can be removed after validation.
