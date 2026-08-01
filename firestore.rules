@@ -176,6 +176,23 @@ service cloud.firestore {
         );
     }
 
+    function validAgencyId(agencyId) {
+      return agencyId is string
+        && agencyId in [
+          'sterling_staffing',
+          'excel_staffing',
+          'lifestyle_staffing'
+        ];
+    }
+
+    function publicEmployeeAgencyMatches(employeeId, agencyId) {
+      return validAgencyId(agencyId)
+        && publicEmployeeIsActive(employeeId)
+        && get(
+          /databases/$(database)/documents/employees/$(employeeId)
+        ).data.get('agencyId', '') == agencyId;
+    }
+
     function sameCompanyAndSite(data) {
       return isOwnerOrSuperAdmin()
         || (
@@ -257,6 +274,7 @@ service cloud.firestore {
 
     function publicEmployeeWrite() {
       return validCompanySite(request.resource.data)
+        && validAgencyId(request.resource.data.agencyId)
         && request.resource.data.source == 'auto_created'
         && request.resource.data.status == 'active'
         && request.resource.data.active == true
@@ -265,6 +283,29 @@ service cloud.firestore {
         && request.resource.data.name.size() <= 80
         && request.resource.data.nameKey is string
         && request.resource.data.employeeNumber is string;
+    }
+
+    function publicEmployeeAgencyAssignment(employeeId) {
+      return !signedIn()
+        && activeEmployee(resource.data)
+        && validCompanySite(request.resource.data)
+        && (
+          !('agencyId' in resource.data)
+          || resource.data.agencyId == null
+          || resource.data.agencyId == ''
+        )
+        && validAgencyId(request.resource.data.agencyId)
+        && request.resource.data.agencyAssignmentSource
+          == 'worker_public_selection'
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'agencyId',
+            'agencyAssignedAt',
+            'agencyAssignmentSource',
+            'updatedAt'
+          ]);
     }
 
     function publicPunchCreate() {
@@ -277,7 +318,11 @@ service cloud.firestore {
         && request.resource.data.nameKey.size() >= 2
         && request.resource.data.employeeId is string
         && request.resource.data.employeeId.size() > 0
-        && publicEmployeeIsActive(request.resource.data.employeeId)
+        && validAgencyId(request.resource.data.agencyId)
+        && publicEmployeeAgencyMatches(
+          request.resource.data.employeeId,
+          request.resource.data.agencyId
+        )
         && request.resource.data.action in [
           'clock_in',
           'start_lunch',
@@ -574,6 +619,7 @@ service cloud.firestore {
           publicEmployeeWrite()
           && activeEmployee(resource.data)
         )
+        || publicEmployeeAgencyAssignment(employeeId)
         || (
           signedIn()
           && (isOwnerOrSuperAdmin() || isAdmin() || isManager())
@@ -627,15 +673,6 @@ service cloud.firestore {
         );
 
       allow read: if isOwnerOrSuperAdmin()
-        || (
-          validCompanySite(resource.data)
-          && (
-            publicEmployeeIsActive(
-              resource.data.get('employeeId', '')
-            )
-            || resource.data.get('employeeId', '') == ''
-          )
-        )
         || (
           activeProfile()
           && (
