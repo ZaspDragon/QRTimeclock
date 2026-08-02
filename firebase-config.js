@@ -33,6 +33,9 @@ if (typeof window !== 'undefined') {
     import('./new-worker-first-punch-hotfix.js?v=20260801-2').catch((error) => {
       console.warn('New-worker first-punch hotfix failed to load:', error.message);
     });
+    import('./name-only-worker-resolver.js?v=20260801-1').catch((error) => {
+      console.warn('Name-only worker resolver failed to load:', error.message);
+    });
     import('./punch-exceptions-dashboard-v2.js?v=20260717-2').catch((error) => {
       console.warn('Punch exception dashboard failed to load:', error.message);
     });
