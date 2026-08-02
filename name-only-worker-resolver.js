@@ -22,12 +22,8 @@ function normalizeName(value) {
     .trim();
 }
 
-function compactName(value) {
-  return normalizeName(value).replaceAll(' ', '_');
-}
-
 function employeeName(row) {
-  return String(row.name || row.employeeName || row.displayName || row.fullName || '').trim();
+  return String(row.name || row.employeeName || row.displayName || row.fullName || row.nameKey || row.normalizedName || '').trim();
 }
 
 function isActive(row) {
@@ -58,25 +54,32 @@ function hideCreateNewSuggestion() {
 
 async function findByExactName(name) {
   const normalized = normalizeName(name);
-  const compact = compactName(name);
   if (normalized.length < 2) return [];
 
+  // Firestore security rules only allow public listing when the query itself
+  // proves that returned employee records are active. Load both supported
+  // active-profile formats, then compare the worker's exact normalized name.
   const jobs = [
-    query(collection(db, 'employees'), where('nameKey', '==', normalized), limit(20)),
-    query(collection(db, 'employees'), where('nameKey', '==', compact), limit(20)),
-    query(collection(db, 'employees'), where('normalizedName', '==', normalized), limit(20)),
-    query(collection(db, 'employees'), where('name', '==', name.trim()), limit(20)),
+    query(collection(db, 'employees'), where('active', '==', true), limit(500)),
+    query(collection(db, 'employees'), where('status', '==', 'active'), limit(500)),
   ];
 
   const rows = new Map();
   const results = await Promise.allSettled(jobs.map((job) => getDocs(job)));
+  let successfulReads = 0;
   results.forEach((result) => {
-    if (result.status !== 'fulfilled') return;
+    if (result.status !== 'fulfilled') {
+      console.warn('[name-only-worker-resolver] active employee query failed:', result.reason?.message || result.reason);
+      return;
+    }
+    successfulReads += 1;
     result.value.docs.forEach((docSnap) => rows.set(docSnap.id, { id: docSnap.id, ...docSnap.data() }));
   });
 
+  if (!successfulReads) throw new Error('Employee directory could not be read.');
+
   return [...rows.values()].filter((row) =>
-    isActive(row) && normalizeName(employeeName(row) || row.nameKey || row.normalizedName) === normalized
+    isActive(row) && normalizeName(employeeName(row)) === normalized
   );
 }
 
@@ -117,7 +120,7 @@ async function resolveTypedName() {
       }
 
       if (matches.length > 1) {
-        setStatus('More than one worker has that exact name. Ask a manager to link the duplicate profiles.', true);
+        setStatus('More than one active worker uses that name. Ask a manager to link the duplicate profiles.', true);
         return;
       }
 
