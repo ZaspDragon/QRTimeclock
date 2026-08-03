@@ -1,7 +1,6 @@
 import './theme-toggle.js?v=20260728-2';
 import './public-clock-context.js?v=20260802-1';
 import './public-load-failure-guard.js?v=20260801-1';
-import './firestore-compatible-public-punch.js?v=20260802-2';
 
 export const firebaseConfig = {
   apiKey: "AIzaSyB4xdaxbkXDRILPe2nGZuGCS-PXf35bk3o",
@@ -19,6 +18,9 @@ export const appSettings = {
 
 if (typeof window !== 'undefined') {
   queueMicrotask(() => {
+    import('./firestore-compatible-public-punch.js?v=20260802-3').catch((error) => {
+      console.warn('Firestore-compatible public punch fallback failed to load:', error.message);
+    });
     import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
       console.warn('Manual punch agency fix failed to load:', error.message);
     });
