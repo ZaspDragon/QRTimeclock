@@ -23,11 +23,7 @@ const FIREBASE_CONFIG = {
 
 const COMPANY_ID = 'chadwell';
 const VALID_SITES = new Set(['OH01', 'OHC']);
-const VALID_AGENCIES = new Set([
-  'sterling_staffing',
-  'excel_staffing',
-  'lifestyle_staffing',
-]);
+const VALID_AGENCIES = new Set(['sterling_staffing', 'excel_staffing', 'lifestyle_staffing']);
 const VALID_ACTIONS = new Set(['clock_in', 'start_lunch', 'end_lunch', 'clock_out']);
 const ACTION_LABELS = {
   clock_in: 'Clock In',
@@ -35,33 +31,18 @@ const ACTION_LABELS = {
   end_lunch: 'End Lunch',
   clock_out: 'Clock Out',
 };
-
 let saving = false;
 
 function prettyName(value) {
-  return String(value || '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase()
-    .replace(/\b\w/g, (character) => character.toUpperCase());
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase().replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function normalizeName(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function safeIdPart(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 48) || 'worker';
+  return String(value || '').toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'worker';
 }
 
 function localDateKey(date) {
@@ -125,6 +106,7 @@ async function findExistingEmployee(db, name, siteId, agencyId) {
     query(collection(db, 'employees'), where('active', '==', true), where('nameKey', '==', nameKey), limit(20)),
     query(collection(db, 'employees'), where('status', '==', 'active'), where('nameKey', '==', nameKey), limit(20)),
     query(collection(db, 'employees'), where('active', '==', true), limit(500)),
+    query(collection(db, 'employees'), where('status', '==', 'active'), limit(500)),
   ];
 
   const rows = new Map();
@@ -139,7 +121,6 @@ async function findExistingEmployee(db, name, siteId, agencyId) {
     && normalizeName(employeeName(row)) === normalized
     && (!employeeSite(row) || employeeSite(row) === siteId)
   );
-
   const exactAgency = exactName.filter((row) => employeeAgency(row) === agencyId);
   if (exactAgency.length === 1) return { employee: exactAgency[0], assignAgency: false };
 
@@ -147,6 +128,54 @@ async function findExistingEmployee(db, name, siteId, agencyId) {
   if (blankAgency.length === 1) return { employee: blankAgency[0], assignAgency: true };
 
   return null;
+}
+
+function publicEmployeePayload({ employeeId, employeeNumber, name, nameKey, normalized, agencyId, siteId }) {
+  return {
+    name,
+    nameKey,
+    normalizedName: normalized,
+    employeeNumber,
+    employeeNumberKey: employeeNumber.toLowerCase(),
+    companyId: COMPANY_ID,
+    agencyId,
+    assignedSiteId: siteId,
+    siteId,
+    siteIds: [siteId],
+    status: 'active',
+    active: true,
+    employeeId,
+    source: 'auto_created',
+    updatedAt: serverTimestamp(),
+    createdAt: serverTimestamp(),
+  };
+}
+
+async function ensurePublicEmployee(db, name, normalized, siteId, agencyId) {
+  const nameKey = normalized.replaceAll(' ', '_');
+  const base = `${safeIdPart(siteId)}_${safeIdPart(agencyId)}_${safeIdPart(nameKey)}`;
+  const candidates = [`public_${base}`, `public_returning_${base}`, `public_returning2_${base}`, `public_returning3_${base}`];
+  let lastError = null;
+
+  for (const employeeId of candidates) {
+    const employeeNumber = `PUBLIC-${safeIdPart(siteId).toUpperCase()}-${safeIdPart(agencyId).toUpperCase()}-${safeIdPart(nameKey).toUpperCase()}-${employeeId.split('_')[0].toUpperCase()}`.slice(0, 60);
+    try {
+      await setDoc(doc(db, 'employees', employeeId), publicEmployeePayload({
+        employeeId,
+        employeeNumber,
+        name,
+        nameKey,
+        normalized,
+        agencyId,
+        siteId,
+      }), { merge: true });
+      return { employeeId, employeeNumber };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('A usable worker profile could not be created.');
 }
 
 async function savePunch(action) {
@@ -162,7 +191,6 @@ async function savePunch(action) {
 
   const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
   const db = getFirestore(app);
-  const nameKey = normalized.replaceAll(' ', '_');
   const existingMatch = await findExistingEmployee(db, name, siteId, agencyId).catch(() => null);
 
   let employeeId;
@@ -180,26 +208,7 @@ async function savePunch(action) {
       }, { merge: true });
     }
   } else {
-    employeeId = `public_${safeIdPart(siteId)}_${safeIdPart(agencyId)}_${safeIdPart(nameKey)}`;
-    employeeNumber = `PUBLIC-${safeIdPart(siteId).toUpperCase()}-${safeIdPart(agencyId).toUpperCase()}-${safeIdPart(nameKey).toUpperCase()}`.slice(0, 60);
-    await setDoc(doc(db, 'employees', employeeId), {
-      name,
-      nameKey,
-      normalizedName: normalized,
-      employeeNumber,
-      employeeNumberKey: employeeNumber.toLowerCase(),
-      companyId: COMPANY_ID,
-      agencyId,
-      assignedSiteId: siteId,
-      siteId,
-      siteIds: [siteId],
-      status: 'active',
-      active: true,
-      employeeId,
-      source: 'auto_created',
-      updatedAt: serverTimestamp(),
-      createdAt: serverTimestamp(),
-    }, { merge: true });
+    ({ employeeId, employeeNumber } = await ensurePublicEmployee(db, name, normalized, siteId, agencyId));
   }
 
   if (!employeeId) throw new Error('The worker profile could not be verified. Ask a manager to check the employee record.');
@@ -208,9 +217,7 @@ async function savePunch(action) {
   const nowMs = Date.now();
   const duplicateKey = `stablePublicPunch:${employeeId}:${action}:${localDateKey(now)}`;
   const prior = Number(localStorage.getItem(duplicateKey) || 0);
-  if (prior && nowMs - prior < 30000) {
-    throw new Error(`${ACTION_LABELS[action]} was already saved. No second tap is needed.`);
-  }
+  if (prior && nowMs - prior < 30000) throw new Error(`${ACTION_LABELS[action]} was already saved. No second tap is needed.`);
 
   await addDoc(collection(db, 'punches'), {
     companyId: COMPANY_ID,
@@ -222,7 +229,7 @@ async function savePunch(action) {
     workerId: employeeId,
     employeeNumber,
     name,
-    nameKey,
+    nameKey: normalized.replaceAll(' ', '_'),
     action,
     timestamp: serverTimestamp(),
     timestampMs: nowMs,
@@ -240,24 +247,20 @@ async function savePunch(action) {
   localStorage.setItem('workerPunchName', name);
   localStorage.setItem('workerPunchAgency', agencyId);
 
-  const nameValue = document.getElementById('workerNameValue');
-  const actionValue = document.getElementById('workerLastActionValue');
-  const punchValue = document.getElementById('workerLastPunchValue');
-  if (nameValue) nameValue.textContent = name;
-  if (actionValue) actionValue.textContent = ACTION_LABELS[action];
-  if (punchValue) punchValue.textContent = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (document.getElementById('workerNameValue')) document.getElementById('workerNameValue').textContent = name;
+  if (document.getElementById('workerLastActionValue')) document.getElementById('workerLastActionValue').textContent = ACTION_LABELS[action];
+  if (document.getElementById('workerLastPunchValue')) document.getElementById('workerLastPunchValue').textContent = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   setMessage(`${ACTION_LABELS[action]} saved for ${name}.`);
 }
 
 function install() {
   document.addEventListener('click', async (event) => {
-    const button = event.target.closest('.worker-action-btn');
+    const button = event.target.closest?.('.worker-action-btn');
     if (!button || saving) return;
 
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-
     saving = true;
     disableButtons(true);
     const action = String(button.dataset.action || '');
@@ -274,12 +277,8 @@ function install() {
       disableButtons(false);
     }
   }, true);
-
-  console.info('[QRTimeclock] Stable public clock handler installed.');
+  console.info('[QRTimeclock] Returning-worker-safe public clock handler installed.');
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', install, { once: true });
-} else {
-  install();
-}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });
+else install();
