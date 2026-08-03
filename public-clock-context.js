@@ -39,35 +39,35 @@ function ensureAgencyControl() {
   return agencySelect;
 }
 
-function applyBranchContext() {
+function forceRequestedBranch({ dispatch = true } = {}) {
   const siteId = requestedSiteId();
+  if (!siteId) return false;
+
   const branchSelect = document.getElementById('workerBranchSelect');
   if (!branchSelect) return false;
 
-  if (siteId) {
-    if (branchSelect.value !== siteId) {
-      branchSelect.value = siteId;
-      branchSelect.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-    if (!branchSelect.disabled) branchSelect.disabled = true;
-    branchSelect.dataset.urlLocked = 'true';
+  const changed = branchSelect.value !== siteId;
+  branchSelect.value = siteId;
+  branchSelect.disabled = true;
+  branchSelect.dataset.urlLocked = 'true';
+  branchSelect.setAttribute('aria-label', `Branch locked to ${siteId}`);
 
-    const ariaLabel = `Branch locked to ${siteId}`;
-    if (branchSelect.getAttribute('aria-label') !== ariaLabel) {
-      branchSelect.setAttribute('aria-label', ariaLabel);
-    }
+  const labelText = branchSelect.closest('label')?.querySelector('span');
+  const desiredLabel = `Branch (${siteId} — automatically selected)`;
+  if (labelText && labelText.textContent !== desiredLabel) labelText.textContent = desiredLabel;
 
-    const labelText = branchSelect.closest('label')?.querySelector('span');
-    const desiredLabel = `Branch (${siteId} — automatically selected)`;
-    if (labelText && labelText.textContent !== desiredLabel) {
-      labelText.textContent = desiredLabel;
-    }
+  const signupSite = document.getElementById('signupSiteInput');
+  if (signupSite && signupSite.value !== siteId) signupSite.value = siteId;
 
-    const signupSite = document.getElementById('signupSiteInput');
-    if (signupSite && signupSite.value !== siteId) signupSite.value = siteId;
+  if (changed && dispatch) {
+    branchSelect.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   return true;
+}
+
+function applyBranchContext() {
+  return requestedSiteId() ? forceRequestedBranch() : true;
 }
 
 function applyAgencyContext() {
@@ -117,10 +117,37 @@ function applyPublicClockContext() {
   applyAgencyContext();
 }
 
+function bindBranchSafetyGuard() {
+  const siteId = requestedSiteId();
+  if (!siteId || document.documentElement.dataset.qrBranchGuardBound === 'true') return;
+  document.documentElement.dataset.qrBranchGuardBound = 'true';
+
+  // Reassert the QR-code branch immediately before any worker clock action.
+  document.addEventListener('pointerdown', (event) => {
+    if (event.target.closest('.worker-action-btn, #workerViewTimeBtn, #workerViewMoreTimeBtn, #workerRequestFixBtn')) {
+      forceRequestedBranch({ dispatch: false });
+    }
+  }, true);
+
+  document.addEventListener('submit', () => {
+    forceRequestedBranch({ dispatch: false });
+  }, true);
+
+  // Prevent another module or browser autofill from changing the locked branch.
+  document.addEventListener('change', (event) => {
+    if (event.target?.id === 'workerBranchSelect' && event.target.value !== siteId) {
+      forceRequestedBranch({ dispatch: false });
+    }
+  }, true);
+
+  window.addEventListener('pageshow', () => forceRequestedBranch({ dispatch: false }));
+  window.addEventListener('focus', () => forceRequestedBranch({ dispatch: false }));
+}
+
 function initializePublicClockContext() {
+  bindBranchSafetyGuard();
   // Bounded retries handle controls created by other modules without observing and
-  // rewriting the same DOM nodes indefinitely. The previous MutationObserver loop
-  // could starve mobile click and input events.
+  // rewriting the same DOM nodes indefinitely. This avoids blocking mobile input.
   INITIALIZATION_DELAYS_MS.forEach((delay) => {
     window.setTimeout(applyPublicClockContext, delay);
   });
