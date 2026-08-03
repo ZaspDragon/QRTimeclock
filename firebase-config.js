@@ -51,6 +51,9 @@ if (typeof window !== 'undefined') {
     import('./temp-self-service-compat.js?v=20260726-1').catch((error) => {
       console.warn('Temp worker self-service compatibility failed to load:', error.message);
     });
+    import('./name-only-time-lookup.js?v=20260802-2').catch((error) => {
+      console.warn('Exact-name time lookup failed to load:', error.message);
+    });
     import('./worker-hours-summary.js?v=20260802-1').catch((error) => {
       console.warn('Worker hours summary failed to load:', error.message);
     });
