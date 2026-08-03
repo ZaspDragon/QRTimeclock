@@ -18,6 +18,9 @@ export const appSettings = {
 
 if (typeof window !== 'undefined') {
   queueMicrotask(() => {
+    import('./stable-public-clock-handler.js?v=20260802-1').catch((error) => {
+      console.warn('Stable public clock handler failed to load:', error.message);
+    });
     import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
       console.warn('Manual punch agency fix failed to load:', error.message);
     });
