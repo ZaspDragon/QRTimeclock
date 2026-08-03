@@ -3,9 +3,13 @@ import {
   addDoc,
   collection,
   doc,
+  getDocs,
   getFirestore,
+  limit,
+  query,
   serverTimestamp,
   setDoc,
+  where,
 } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 
 const FIREBASE_CONFIG = {
@@ -27,8 +31,8 @@ const VALID_AGENCIES = new Set([
 const VALID_ACTIONS = new Set(['clock_in', 'start_lunch', 'end_lunch', 'clock_out']);
 const ACTION_LABELS = {
   clock_in: 'Clock In',
-  start_lunch: 'Lunch Out',
-  end_lunch: 'Lunch In',
+  start_lunch: 'Start Lunch',
+  end_lunch: 'End Lunch',
   clock_out: 'Clock Out',
 };
 
@@ -98,6 +102,53 @@ function selectedSite() {
   return VALID_SITES.has(selected) ? selected : '';
 }
 
+function employeeName(row) {
+  return String(row.name || row.employeeName || row.displayName || row.fullName || '').trim();
+}
+
+function employeeSite(row) {
+  return String(row.siteId || row.assignedSiteId || row.branch || row.branchId || '').trim().toUpperCase();
+}
+
+function employeeAgency(row) {
+  return String(row.agencyId || row.staffingAgencyId || '').trim();
+}
+
+function isActive(row) {
+  return row.active !== false && !['inactive', 'terminated', 'merged', 'deleted'].includes(String(row.status || '').toLowerCase());
+}
+
+async function findExistingEmployee(db, name, siteId, agencyId) {
+  const normalized = normalizeName(name);
+  const nameKey = normalized.replaceAll(' ', '_');
+  const searches = [
+    query(collection(db, 'employees'), where('active', '==', true), where('nameKey', '==', nameKey), limit(20)),
+    query(collection(db, 'employees'), where('status', '==', 'active'), where('nameKey', '==', nameKey), limit(20)),
+    query(collection(db, 'employees'), where('active', '==', true), limit(500)),
+  ];
+
+  const rows = new Map();
+  const results = await Promise.allSettled(searches.map((search) => getDocs(search)));
+  results.forEach((result) => {
+    if (result.status !== 'fulfilled') return;
+    result.value.docs.forEach((snapshot) => rows.set(snapshot.id, { id: snapshot.id, ...snapshot.data() }));
+  });
+
+  const exactName = [...rows.values()].filter((row) =>
+    isActive(row)
+    && normalizeName(employeeName(row)) === normalized
+    && (!employeeSite(row) || employeeSite(row) === siteId)
+  );
+
+  const exactAgency = exactName.filter((row) => employeeAgency(row) === agencyId);
+  if (exactAgency.length === 1) return { employee: exactAgency[0], assignAgency: false };
+
+  const blankAgency = exactName.filter((row) => !employeeAgency(row));
+  if (blankAgency.length === 1) return { employee: blankAgency[0], assignAgency: true };
+
+  return null;
+}
+
 async function savePunch(action) {
   const name = prettyName(document.getElementById('workerNameInput')?.value);
   const normalized = normalizeName(name);
@@ -112,35 +163,54 @@ async function savePunch(action) {
   const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
   const db = getFirestore(app);
   const nameKey = normalized.replaceAll(' ', '_');
-  const employeeId = `public_${safeIdPart(siteId)}_${safeIdPart(agencyId)}_${safeIdPart(nameKey)}`;
-  const employeeNumber = `PUBLIC-${safeIdPart(siteId).toUpperCase()}-${safeIdPart(agencyId).toUpperCase()}-${safeIdPart(nameKey).toUpperCase()}`.slice(0, 60);
+  const existingMatch = await findExistingEmployee(db, name, siteId, agencyId).catch(() => null);
+
+  let employeeId;
+  let employeeNumber;
+  if (existingMatch) {
+    const employee = existingMatch.employee;
+    employeeId = String(employee.employeeId || employee.id || '').trim();
+    employeeNumber = String(employee.employeeNumber || employee.employeeID || employeeId).trim();
+    if (existingMatch.assignAgency && employee.id) {
+      await setDoc(doc(db, 'employees', employee.id), {
+        agencyId,
+        agencyAssignedAt: serverTimestamp(),
+        agencyAssignmentSource: 'worker_public_selection',
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    }
+  } else {
+    employeeId = `public_${safeIdPart(siteId)}_${safeIdPart(agencyId)}_${safeIdPart(nameKey)}`;
+    employeeNumber = `PUBLIC-${safeIdPart(siteId).toUpperCase()}-${safeIdPart(agencyId).toUpperCase()}-${safeIdPart(nameKey).toUpperCase()}`.slice(0, 60);
+    await setDoc(doc(db, 'employees', employeeId), {
+      name,
+      nameKey,
+      normalizedName: normalized,
+      employeeNumber,
+      employeeNumberKey: employeeNumber.toLowerCase(),
+      companyId: COMPANY_ID,
+      agencyId,
+      assignedSiteId: siteId,
+      siteId,
+      siteIds: [siteId],
+      status: 'active',
+      active: true,
+      employeeId,
+      source: 'auto_created',
+      updatedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    }, { merge: true });
+  }
+
+  if (!employeeId) throw new Error('The worker profile could not be verified. Ask a manager to check the employee record.');
+
   const now = new Date();
   const nowMs = Date.now();
   const duplicateKey = `stablePublicPunch:${employeeId}:${action}:${localDateKey(now)}`;
   const prior = Number(localStorage.getItem(duplicateKey) || 0);
-
   if (prior && nowMs - prior < 30000) {
     throw new Error(`${ACTION_LABELS[action]} was already saved. No second tap is needed.`);
   }
-
-  await setDoc(doc(db, 'employees', employeeId), {
-    name,
-    nameKey,
-    normalizedName: normalized,
-    employeeNumber,
-    employeeNumberKey: employeeNumber.toLowerCase(),
-    companyId: COMPANY_ID,
-    agencyId,
-    assignedSiteId: siteId,
-    siteId,
-    siteIds: [siteId],
-    status: 'active',
-    active: true,
-    employeeId,
-    source: 'auto_created',
-    updatedAt: serverTimestamp(),
-    createdAt: serverTimestamp(),
-  }, { merge: true });
 
   await addDoc(collection(db, 'punches'), {
     companyId: COMPANY_ID,
