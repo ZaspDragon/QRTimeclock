@@ -1,7 +1,7 @@
 import './theme-toggle.js?v=20260728-2';
 import './public-clock-context.js?v=20260802-1';
 import './public-load-failure-guard.js?v=20260801-1';
-import './firestore-compatible-public-punch.js?v=20260802-1';
+import './firestore-compatible-public-punch.js?v=20260802-2';
 
 export const firebaseConfig = {
   apiKey: "AIzaSyB4xdaxbkXDRILPe2nGZuGCS-PXf35bk3o",
