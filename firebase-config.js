@@ -18,7 +18,7 @@ export const appSettings = {
 
 if (typeof window !== 'undefined') {
   queueMicrotask(() => {
-    import('./stable-public-clock-handler.js?v=20260802-1').catch((error) => {
+    import('./stable-public-clock-handler.js?v=20260802-2').catch((error) => {
       console.warn('Stable public clock handler failed to load:', error.message);
     });
     import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
@@ -30,7 +30,7 @@ if (typeof window !== 'undefined') {
     import('./timeclock-usability-guard.js?v=20260711-1').catch((error) => {
       console.warn('Timeclock usability guard failed to load:', error.message);
     });
-    import('./lunch-labels.js?v=20260711-1').catch((error) => {
+    import('./lunch-labels.js?v=20260802-1').catch((error) => {
       console.warn('Lunch label update failed to load:', error.message);
     });
     import('./new-worker-first-punch-hotfix.js?v=20260801-2').catch((error) => {
