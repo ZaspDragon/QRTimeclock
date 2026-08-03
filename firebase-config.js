@@ -18,9 +18,6 @@ export const appSettings = {
 
 if (typeof window !== 'undefined') {
   queueMicrotask(() => {
-    import('./firestore-compatible-public-punch.js?v=20260802-3').catch((error) => {
-      console.warn('Firestore-compatible public punch fallback failed to load:', error.message);
-    });
     import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
       console.warn('Manual punch agency fix failed to load:', error.message);
     });
