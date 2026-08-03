@@ -10,21 +10,32 @@ function replaceLunchText(root = document) {
       element.textContent = LABELS.get(current);
     }
   });
+
+  document.querySelectorAll('.worker-action-btn[data-action="start_lunch"]').forEach((button) => {
+    button.textContent = 'Start Lunch';
+  });
+  document.querySelectorAll('.worker-action-btn[data-action="end_lunch"]').forEach((button) => {
+    button.textContent = 'End Lunch';
+  });
+  document.querySelectorAll('option[value="start_lunch"]').forEach((option) => {
+    option.textContent = 'Start Lunch';
+  });
+  document.querySelectorAll('option[value="end_lunch"]').forEach((option) => {
+    option.textContent = 'End Lunch';
+  });
 }
 
 function initializeLunchLabels() {
   replaceLunchText();
+  [0, 100, 300, 750, 1500, 3000].forEach((delay) => {
+    window.setTimeout(() => replaceLunchText(), delay);
+  });
 
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       mutation.addedNodes.forEach((node) => {
         if (node.nodeType !== Node.ELEMENT_NODE) return;
-        const element = /** @type {Element} */ (node);
-        replaceLunchText(element);
-        const current = element.textContent?.trim();
-        if (LABELS.has(current) && !element.children.length) {
-          element.textContent = LABELS.get(current);
-        }
+        replaceLunchText(node);
       });
     }
   });
@@ -38,7 +49,6 @@ if (document.readyState === 'loading') {
   initializeLunchLabels();
 }
 
-// Trial branch only: load the read-only scheduled punch correction dashboard.
 import('./correction-dashboard.js?v=20260717-1').catch((error) => {
   console.warn('Trial correction dashboard failed to load:', error.message);
 });
