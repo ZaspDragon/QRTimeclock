@@ -49,6 +49,16 @@ function mondayKey(date) {
 
 function unresolvedWorkerStatus() {
   const message = String(document.getElementById('workerLookupStatus')?.textContent || '').toLowerCase();
+  const typedName = String(document.getElementById('workerNameInput')?.value || '').trim();
+
+  if (typedName.length >= 2 && (
+    message.includes('type your name to begin')
+    || message.includes('type your name')
+    || !message
+  )) {
+    return true;
+  }
+
   return message.includes('no existing worker record was found')
     || message.includes('no existing worker was found')
     || message.includes('employee directory could not be read')
