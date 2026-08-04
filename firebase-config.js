@@ -21,7 +21,7 @@ if (typeof window !== 'undefined') {
     import('./stable-public-clock-handler.js?v=20260802-3').catch((error) => {
       console.warn('Stable public clock handler failed to load:', error.message);
     });
-    import('./mobile-punch-editor-actions.js?v=20260804-1').catch((error) => {
+    import('./mobile-punch-editor-actions.js?v=20260804-2').catch((error) => {
       console.warn('Mobile punch editor actions failed to load:', error.message);
     });
     import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
