@@ -21,13 +21,13 @@ if (typeof window !== 'undefined') {
     import('./stable-public-clock-handler.js?v=20260802-3').catch((error) => {
       console.warn('Stable public clock handler failed to load:', error.message);
     });
-    import('./mobile-punch-editor-actions.js?v=20260804-1').catch((error) => {
+    import('./mobile-punch-editor-actions.js?v=20260804-2').catch((error) => {
       console.warn('Mobile punch editor actions failed to load:', error.message);
     });
     import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
       console.warn('Manual punch agency fix failed to load:', error.message);
     });
-    import('./agency-export-late-bind.js?v=20260804-1').catch((error) => {
+    import('./agency-export-late-bind.js?v=20260804-2').catch((error) => {
       console.warn('Agency export late-bind failed to load:', error.message);
     });
     import('./timeclock-usability-guard.js?v=20260711-1').catch((error) => {
