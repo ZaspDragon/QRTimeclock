@@ -27,7 +27,7 @@ if (typeof window !== 'undefined') {
     import('./manual-punch-agency-fix.js?v=20260630-1').catch((error) => {
       console.warn('Manual punch agency fix failed to load:', error.message);
     });
-    import('./agency-export-saved-timesheet-fallback.js?v=20260706-1').catch((error) => {
+    import('./agency-export-saved-timesheet-fallback.js?v=20260804-2').catch((error) => {
       console.warn('Agency export saved-timesheet fallback failed to load:', error.message);
     });
     import('./timeclock-usability-guard.js?v=20260711-1').catch((error) => {
