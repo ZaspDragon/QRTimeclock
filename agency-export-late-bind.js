@@ -1,6 +1,6 @@
 function loadAgencyExportPreviewFix() {
-  import('./agency-export-saved-timesheet-fallback.js?v=20260804-3').catch((error) => {
-    console.warn('Agency export preview fix failed to load:', error.message);
+  import('./agency-export-live-preview-v2.js?v=20260804-1').catch((error) => {
+    console.warn('Agency export live preview failed to load:', error.message);
   });
 }
 
