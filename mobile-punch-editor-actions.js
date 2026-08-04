@@ -79,30 +79,67 @@ function weekKeyFromMs(timestampMs) {
   return dateKeyFromMs(date.getTime());
 }
 
-function resolvePunchSite(punch) {
-  const direct = String(punch.siteId || punch.branch || punch.assignedSiteId || '').trim().toUpperCase();
-  if (VALID_SITES.has(direct)) return direct;
-  const siteIds = Array.isArray(punch.siteIds)
-    ? [...new Set(punch.siteIds.map((value) => String(value || '').trim().toUpperCase()).filter((value) => VALID_SITES.has(value)))]
-    : [];
-  if (siteIds.length === 1) return siteIds[0];
-  throw new Error('This punch does not have one clear branch. No changes were saved. Ask an administrator to correct the punch branch first.');
+function collectSites(row) {
+  if (!row) return [];
+  return [...new Set([
+    row.siteId,
+    row.branch,
+    row.assignedSiteId,
+    ...(Array.isArray(row.siteIds) ? row.siteIds : []),
+  ]
+    .map((value) => String(value || '').trim().toUpperCase())
+    .filter((value) => VALID_SITES.has(value)))];
+}
+
+function resolvePunchSite(punch, employee) {
+  const punchSites = collectSites(punch);
+  if (punchSites.length === 1) return punchSites[0];
+  if (punchSites.length > 1) {
+    throw new Error('This punch is assigned to more than one branch. No changes were saved.');
+  }
+
+  const employeeSites = collectSites(employee);
+  if (employeeSites.length === 1) return employeeSites[0];
+  throw new Error('This punch does not have one clear OH01 or OHC branch. No changes were saved. Ask an administrator to correct the employee branch first.');
+}
+
+function punchIdentityId(punch) {
+  return String(punch.employeeId || punch.employeeID || punch.workerId || '').trim();
+}
+
+async function loadEmployeeForPunch(punch) {
+  const identityId = punchIdentityId(punch);
+  if (!identityId) return null;
+  try {
+    const snapshot = await getDoc(doc(db, 'employees', identityId));
+    return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 async function loadContext(punchId) {
   const user = auth.currentUser;
   if (!user) throw new Error('Your manager session expired. Sign in again.');
+
   const [punchSnap, profileSnap] = await Promise.all([
     getDoc(doc(db, 'punches', punchId)),
     getDoc(doc(db, 'users', user.uid)),
   ]);
   if (!punchSnap.exists()) throw new Error('This punch no longer exists. Refresh and try again.');
+
   const punch = { id: punchSnap.id, ...punchSnap.data() };
+  const employee = await loadEmployeeForPunch(punch);
   const profile = profileSnap.exists() ? profileSnap.data() : {};
-  const siteId = resolvePunchSite(punch);
-  const companyId = String(punch.companyId || 'chadwell').trim();
-  const agencyId = String(punch.agencyId || '').trim();
-  return { user, punch, profile, siteId, companyId, agencyId };
+  const siteId = resolvePunchSite(punch, employee);
+  const companyId = String(punch.companyId || employee?.companyId || 'chadwell').trim();
+  const agencyId = String(
+    punch.agencyId
+    || employee?.agencyId
+    || employee?.staffingAgencyId
+    || ''
+  ).trim();
+  return { user, punch, employee, profile, siteId, companyId, agencyId };
 }
 
 async function editPunch(button) {
@@ -110,21 +147,23 @@ async function editPunch(button) {
   if (!punchId) throw new Error('This punch could not be identified. Refresh and try again.');
   const { user, punch, profile, siteId, companyId, agencyId } = await loadContext(punchId);
 
-  const enteredName = window.prompt('Worker name is shown for verification. Use employee reassignment to move a punch:', punch.name || '');
-  if (enteredName === null) return;
-  const originalNameKey = normalizeName(prettifyName(punch.name || '') || punch.nameKey || '');
-  if (!originalNameKey || normalizeName(enteredName) !== originalNameKey) {
-    throw new Error('Worker identity was not changed. Use the employee reassignment or profile-linking tool to move a punch safely.');
-  }
-
-  const enteredAction = window.prompt('Edit action (clock_in, start_lunch, end_lunch, clock_out):', punch.action || 'clock_in');
+  const verifiedName = prettifyName(punch.name || punch.employeeName || punch.workerName || punch.nameKey || 'Worker');
+  const enteredAction = window.prompt(
+    `Edit action for ${verifiedName} (clock_in, start_lunch, end_lunch, clock_out):`,
+    punch.action || 'clock_in'
+  );
   if (enteredAction === null) return;
-  const enteredDateTime = window.prompt('Edit date/time (YYYY-MM-DD HH:MM):', formatLocalEditValue(punch.timestampMs));
+  const enteredDateTime = window.prompt(
+    `Edit date/time for ${verifiedName} (YYYY-MM-DD HH:MM):`,
+    formatLocalEditValue(punch.timestampMs)
+  );
   if (enteredDateTime === null) return;
 
   const action = String(enteredAction || '').trim().toLowerCase();
   const timestampMs = parseLocalEditValue(enteredDateTime);
-  if (!['clock_in', 'start_lunch', 'end_lunch', 'clock_out'].includes(action)) throw new Error('Use clock_in, start_lunch, end_lunch, or clock_out.');
+  if (!['clock_in', 'start_lunch', 'end_lunch', 'clock_out'].includes(action)) {
+    throw new Error('Use clock_in, start_lunch, end_lunch, or clock_out.');
+  }
   if (!timestampMs) throw new Error('Use date/time format YYYY-MM-DD HH:MM.');
 
   button.disabled = true;
@@ -139,7 +178,6 @@ async function editPunch(button) {
     nameKey: punch.nameKey || '',
   };
   const updated = {
-    ...identity,
     action,
     timestampMs,
     dateKey: dateKeyFromMs(timestampMs),
@@ -147,11 +185,11 @@ async function editPunch(button) {
     companyId,
     siteId,
     branch: siteId,
-    agencyId,
     editedAt: serverTimestamp(),
     editedBy: editor,
     updatedAt: serverTimestamp(),
   };
+  if (agencyId) updated.agencyId = agencyId;
 
   const editRef = doc(collection(db, 'punch_edits'));
   const batch = writeBatch(db);
@@ -159,8 +197,24 @@ async function editPunch(button) {
   batch.set(editRef, {
     punchId,
     type: 'edit',
-    original: { ...identity, action: punch.action || '', timestampMs: Number(punch.timestampMs || 0), dateKey: punch.dateKey || '', weekKey: punch.weekKey || '', companyId, siteId, branch: siteId, agencyId, source: punch.source || '' },
-    updated: { ...updated, source: punch.source || '' },
+    original: {
+      ...identity,
+      action: punch.action || '',
+      timestampMs: Number(punch.timestampMs || 0),
+      dateKey: punch.dateKey || '',
+      weekKey: punch.weekKey || '',
+      companyId,
+      siteId,
+      branch: siteId,
+      agencyId,
+      source: punch.source || '',
+    },
+    updated: {
+      ...identity,
+      ...updated,
+      agencyId,
+      source: punch.source || '',
+    },
     companyId,
     siteId,
     branch: siteId,
@@ -170,7 +224,7 @@ async function editPunch(button) {
     editedAt: serverTimestamp(),
   });
   await batch.commit();
-  showMessage('Punch updated. The edited time will appear in Agency Export after refresh.');
+  showMessage('Punch updated. Refresh Agency Export and preview the worker before printing.');
   window.setTimeout(() => window.location.reload(), 250);
 }
 
@@ -185,8 +239,12 @@ async function mobileSoftDelete(button) {
   button.disabled = true;
   button.setAttribute('aria-busy', 'true');
   await updateDoc(doc(db, 'punches', punchId), {
-    status: 'deleted', active: false, deletedAt: serverTimestamp(), deletedBy: user.email || user.uid,
-    deleteReason: String(reason).trim().slice(0, 300), updatedAt: serverTimestamp(),
+    status: 'deleted',
+    active: false,
+    deletedAt: serverTimestamp(),
+    deletedBy: user.email || user.uid,
+    deleteReason: String(reason).trim().slice(0, 300),
+    updatedAt: serverTimestamp(),
   });
   button.closest('tr')?.remove();
   showMessage('Punch marked deleted. Historical data was preserved.');
@@ -221,5 +279,8 @@ function install() {
   document.addEventListener('touchend', handle, { capture: true, passive: false });
 }
 
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });
-else install();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', install, { once: true });
+} else {
+  install();
+}
