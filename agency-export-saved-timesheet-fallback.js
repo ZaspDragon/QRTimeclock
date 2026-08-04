@@ -17,17 +17,15 @@ const db = getFirestore(app);
 
 const CURRENT_COMPANY_ID = 'chadwell';
 const CURRENT_SITE_ID = 'OH01';
-const BRANCH_OPTIONS = ['OH01', 'OHC'];
-const FALLBACK_PREFIX = 'saved-timesheet:';
 const AGENCY_NAMES = {
   sterling_staffing: 'Sterling Staffing',
   excel_staffing: 'Excel Staffing',
+  lifestyle_staffing: 'Lifestyle Staffing',
 };
 
 const state = {
   profile: null,
-  savedSheets: new Map(),
-  refreshTimer: null,
+  busy: false,
 };
 
 function normalizeRole(value) {
@@ -65,13 +63,6 @@ function agencyLabel(agencyId) {
   return AGENCY_NAMES[agencyId] || agencyId;
 }
 
-function agencyIdFromLabel(label) {
-  const value = String(label || '').trim();
-  if (!value || value === 'Direct') return '';
-  const match = Object.entries(AGENCY_NAMES).find(([, agencyName]) => agencyName === value);
-  return match?.[0] || value;
-}
-
 function formatDateKey(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -94,21 +85,14 @@ function selectedWeekKey() {
   return formatDateKey(getMondayDate(new Date(`${value}T00:00:00`)));
 }
 
-function parseSiteIds(value) {
-  const raw = Array.isArray(value) ? value : String(value || '').split(',');
-  return [...new Set(raw.map((site) => String(site || '').trim()).filter((site) => BRANCH_OPTIONS.includes(site)))];
-}
-
-function allowedSiteIds(profile = state.profile) {
-  if (!profile) return [];
-  if (Array.isArray(profile.branches) && profile.branches.length) return parseSiteIds(profile.branches);
-  if (profile.branch) return parseSiteIds([profile.branch]);
-  if (Array.isArray(profile.siteIds) && profile.siteIds.length) return parseSiteIds(profile.siteIds);
-  return parseSiteIds(profile.siteId || profile.assignedSiteId || '');
+function profileSiteIds(profile = state.profile) {
+  const values = profile?.branches || profile?.siteIds || profile?.branch || profile?.siteId || profile?.assignedSiteId || [];
+  const raw = Array.isArray(values) ? values : [values];
+  return [...new Set(raw.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
 function activeSiteId(profile = state.profile) {
-  const allowed = allowedSiteIds(profile);
+  const allowed = profileSiteIds(profile);
   const stored = sessionStorage.getItem(`managerActiveBranch:${profile?.uid || ''}`);
   return allowed.includes(stored) ? stored : allowed[0] || CURRENT_SITE_ID;
 }
@@ -117,93 +101,204 @@ function isAgencyUser(profile = state.profile) {
   return normalizeRole(profile?.role) === 'agency_admin' || !!profile?.agencyId;
 }
 
-function sheetName(sheet) {
-  return prettifyHumanName(sheet.name || sheet.workerName || sheet.employeeName || sheet.displayName || '');
+function parseSelectedOption() {
+  const select = document.getElementById('agencyLegacyWorkerSelect');
+  const option = select?.selectedOptions?.[0];
+  if (!select || !option || !select.value) return null;
+
+  const rawText = String(option.textContent || '').trim();
+  const detailsMatch = rawText.match(/\(([^)]*)\)\s*$/);
+  const details = (detailsMatch?.[1] || '').split('·').map((part) => part.trim());
+  const name = prettifyHumanName(rawText.replace(/\s*\([^)]*\)\s*$/, ''));
+  const agencyText = details[0] || '';
+  const agencyId = Object.entries(AGENCY_NAMES).find(([, label]) => label === agencyText)?.[0] || agencyText;
+  const siteId = details[1] || activeSiteId();
+  const rawIdentity = String(select.value || '');
+  const identityId = rawIdentity.startsWith('worker:') ? rawIdentity.slice(7) : rawIdentity;
+
+  return {
+    select,
+    option,
+    rawIdentity,
+    identityId,
+    name,
+    nameKey: normalizeName(name),
+    agencyId,
+    siteId,
+  };
 }
 
-function sheetSignature(sheet) {
-  return [
-    normalizeName(sheetName(sheet) || sheet.nameKey),
-    String(sheet.agencyId || '').trim(),
-    String(sheet.siteId || sheet.branchId || '').trim()
-  ].join('|');
+function isActivePunch(punch) {
+  if (!punch || punch.active === false) return false;
+  return String(punch.status || '').trim().toLowerCase() !== 'deleted';
 }
 
-function existingOptionSignatures(select) {
-  const signatures = new Set();
-  Array.from(select.options || []).forEach((option) => {
-    if (!option.value || option.value.startsWith(FALLBACK_PREFIX)) return;
-    const text = option.textContent || '';
-    const name = text.replace(/\s*\([^)]*\)\s*$/, '');
-    const details = (text.match(/\(([^)]*)\)/)?.[1] || '').split('·').map((part) => part.trim());
-    signatures.add([normalizeName(name), agencyIdFromLabel(details[0]), details[1] || ''].join('|'));
-  });
-  return signatures;
+function punchTimestampMs(punch) {
+  const explicit = Number(punch?.timestampMs || 0);
+  if (explicit) return explicit;
+  if (punch?.timestamp?.toMillis instanceof Function) return punch.timestamp.toMillis();
+  if (punch?.createdAt?.toMillis instanceof Function) return punch.createdAt.toMillis();
+  const parsed = Date.parse(String(punch?.timestamp || punch?.createdAt || ''));
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function addFallbackOptions() {
-  const select = document.getElementById('agencyWorkerSelect');
-  if (!select || !state.savedSheets.size) return;
-
-  const existingValues = new Set(Array.from(select.options || []).map((option) => option.value));
-  const signatures = existingOptionSignatures(select);
-  const rows = [...state.savedSheets.values()].sort((left, right) => sheetName(left).localeCompare(sheetName(right)));
-
-  rows.forEach((sheet) => {
-    const value = `${FALLBACK_PREFIX}${sheet.id}`;
-    if (existingValues.has(value) || signatures.has(sheetSignature(sheet))) return;
-    const option = document.createElement('option');
-    option.value = value;
-    const details = [agencyLabel(sheet.agencyId), sheet.siteId || sheet.branchId].filter(Boolean).join(' · ');
-    option.textContent = `${sheetName(sheet) || sheet.nameKey || sheet.id}${details ? ` (${details})` : ''}`;
-    option.dataset.savedTimesheetFallback = 'true';
-    select.appendChild(option);
-  });
+function punchSiteId(punch) {
+  return String(punch?.siteId || punch?.branch || punch?.assignedSiteId || '').trim();
 }
 
-async function loadSavedSheets() {
-  if (!auth.currentUser || !state.profile) return;
-  const siteId = activeSiteId();
-  const filters = [
-    where('companyId', '==', CURRENT_COMPANY_ID),
-    where('siteId', '==', siteId),
-    where('weekKey', '==', selectedWeekKey()),
-  ];
-  if (isAgencyUser() && state.profile.agencyId) {
-    filters.push(where('agencyId', '==', state.profile.agencyId));
+function matchesScope(row, selected) {
+  const companyId = String(row?.companyId || row?.companyID || CURRENT_COMPANY_ID).trim();
+  const siteId = punchSiteId(row);
+  const agencyId = String(row?.agencyId || '').trim();
+  return companyId === CURRENT_COMPANY_ID
+    && (!selected.siteId || !siteId || siteId === selected.siteId)
+    && (!selected.agencyId || !agencyId || agencyId === selected.agencyId);
+}
+
+async function resolveWorkerIdentity(selected) {
+  const ids = new Set();
+  const employeeRows = new Map();
+
+  const addEmployee = (snapshot) => {
+    if (!snapshot?.exists?.()) return;
+    const row = { id: snapshot.id, ...snapshot.data() };
+    employeeRows.set(row.id, row);
+    ids.add(row.id);
+    if (row.employeeId) ids.add(String(row.employeeId));
+    if (row.workerId) ids.add(String(row.workerId));
+    if (row.mergedInto) ids.add(String(row.mergedInto));
+  };
+
+  if (selected.identityId && !selected.identityId.includes('|')) {
+    try {
+      addEmployee(await getDoc(doc(db, 'employees', selected.identityId)));
+    } catch (error) {
+      console.warn('Legacy preview direct employee lookup skipped:', error.message);
+    }
   }
 
-  const snap = await getDocs(query(collection(db, 'timesheets'), ...filters));
-  state.savedSheets = new Map(snap.docs.map((record) => [record.id, { id: record.id, ...record.data() }]));
-  addFallbackOptions();
-}
-
-function scheduleRefresh() {
-  window.clearTimeout(state.refreshTimer);
-  state.refreshTimer = window.setTimeout(() => {
-    loadSavedSheets().catch((error) => {
-      console.warn('Agency export saved-timesheet fallback failed:', error.message);
+  if (selected.nameKey) {
+    const nameSnap = await getDocs(query(collection(db, 'employees'), where('nameKey', '==', selected.nameKey)));
+    nameSnap.docs.forEach((record) => {
+      const row = { id: record.id, ...record.data() };
+      if (!matchesScope(row, selected)) return;
+      employeeRows.set(row.id, row);
+      ids.add(row.id);
+      if (row.employeeId) ids.add(String(row.employeeId));
+      if (row.workerId) ids.add(String(row.workerId));
+      if (row.mergedInto) ids.add(String(row.mergedInto));
     });
-  }, 250);
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const id of [...ids]) {
+      const mergedSnap = await getDocs(query(collection(db, 'employees'), where('mergedInto', '==', id)));
+      mergedSnap.docs.forEach((record) => {
+        const row = { id: record.id, ...record.data() };
+        if (!matchesScope(row, selected)) return;
+        employeeRows.set(row.id, row);
+        if (!ids.has(row.id)) {
+          ids.add(row.id);
+          changed = true;
+        }
+        if (row.employeeId && !ids.has(String(row.employeeId))) {
+          ids.add(String(row.employeeId));
+          changed = true;
+        }
+        if (row.workerId && !ids.has(String(row.workerId))) {
+          ids.add(String(row.workerId));
+          changed = true;
+        }
+      });
+    }
+  }
+
+  return { ids, employees: [...employeeRows.values()] };
 }
 
-function formatDateTime(ms) {
+async function loadSelectedWeekPunches(selected, identity) {
+  const weekKey = selectedWeekKey();
+  const snap = await getDocs(query(collection(db, 'punches'), where('weekKey', '==', weekKey)));
+  const rows = snap.docs.map((record) => ({ id: record.id, ...record.data() }));
+
+  return rows.filter((punch) => {
+    if (!isActivePunch(punch) || !matchesScope(punch, selected)) return false;
+    const employeeId = String(punch.employeeId || '').trim();
+    const workerId = String(punch.workerId || '').trim();
+    const idMatch = identity.ids.has(employeeId) || identity.ids.has(workerId);
+    const nameMatch = normalizeName(punch.name || punch.workerName || punch.employeeName || punch.nameKey) === selected.nameKey;
+    return idMatch || nameMatch;
+  }).sort((left, right) => punchTimestampMs(left) - punchTimestampMs(right));
+}
+
+function formatTime(ms) {
   if (!ms) return '-';
-  return new Date(ms).toLocaleString([], {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit'
+  return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function buildDailyTotals(punches) {
+  const grouped = new Map();
+  punches.forEach((punch) => {
+    const ms = punchTimestampMs(punch);
+    const dateKey = String(punch.dateKey || (ms ? formatDateKey(new Date(ms)) : '')).trim();
+    if (!dateKey || !ms) return;
+    if (!grouped.has(dateKey)) grouped.set(dateKey, []);
+    grouped.get(dateKey).push({ ...punch, timestampMs: ms });
   });
+
+  const dailyTotals = {};
+  let weeklyHours = 0;
+
+  [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([dateKey, dayPunches]) => {
+    dayPunches.sort((a, b) => a.timestampMs - b.timestampMs);
+    const byAction = (action) => dayPunches.filter((punch) => punch.action === action);
+    const clockIn = byAction('clock_in')[0];
+    const clockOutRows = byAction('clock_out');
+    const clockOut = clockOutRows[clockOutRows.length - 1];
+    const lunchOut = byAction('start_lunch')[0];
+    const lunchIn = byAction('end_lunch')[0];
+
+    let hours = 0;
+    if (clockIn && clockOut && clockOut.timestampMs > clockIn.timestampMs) {
+      let workedMs = clockOut.timestampMs - clockIn.timestampMs;
+      if (lunchOut && lunchIn && lunchIn.timestampMs > lunchOut.timestampMs) {
+        workedMs -= lunchIn.timestampMs - lunchOut.timestampMs;
+      }
+      hours = Math.max(0, workedMs / 3600000);
+      weeklyHours += hours;
+    }
+
+    dailyTotals[dateKey] = {
+      clock_in: formatTime(clockIn?.timestampMs),
+      start_lunch: formatTime(lunchOut?.timestampMs),
+      end_lunch: formatTime(lunchIn?.timestampMs),
+      clock_out: formatTime(clockOut?.timestampMs),
+      hours,
+    };
+  });
+
+  return { dailyTotals, weeklyHours, daysWorked: grouped.size };
+}
+
+async function loadSavedSheet(selected, identity) {
+  const weekKey = selectedWeekKey();
+  const snap = await getDocs(query(collection(db, 'timesheets'), where('weekKey', '==', weekKey)));
+  const rows = snap.docs.map((record) => ({ id: record.id, ...record.data() }));
+  return rows.find((sheet) => {
+    if (!matchesScope(sheet, selected)) return false;
+    const idMatch = identity.ids.has(String(sheet.employeeId || '')) || identity.ids.has(String(sheet.workerId || ''));
+    const nameMatch = normalizeName(sheet.name || sheet.workerName || sheet.employeeName || sheet.nameKey) === selected.nameKey;
+    return idMatch || nameMatch;
+  }) || null;
 }
 
 function buildDailyRows(dailyTotals) {
   const keys = Object.keys(dailyTotals || {}).sort();
   if (!keys.length) {
-    return '<tr><td colspan="6" style="border:1px solid #bbb;padding:10px;">No detailed daily punches are stored on this saved sheet.</td></tr>';
+    return '<tr><td colspan="6" style="border:1px solid #bbb;padding:10px;">No punches recorded for this week.</td></tr>';
   }
-
   return keys.map((dateKey) => {
     const row = dailyTotals[dateKey] || {};
     return `
@@ -219,11 +314,25 @@ function buildDailyRows(dailyTotals) {
   }).join('');
 }
 
-function renderSavedSheet(sheet) {
+function formatDateTime(ms) {
+  if (!ms) return '-';
+  return new Date(ms).toLocaleString([], {
+    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+  });
+}
+
+function showPreviewStatus(message, isError = false) {
   const preview = document.getElementById('agencyPreview');
   if (!preview) return;
-  const signedAt = sheet.managerSignedAt?.seconds ? formatDateTime(sheet.managerSignedAt.seconds * 1000) : '-';
-  const dailyTotals = sheet.dailyTotals && typeof sheet.dailyTotals === 'object' ? sheet.dailyTotals : {};
+  preview.innerHTML = `<div class="empty-state${isError ? ' error' : ''}">${escapeHtml(message)}</div>`;
+}
+
+function renderLiveSheet(selected, summary, savedSheet) {
+  const preview = document.getElementById('agencyPreview');
+  if (!preview) return;
+  const signedAtMs = Number(savedSheet?.managerSignedAt?.seconds || 0) * 1000;
+  const status = savedSheet?.status || 'open';
+  const managerSignedBy = savedSheet?.managerSignedBy || '-';
 
   preview.innerHTML = `
     <div id="agencyPrintableSheet" style="background:#fff;color:#111;border-radius:12px;padding:24px;min-height:200px;">
@@ -231,11 +340,11 @@ function renderSavedSheet(sheet) {
         <div>
           <h2 style="margin:0 0 8px;font-size:28px;">Weekly Time Sheet</h2>
           <div style="font-size:15px;line-height:1.6;">
-            <div><strong>Worker:</strong> ${escapeHtml(sheetName(sheet) || sheet.nameKey || '-')}</div>
-            <div><strong>Agency:</strong> ${escapeHtml(agencyLabel(sheet.agencyId))}</div>
-            <div><strong>Branch:</strong> ${escapeHtml(sheet.siteId || sheet.branchId || '-')}</div>
-            <div><strong>Week Start:</strong> ${escapeHtml(sheet.weekKey || selectedWeekKey())}</div>
-            <div><strong>Status:</strong> ${escapeHtml(sheet.status || 'open')}</div>
+            <div><strong>Worker:</strong> ${escapeHtml(selected.name)}</div>
+            <div><strong>Agency:</strong> ${escapeHtml(agencyLabel(selected.agencyId))}</div>
+            <div><strong>Branch:</strong> ${escapeHtml(selected.siteId || activeSiteId())}</div>
+            <div><strong>Week Start:</strong> ${escapeHtml(selectedWeekKey())}</div>
+            <div><strong>Status:</strong> ${escapeHtml(status)}</div>
           </div>
         </div>
         <div style="font-size:14px;line-height:1.7;text-align:right;">
@@ -248,58 +357,64 @@ function renderSavedSheet(sheet) {
           <tr>
             <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Date</th>
             <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Clock In</th>
-            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Lunch Out</th>
-            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Lunch In</th>
+            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Start Lunch</th>
+            <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">End Lunch</th>
             <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Clock Out</th>
             <th style="border:1px solid #bbb;padding:10px;text-align:left;background:#f3f6fa;">Hours</th>
           </tr>
         </thead>
-        <tbody>${buildDailyRows(dailyTotals)}</tbody>
+        <tbody>${buildDailyRows(summary.dailyTotals)}</tbody>
       </table>
       <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:24px;">
         <div style="font-size:15px;line-height:1.8;">
-          <div><strong>Total Hours:</strong> ${Number(sheet.weeklyHours || 0).toFixed(2)}</div>
-          <div><strong>Days Worked:</strong> ${Number(sheet.daysWorked || Object.keys(dailyTotals).length || 0)}</div>
+          <div><strong>Total Hours:</strong> ${Number(summary.weeklyHours || 0).toFixed(2)}</div>
+          <div><strong>Days Worked:</strong> ${Number(summary.daysWorked || 0)}</div>
         </div>
         <div style="font-size:15px;line-height:1.8;text-align:right;">
-          <div><strong>Manager:</strong> ${escapeHtml(sheet.managerSignedBy || '-')}</div>
-          <div><strong>Signed:</strong> ${escapeHtml(signedAt)}</div>
+          <div><strong>Manager:</strong> ${escapeHtml(managerSignedBy)}</div>
+          <div><strong>Signed:</strong> ${escapeHtml(signedAtMs ? formatDateTime(signedAtMs) : '-')}</div>
         </div>
       </div>
     </div>
   `;
 }
 
-function handleFallbackPreview(event) {
-  const select = document.getElementById('agencyWorkerSelect');
-  const value = select?.value || '';
-  if (!value.startsWith(FALLBACK_PREFIX)) return;
-  const sheet = state.savedSheets.get(value.slice(FALLBACK_PREFIX.length));
-  if (!sheet) return;
+async function handleLegacyPreview(event) {
+  const selected = parseSelectedOption();
+  if (!selected || state.busy) return;
+
   event.preventDefault();
   event.stopImmediatePropagation();
-  renderSavedSheet(sheet);
+  state.busy = true;
+  showPreviewStatus('Loading current punches...');
+
+  try {
+    const identity = await resolveWorkerIdentity(selected);
+    const punches = await loadSelectedWeekPunches(selected, identity);
+    const summary = buildDailyTotals(punches);
+    const savedSheet = await loadSavedSheet(selected, identity);
+    renderLiveSheet(selected, summary, savedSheet);
+  } catch (error) {
+    console.error('Legacy agency preview rebuild failed:', error);
+    showPreviewStatus(error.message || 'Could not rebuild the weekly sheet from punches.', true);
+  } finally {
+    state.busy = false;
+  }
 }
 
-function wireFallback() {
-  document.getElementById('agencyPreviewBtn')?.addEventListener('click', handleFallbackPreview, true);
-  document.getElementById('agencyWorkerSelect')?.addEventListener('change', handleFallbackPreview, true);
-  document.getElementById('agencyWorkerSelect')?.addEventListener('focus', scheduleRefresh);
-  document.getElementById('agencyWorkerSelect')?.addEventListener('mousedown', scheduleRefresh);
-  document.getElementById('weekPicker')?.addEventListener('change', scheduleRefresh);
-  document.getElementById('agencyTabBtn')?.addEventListener('click', scheduleRefresh);
+function wireLegacyPreview() {
+  document.getElementById('agencyPreviewBtn')?.addEventListener('click', handleLegacyPreview, true);
 }
 
 onAuthStateChanged(auth, async (user) => {
-  state.savedSheets.clear();
+  state.profile = null;
   if (!user) return;
   try {
     const profileSnap = await getDoc(doc(db, 'users', user.uid));
     state.profile = profileSnap.exists() ? { uid: user.uid, ...profileSnap.data() } : { uid: user.uid };
-    scheduleRefresh();
   } catch (error) {
-    console.warn('Agency export fallback profile load failed:', error.message);
+    console.warn('Legacy preview profile load failed:', error.message);
   }
 });
 
-wireFallback();
+wireLegacyPreview();
