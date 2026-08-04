@@ -14,6 +14,7 @@ import {
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const VALID_SITES = new Set(['OH01', 'OHC']);
 let busy = false;
 let lastHandled = { key: '', at: 0 };
 
@@ -78,6 +79,18 @@ function weekKeyFromMs(timestampMs) {
   return dateKeyFromMs(date.getTime());
 }
 
+function resolvePunchSite(punch) {
+  const direct = String(punch.siteId || punch.branch || punch.assignedSiteId || '').trim().toUpperCase();
+  if (VALID_SITES.has(direct)) return direct;
+
+  const siteIds = Array.isArray(punch.siteIds)
+    ? [...new Set(punch.siteIds.map((value) => String(value || '').trim().toUpperCase()).filter((value) => VALID_SITES.has(value)))]
+    : [];
+  if (siteIds.length === 1) return siteIds[0];
+
+  throw new Error('This punch does not have one clear branch. No changes were saved. Ask an administrator to correct the punch branch first.');
+}
+
 async function loadContext(punchId) {
   const user = auth.currentUser;
   if (!user) throw new Error('Your manager session expired. Sign in again.');
@@ -90,9 +103,9 @@ async function loadContext(punchId) {
 
   const punch = { id: punchSnap.id, ...punchSnap.data() };
   const profile = profileSnap.exists() ? profileSnap.data() : {};
-  const siteId = String(punch.siteId || punch.branch || profile.siteId || profile.branch || 'OH01').trim();
-  const companyId = String(punch.companyId || profile.companyId || 'chadwell').trim();
-  const agencyId = String(punch.agencyId || profile.agencyId || '').trim();
+  const siteId = resolvePunchSite(punch);
+  const companyId = String(punch.companyId || 'chadwell').trim();
+  const agencyId = String(punch.agencyId || '').trim();
   return { user, punch, profile, siteId, companyId, agencyId };
 }
 
@@ -103,8 +116,18 @@ async function editPunch(button) {
   const context = await loadContext(punchId);
   const { user, punch, profile, siteId, companyId, agencyId } = context;
 
-  const enteredName = window.prompt('Edit worker name:', punch.name || '');
+  const enteredName = window.prompt(
+    'Worker name is shown for verification. Use the employee reassignment tool to move a punch to another worker:',
+    punch.name || ''
+  );
   if (enteredName === null) return;
+  const originalName = prettifyName(punch.name || '');
+  const enteredNameKey = normalizeName(enteredName);
+  const originalNameKey = normalizeName(originalName || punch.nameKey || '');
+  if (!originalNameKey || enteredNameKey !== originalNameKey) {
+    throw new Error('Worker identity was not changed. Use the employee reassignment or profile-linking tool to move a punch safely.');
+  }
+
   const enteredAction = window.prompt(
     'Edit action (clock_in, start_lunch, end_lunch, clock_out):',
     punch.action || 'clock_in'
@@ -116,11 +139,8 @@ async function editPunch(button) {
   );
   if (enteredDateTime === null) return;
 
-  const name = prettifyName(enteredName);
-  const nameKey = normalizeName(name);
   const action = String(enteredAction || '').trim().toLowerCase();
   const timestampMs = parseLocalEditValue(enteredDateTime);
-  if (nameKey.length < 2) throw new Error('Enter a valid worker name.');
   if (!['clock_in', 'start_lunch', 'end_lunch', 'clock_out'].includes(action)) {
     throw new Error('Use clock_in, start_lunch, end_lunch, or clock_out.');
   }
@@ -131,8 +151,6 @@ async function editPunch(button) {
 
   const editor = String(profile.name || user.email || user.uid);
   const updated = {
-    name,
-    nameKey,
     action,
     timestampMs,
     dateKey: dateKeyFromMs(timestampMs),
@@ -146,6 +164,15 @@ async function editPunch(button) {
   };
   if (agencyId) updated.agencyId = agencyId;
 
+  const identity = {
+    employeeId: punch.employeeId || '',
+    employeeID: punch.employeeID || '',
+    workerId: punch.workerId || '',
+    employeeNumber: punch.employeeNumber || '',
+    name: punch.name || '',
+    nameKey: punch.nameKey || '',
+  };
+
   const editRef = doc(collection(db, 'punch_edits'));
   const batch = writeBatch(db);
   batch.update(doc(db, 'punches', punchId), updated);
@@ -153,21 +180,25 @@ async function editPunch(button) {
     punchId,
     type: 'edit',
     original: {
-      name: punch.name || '',
-      nameKey: punch.nameKey || '',
+      ...identity,
       action: punch.action || '',
       timestampMs: Number(punch.timestampMs || 0),
       dateKey: punch.dateKey || '',
       weekKey: punch.weekKey || '',
+      siteId,
+      branch: siteId,
+      agencyId,
       source: punch.source || '',
     },
     updated: {
-      name,
-      nameKey,
+      ...identity,
       action,
       timestampMs,
       dateKey: updated.dateKey,
       weekKey: updated.weekKey,
+      siteId,
+      branch: siteId,
+      agencyId,
       source: punch.source || '',
     },
     companyId,
@@ -180,7 +211,7 @@ async function editPunch(button) {
   });
   await batch.commit();
 
-  showMessage('Punch updated and the original value was preserved in the edit history.');
+  showMessage('Punch updated. Worker identity and branch were preserved in the edit history.');
   window.setTimeout(() => window.location.reload(), 250);
 }
 
