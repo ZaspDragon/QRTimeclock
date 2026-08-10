@@ -41,6 +41,12 @@ const ACTION_LABELS = {
   clock_out: 'Clock Out',
 };
 
+// Known canonical identities are used only to choose among existing duplicate
+// profiles. No employee or punch record is rewritten by this mapping.
+const KNOWN_CANONICAL_WORKERS = new Map([
+  ['donald gibson|OH01|sterling_staffing', 'EMP-1058'],
+]);
+
 let saving = false;
 
 function dbInstance() {
@@ -110,6 +116,17 @@ function employeeAgency(row) {
   return String(row?.agencyId || row?.staffingAgencyId || '').trim();
 }
 
+function employeeIdentityValues(row) {
+  return [
+    row?.id,
+    row?.employeeId,
+    row?.employeeID,
+    row?.employeeNumber,
+    row?.canonicalEmployeeId,
+    row?.workerId,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
 function isActive(row) {
   return row?.active !== false && !['inactive', 'terminated', 'merged', 'deleted', 'removed', 'archived'].includes(String(row?.status || '').toLowerCase());
 }
@@ -158,6 +175,43 @@ function installAgencyControl() {
   });
 }
 
+function stickyIdentityKey(name, siteId, agencyId) {
+  return `canonicalWorkerIdentity:${siteId}:${agencyId}:${nameKey(name)}`;
+}
+
+async function loadStickyWorker(db, name, siteId, agencyId) {
+  const key = stickyIdentityKey(name, siteId, agencyId);
+  const employeeId = String(localStorage.getItem(key) || '').trim();
+  if (!employeeId) return null;
+
+  try {
+    const snapshot = await getDoc(doc(db, 'employees', employeeId));
+    if (!snapshot.exists()) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    const row = { id: snapshot.id, ...snapshot.data() };
+    const site = employeeSite(row);
+    if (
+      !isActive(row)
+      || normalizeName(employeeName(row)) !== normalizeName(name)
+      || (site && site !== siteId)
+    ) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return row;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveStickyWorker(name, siteId, agencyId, employee) {
+  const employeeId = String(employee?.employeeId || employee?.id || '').trim();
+  if (!employeeId) return;
+  localStorage.setItem(stickyIdentityKey(name, siteId, agencyId), employeeId);
+}
+
 async function loadActiveExactNameMatches(db, name, siteId) {
   const normalized = normalizeName(name);
   const key = nameKey(name);
@@ -184,12 +238,33 @@ async function loadActiveExactNameMatches(db, name, siteId) {
     );
 }
 
-function chooseExistingWorker(matches, agencyId) {
+function chooseExistingWorker(matches, name, siteId, agencyId) {
   if (!matches.length) return { employee: null, agencyUpdate: false };
+
+  const knownIdentity = KNOWN_CANONICAL_WORKERS.get(`${normalizeName(name)}|${siteId}|${agencyId}`);
+  if (knownIdentity) {
+    const knownMatches = matches.filter((row) => employeeIdentityValues(row).includes(knownIdentity));
+    if (knownMatches.length === 1) {
+      return {
+        employee: knownMatches[0],
+        agencyUpdate: employeeAgency(knownMatches[0]) !== agencyId,
+      };
+    }
+  }
 
   const exactAgency = matches.filter((row) => employeeAgency(row) === agencyId);
   if (exactAgency.length === 1) return { employee: exactAgency[0], agencyUpdate: false };
+
   if (exactAgency.length > 1) {
+    const canonical = exactAgency.filter((row) => {
+      const canonicalId = String(row.canonicalEmployeeId || '').trim();
+      return canonicalId && employeeIdentityValues(row).includes(canonicalId);
+    });
+    if (canonical.length === 1) return { employee: canonical[0], agencyUpdate: false };
+
+    const numbered = exactAgency.filter((row) => /^EMP[-_ ]?\d+$/i.test(String(row.employeeNumber || row.employeeID || '')));
+    if (numbered.length === 1) return { employee: numbered[0], agencyUpdate: false };
+
     throw new Error('Duplicate worker profiles already exist for this name and agency. Ask a manager to merge them before punching.');
   }
 
@@ -205,8 +280,16 @@ function chooseExistingWorker(matches, agencyId) {
     return { employee: matches[0], agencyUpdate: employeeAgency(matches[0]) !== agencyId };
   }
 
-  // Multiple active same-name profiles are an existing data-repair problem.
-  // Never create yet another profile from the public clock.
+  const canonical = matches.filter((row) => {
+    const canonicalId = String(row.canonicalEmployeeId || '').trim();
+    return canonicalId && employeeIdentityValues(row).includes(canonicalId);
+  });
+  if (canonical.length === 1) {
+    return { employee: canonical[0], agencyUpdate: employeeAgency(canonical[0]) !== agencyId };
+  }
+
+  // Multiple unresolved active same-name profiles are still blocked so the public
+  // clock never creates another duplicate or guesses between two real people.
   throw new Error('More than one active worker profile uses this name. Ask a manager to merge the duplicates before punching.');
 }
 
@@ -251,8 +334,11 @@ async function createNewCanonicalWorker(db, name, siteId, agencyId) {
 }
 
 async function resolveWorker(db, name, siteId, agencyId) {
+  const sticky = await loadStickyWorker(db, name, siteId, agencyId);
+  if (sticky) return sticky;
+
   const matches = await loadActiveExactNameMatches(db, name, siteId);
-  const choice = chooseExistingWorker(matches, agencyId);
+  const choice = chooseExistingWorker(matches, name, siteId, agencyId);
 
   if (!choice.employee) {
     return createNewCanonicalWorker(db, name, siteId, agencyId);
@@ -326,6 +412,7 @@ async function savePunch(action) {
     status: 'active',
   });
 
+  saveStickyWorker(name, siteId, agencyId, employee);
   localStorage.setItem(duplicateKey, String(nowMs));
   localStorage.setItem('workerPunchName', employeeName(employee) || name);
   localStorage.setItem('workerPunchAgency', agencyId);
@@ -374,4 +461,4 @@ if (document.readyState === 'loading') {
   installAgencyControl();
 }
 
-console.info('[QRTimeclock] Canonical public-clock duplicate prevention installed.');
+console.info('[QRTimeclock] Canonical public-clock returning-worker identity guard installed.');
