@@ -112,6 +112,28 @@ function setStatus(message, isError = false) {
   el.style.borderColor = isError ? 'rgba(255,90,90,.6)' : '';
 }
 
+function buildSafeIdentityPayload(row, primary) {
+  const payload = {
+    employeeId: primary.id,
+    workerId: primary.id,
+    canonicalEmployeeId: primary.id,
+    employeeNumber: primary.employeeNumber || row.data.employeeNumber || primary.id,
+    name: TARGET_NAME,
+    nameKey: TARGET_NAME_KEY,
+    agencyId: TARGET_AGENCY,
+    assignedSiteId: SITE_ID,
+    siteId: row.data.siteId || SITE_ID,
+    brianSterlingConsolidatedAt: serverTimestamp(),
+  };
+
+  // Firestore rejects undefined values. Only update optional copied-name fields
+  // when the existing document actually contains those fields.
+  if (row.data.workerName !== undefined) payload.workerName = TARGET_NAME;
+  if (row.data.employeeName !== undefined) payload.employeeName = TARGET_NAME;
+
+  return payload;
+}
+
 async function consolidateBrianToSterling() {
   const profiles = await loadBrianProfiles();
   if (!profiles.length) throw new Error('No Brian Lewis Jr profile was found in OH01.');
@@ -139,20 +161,7 @@ async function consolidateBrianToSterling() {
     const refs = await collectRefs(collectionName, allIds);
     const operations = refs.map((row) => ({
       ref: row.ref,
-      payload: {
-        employeeId: primary.id,
-        workerId: primary.id,
-        canonicalEmployeeId: primary.id,
-        employeeNumber: primary.employeeNumber || row.data.employeeNumber || primary.id,
-        name: TARGET_NAME,
-        workerName: row.data.workerName !== undefined ? TARGET_NAME : row.data.workerName,
-        employeeName: row.data.employeeName !== undefined ? TARGET_NAME : row.data.employeeName,
-        nameKey: TARGET_NAME_KEY,
-        agencyId: TARGET_AGENCY,
-        assignedSiteId: SITE_ID,
-        siteId: row.data.siteId || SITE_ID,
-        brianSterlingConsolidatedAt: serverTimestamp(),
-      },
+      payload: buildSafeIdentityPayload(row, primary),
     }));
     await commitInChunks(operations);
     changedRecords += operations.length;
