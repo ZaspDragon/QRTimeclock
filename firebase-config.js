@@ -1,4 +1,4 @@
-import './canonical-public-clock.js?v=20260810-1';
+import './canonical-public-clock.js?v=20260810-2';
 import './theme-toggle.js?v=20260728-2';
 import './public-clock-context.js?v=20260802-1';
 import './public-load-failure-guard.js?v=20260801-1';
