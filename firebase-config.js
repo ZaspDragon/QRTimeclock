@@ -58,5 +58,8 @@ if (typeof window !== 'undefined') {
     import('./worker-hours-summary.js?v=20260802-1').catch((error) => {
       console.warn('Worker hours summary failed to load:', error.message);
     });
+    import('./cross-agency-duplicate-repair.js?v=20260810-1').catch((error) => {
+      console.warn('Cross-agency duplicate repair tool failed to load:', error.message);
+    });
   });
 }
