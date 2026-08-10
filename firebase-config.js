@@ -61,5 +61,8 @@ if (typeof window !== 'undefined') {
     import('./cross-agency-duplicate-repair.js?v=20260810-1').catch((error) => {
       console.warn('Cross-agency duplicate repair tool failed to load:', error.message);
     });
+    import('./brian-sterling-consolidation.js?v=20260810-1').catch((error) => {
+      console.warn('Brian Sterling consolidation tool failed to load:', error.message);
+    });
   });
 }
