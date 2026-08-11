@@ -1,3 +1,4 @@
+import './public-clock-document-id-fix.js?v=20260811-1';
 import './public-clock-permission-hotfix.js?v=20260811-2';
 import './canonical-public-clock.js?v=20260810-2';
 import './theme-toggle.js?v=20260728-2';
