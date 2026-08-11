@@ -1,4 +1,4 @@
-import './public-clock-permission-hotfix.js?v=20260811-1';
+import './public-clock-permission-hotfix.js?v=20260811-2';
 import './canonical-public-clock.js?v=20260810-2';
 import './theme-toggle.js?v=20260728-2';
 import './public-clock-context.js?v=20260802-1';
@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
     import('./new-worker-first-punch-hotfix.js?v=20260801-2').catch((error) => {
       console.warn('New-worker first-punch hotfix failed to load:', error.message);
     });
-    import('./name-only-worker-resolver.js?v=20260801-1').catch((error) => {
+    import('./name-only-worker-resolver.js?v=20260811-2').catch((error) => {
       console.warn('Name-only worker resolver failed to load:', error.message);
     });
     import('./punch-exceptions-dashboard-v2.js?v=20260717-2').catch((error) => {
@@ -53,7 +53,7 @@ if (typeof window !== 'undefined') {
     import('./temp-self-service-compat.js?v=20260726-1').catch((error) => {
       console.warn('Temp worker self-service compatibility failed to load:', error.message);
     });
-    import('./name-only-time-lookup.js?v=20260802-3').catch((error) => {
+    import('./name-only-time-lookup.js?v=20260811-1').catch((error) => {
       console.warn('Exact-name time lookup failed to load:', error.message);
     });
     import('./worker-hours-summary.js?v=20260802-1').catch((error) => {

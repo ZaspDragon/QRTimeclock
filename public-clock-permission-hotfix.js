@@ -1,20 +1,10 @@
 import { getApp, getApps, initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
-import {
-  addDoc,
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  getFirestore,
-  limit,
-  query,
-  serverTimestamp,
-  setDoc,
-  where,
-} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
+import { addDoc, collection, doc, getDoc, getFirestore, serverTimestamp, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
+import { findPublicWorkerMatches, chooseCanonicalPublicWorker, employeeName, employeeSite, employeeAgency, isActiveWorker, normalizeWorkerName, workerNameKey } from './public-worker-lookup-v3.js';
 
-// Emergency public-clock writer aligned with the currently deployed Firestore rules.
-// Loaded before older clock handlers so a worker tap produces exactly one write.
+// Public clock writer aligned with Firestore rules.
+// Every worker keeps access to Clock In, Start Lunch, End Lunch and Clock Out.
+// No punch history is deleted or migrated here.
 
 const FIREBASE_CONFIG = {
   apiKey: 'AIzaSyB4xdaxbkXDRILPe2nGZuGCS-PXf35bk3o',
@@ -24,7 +14,6 @@ const FIREBASE_CONFIG = {
   messagingSenderId: '232535382723',
   appId: '1:232535382723:web:9fe08f4961d87ba4062076',
 };
-
 const COMPANY_ID = 'chadwell';
 const VALID_SITES = new Set(['OH01', 'OHC']);
 const VALID_AGENCIES = new Map([
@@ -38,34 +27,21 @@ const LABELS = {
   end_lunch: 'End Lunch',
   clock_out: 'Clock Out',
 };
-
 let saving = false;
 
 function dbInstance() {
   const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
   return getFirestore(app);
 }
-
 function prettyName(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 }
-
-function normalizeName(value) {
-  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function nameKey(value) {
-  return normalizeName(value).replaceAll(' ', '_');
-}
-
 function safePart(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'worker';
 }
-
 function dateKey(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
-
 function weekKey(d) {
   const monday = new Date(d);
   const day = monday.getDay();
@@ -73,35 +49,16 @@ function weekKey(d) {
   monday.setHours(0, 0, 0, 0);
   return dateKey(monday);
 }
-
 function selectedSite() {
   const qs = String(new URLSearchParams(location.search).get('site') || '').toUpperCase();
   if (VALID_SITES.has(qs)) return qs;
   const value = String(document.getElementById('workerBranchSelect')?.value || '').toUpperCase();
   return VALID_SITES.has(value) ? value : '';
 }
-
 function selectedAgency() {
-  const value = String(document.getElementById('workerAgencySelect')?.value || '').trim();
+  const value = String(document.getElementById('workerAgencySelect')?.value || localStorage.getItem('workerPunchAgency') || '').trim();
   return VALID_AGENCIES.has(value) ? value : '';
 }
-
-function employeeName(row) {
-  return String(row?.name || row?.employeeName || row?.displayName || row?.fullName || '').trim();
-}
-
-function employeeSite(row) {
-  return String(row?.siteId || row?.assignedSiteId || row?.branch || row?.branchId || '').trim().toUpperCase();
-}
-
-function employeeAgency(row) {
-  return String(row?.agencyId || row?.staffingAgencyId || '').trim();
-}
-
-function isActive(row) {
-  return row?.active !== false && !['inactive', 'terminated', 'merged', 'deleted', 'removed', 'archived'].includes(String(row?.status || '').toLowerCase());
-}
-
 function setMessage(message, error = false) {
   const lookup = document.getElementById('workerLookupStatus');
   const status = document.getElementById('workerStatusMessage');
@@ -113,14 +70,12 @@ function setMessage(message, error = false) {
   if (status) status.textContent = message;
   if (state) state.textContent = error ? 'Needs attention' : 'Saved';
 }
-
 function disableButtons(disabled) {
   document.querySelectorAll('.worker-action-btn').forEach(btn => {
     btn.disabled = disabled;
     btn.setAttribute('aria-busy', disabled ? 'true' : 'false');
   });
 }
-
 function installAgencyControl() {
   if (document.getElementById('workerAgencySelect')) return;
   const branch = document.getElementById('workerBranchSelect');
@@ -138,61 +93,46 @@ function installAgencyControl() {
   });
 }
 
-async function findWorkers(db, name, siteId) {
-  const key = nameKey(name);
-  const normalized = normalizeName(name);
-  const searches = [
-    query(collection(db, 'employees'), where('active', '==', true), where('nameKey', '==', key), limit(30)),
-    query(collection(db, 'employees'), where('status', '==', 'active'), where('nameKey', '==', key), limit(30)),
-    query(collection(db, 'employees'), where('active', '==', true), limit(500)),
-    query(collection(db, 'employees'), where('status', '==', 'active'), limit(500)),
-  ];
-  const rows = new Map();
-  const results = await Promise.allSettled(searches.map(q => getDocs(q)));
-  for (const result of results) {
-    if (result.status !== 'fulfilled') continue;
-    result.value.docs.forEach(snap => rows.set(snap.id, { id: snap.id, ...snap.data() }));
+async function loadResolvedWorker(db, name, siteId, agencyId) {
+  const rememberedId = String(localStorage.getItem('publicResolvedWorkerId') || '').trim();
+  if (!rememberedId) return null;
+  try {
+    const snap = await getDoc(doc(db, 'employees', rememberedId));
+    if (!snap.exists()) return null;
+    const row = { id: snap.id, ...snap.data() };
+    const site = employeeSite(row);
+    if (!isActiveWorker(row)) return null;
+    if (normalizeWorkerName(employeeName(row)) !== normalizeWorkerName(name)) return null;
+    if (site && site !== siteId) return null;
+    if (employeeAgency(row) && employeeAgency(row) !== agencyId) return null;
+    return row;
+  } catch (_) {
+    return null;
   }
-  return [...rows.values()].filter(row =>
-    isActive(row) &&
-    String(row.companyId || COMPANY_ID).trim() === COMPANY_ID &&
-    normalizeName(employeeName(row)) === normalized &&
-    (!employeeSite(row) || employeeSite(row) === siteId)
-  );
-}
-
-function chooseWorker(matches, agencyId) {
-  const sameAgency = matches.filter(row => employeeAgency(row) === agencyId);
-  if (sameAgency.length === 1) return sameAgency[0];
-  if (sameAgency.length > 1) {
-    const canonical = sameAgency.filter(row => String(row.canonicalEmployeeId || '').trim() === row.id);
-    if (canonical.length === 1) return canonical[0];
-    throw new Error('Duplicate worker profiles exist for this name. Ask a manager to merge them before punching.');
-  }
-  if (matches.length === 1) return matches[0];
-  if (matches.length > 1) {
-    const canonical = matches.filter(row => String(row.canonicalEmployeeId || '').trim() === row.id);
-    if (canonical.length === 1) return canonical[0];
-    throw new Error('More than one active worker profile uses this name. Ask a manager to merge them before punching.');
-  }
-  return null;
 }
 
 async function ensureWorker(db, name, siteId, agencyId) {
-  const matches = await findWorkers(db, name, siteId);
-  let worker = chooseWorker(matches, agencyId);
+  let worker = await loadResolvedWorker(db, name, siteId, agencyId);
+  if (!worker) {
+    const matches = await findPublicWorkerMatches(name, siteId, agencyId);
+    worker = chooseCanonicalPublicWorker(matches);
+    if (!worker && matches.length > 1) {
+      throw new Error('More than one separate worker uses that exact name. Ask a manager to select the correct profile before punching.');
+    }
+  }
 
   if (!worker) {
-    const id = `public_canonical_${safePart(siteId)}_${safePart(nameKey(name))}`;
+    const id = `public_canonical_${safePart(siteId)}_${safePart(workerNameKey(name))}`;
     const ref = doc(db, 'employees', id);
     const existing = await getDoc(ref).catch(() => null);
-    if (existing?.exists()) worker = { id: existing.id, ...existing.data() };
-    else {
-      const employeeNumber = `PUBLIC-${safePart(siteId).toUpperCase()}-${safePart(nameKey(name)).toUpperCase()}`.slice(0, 60);
+    if (existing?.exists()) {
+      worker = { id: existing.id, ...existing.data() };
+    } else {
+      const employeeNumber = `PUBLIC-${safePart(siteId).toUpperCase()}-${safePart(workerNameKey(name)).toUpperCase()}`.slice(0, 60);
       const payload = {
         name,
-        nameKey: nameKey(name),
-        normalizedName: nameKey(name),
+        nameKey: workerNameKey(name),
+        normalizedName: workerNameKey(name),
         employeeNumber,
         employeeNumberKey: employeeNumber.toLowerCase(),
         companyId: COMPANY_ID,
@@ -205,23 +145,26 @@ async function ensureWorker(db, name, siteId, agencyId) {
         employeeId: id,
         canonicalEmployeeId: id,
         source: 'auto_created',
-        identityVersion: 2,
+        identityVersion: 3,
         updatedAt: serverTimestamp(),
         createdAt: serverTimestamp(),
       };
       await setDoc(ref, payload);
-      return { id, ...payload };
+      worker = { id, ...payload };
     }
   }
 
   const id = String(worker.employeeId || worker.id || '').trim();
   if (!id) throw new Error('Worker ID could not be verified.');
 
+  // Keep current Firestore-compatible profile normalization so public punches are
+  // accepted. Historical punches are not touched; only the active worker profile
+  // may receive missing/current agency metadata.
   if (employeeAgency(worker) !== agencyId || !worker.nameKey || !worker.employeeNumber || worker.source !== 'auto_created') {
     const employeeNumber = String(worker.employeeNumber || worker.employeeID || worker.employeeId || id);
     const patch = {
       name: employeeName(worker) || name,
-      nameKey: nameKey(employeeName(worker) || name),
+      nameKey: workerNameKey(employeeName(worker) || name),
       employeeNumber,
       companyId: String(worker.companyId || COMPANY_ID),
       siteId: employeeSite(worker) || siteId,
@@ -233,9 +176,10 @@ async function ensureWorker(db, name, siteId, agencyId) {
       updatedAt: serverTimestamp(),
     };
     await setDoc(doc(db, 'employees', worker.id || id), patch, { merge: true });
-    worker = { ...worker, ...patch, agencyId };
+    worker = { ...worker, ...patch };
   }
 
+  localStorage.setItem('publicResolvedWorkerId', String(worker.id || worker.employeeId || id));
   return worker;
 }
 
@@ -243,7 +187,7 @@ async function savePunch(action) {
   const name = prettyName(document.getElementById('workerNameInput')?.value);
   const siteId = selectedSite();
   const agencyId = selectedAgency();
-  if (normalizeName(name).length < 2) throw new Error('Type your first and last name before punching.');
+  if (normalizeWorkerName(name).length < 2) throw new Error('Type your first and last name before punching.');
   if (!siteId) throw new Error('Choose OH01 or OHC before punching.');
   if (!agencyId) throw new Error('Choose your staffing agency before punching.');
   if (!LABELS[action]) throw new Error('That punch type is not valid.');
@@ -268,7 +212,7 @@ async function savePunch(action) {
     canonicalEmployeeId: String(worker.canonicalEmployeeId || employeeId),
     employeeNumber: String(worker.employeeNumber || employeeId),
     name: employeeName(worker) || name,
-    nameKey: nameKey(employeeName(worker) || name),
+    nameKey: workerNameKey(employeeName(worker) || name),
     action,
     timestamp: serverTimestamp(),
     timestampMs: nowMs,
@@ -303,18 +247,15 @@ function actionFromButton(button) {
 }
 
 function install() {
-  if (document.documentElement.dataset.publicClockPermissionHotfix === 'true') return;
-  document.documentElement.dataset.publicClockPermissionHotfix = 'true';
-
+  if (document.documentElement.dataset.publicClockPermissionHotfixV2 === 'true') return;
+  document.documentElement.dataset.publicClockPermissionHotfixV2 = 'true';
   document.addEventListener('click', async event => {
     const button = event.target.closest?.('.worker-action-btn');
     const card = document.getElementById('workerCard');
     if (!button || !card || card.classList.contains('hidden') || saving) return;
-
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-
     saving = true;
     disableButtons(true);
     const action = actionFromButton(button);
@@ -324,16 +265,15 @@ function install() {
       await savePunch(action);
       window.setTimeout(() => window.location.reload(), 900);
     } catch (error) {
-      console.error('[public-clock-permission-hotfix]', error);
+      console.error('[public-clock-permission-hotfix-v2]', error);
       setMessage(error?.message || 'The punch could not be saved. Please try again.', true);
       saving = false;
       disableButtons(false);
     }
   }, true);
-
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installAgencyControl, { once: true });
   else installAgencyControl();
 }
 
 install();
-console.info('[QRTimeclock] Public clock Firestore permission hotfix installed.');
+console.info('[QRTimeclock] Rules-safe public clock writer installed.');
