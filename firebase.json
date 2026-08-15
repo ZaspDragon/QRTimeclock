@@ -16,7 +16,9 @@
       "README.md",
       "firestore.rules",
       "firestore.indexes.json",
-      "functions/**"
+      "functions/**",
+      "archive/**",
+      "*.md"
     ],
     "cleanUrls": true,
     "headers": [

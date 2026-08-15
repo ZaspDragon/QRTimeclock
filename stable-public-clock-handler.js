@@ -1,3 +1,4 @@
+import { registerPunchWriter, PUNCH_WRITER_PRIORITY } from './punch-writer-lock.js';
 import { getApp, getApps, initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
 import {
   addDoc,
@@ -254,13 +255,8 @@ async function savePunch(action) {
 }
 
 function install() {
-  document.addEventListener('click', async (event) => {
-    const button = event.target.closest?.('.worker-action-btn');
-    if (!button || saving) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
+  registerPunchWriter('stable-public-clock-handler', PUNCH_WRITER_PRIORITY.STABLE, async (_a, button) => {
+    if (saving) return;
     saving = true;
     disableButtons(true);
     const action = String(button.dataset.action || '');
@@ -276,7 +272,7 @@ function install() {
       saving = false;
       disableButtons(false);
     }
-  }, true);
+  });
   console.info('[QRTimeclock] Returning-worker-safe public clock handler installed.');
 }
 
