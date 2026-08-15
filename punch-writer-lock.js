@@ -58,15 +58,18 @@ document.addEventListener('click', async (event) => {
   // No hotfix writer loaded (yet): let the built-in app.js handler run.
   if (!writers.length) return;
 
-  // Hard double-tap guard: one punch attempt at a time, no matter how many
-  // times a worker taps a laggy phone screen.
+  const writer = pickWriter(button);
+  // No hotfix writer applies to this tap (e.g. the worker card is hidden):
+  // leave the event alone so app.js's built-in handler still works.
+  if (!writer) return;
+
   event.preventDefault();
   event.stopPropagation();
   event.stopImmediatePropagation();
-  if (busy) return;
 
-  const writer = pickWriter(button);
-  if (!writer) return;
+  // Hard double-tap guard: one punch attempt at a time, no matter how many
+  // times a worker taps a laggy phone screen.
+  if (busy) return;
 
   busy = true;
   try {
