@@ -121,6 +121,8 @@ assert.throws(() => createStore(employees).save(payload('emp_oh01', 'clock_in', 
 assert.throws(() => createStore(employees).save(payload('emp_oh01', 'bad_action')), /action/, 'invalid action fails');
 
 const rules = readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
+const publicWriter = readFileSync(new URL('../public-clock-document-id-fix.js', import.meta.url), 'utf8');
+assert(/const stateIsStale = action === 'clock_in'/.test(publicWriter), 'only Clock In may recover an 18-hour stale shift');
 assert(!/allow\s+read\s*,\s*write\s*:\s*if\s+true/.test(rules), 'rules do not use allow read, write: if true');
 assert(/match \/punchGuards\/\{guardId\}[\s\S]*allow list: if false/.test(rules), 'public cannot list punchGuards');
 assert(/match \/punchStates\/\{stateId\}[\s\S]*allow list: if false/.test(rules), 'public cannot list punchStates');
