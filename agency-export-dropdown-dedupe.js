@@ -57,11 +57,35 @@ function attachAgencyExportDedupe() {
   select.dataset.dedupeAttached = 'true';
   dedupeAgencyWorkerOptions(select);
 
-  const observer = new MutationObserver(() => dedupeAgencyWorkerOptions(select));
+  // Debounced: the dedupe itself removes options, which would otherwise
+  // re-trigger this observer on every render.
+  let queued = false;
+  const observer = new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      dedupeAgencyWorkerOptions(select);
+    });
+  });
   observer.observe(select, { childList: true, subtree: true });
+
+  // The select exists now, so stop scanning the whole page.
+  pageObserver.disconnect();
 }
 
-const pageObserver = new MutationObserver(attachAgencyExportDedupe);
+// Waits for the Agency Export select to appear, then disconnects. Previously
+// this stayed connected for the life of the page and ran on every single DOM
+// mutation, which made manager tables (live punches, timesheets) stutter.
+let pageScanQueued = false;
+const pageObserver = new MutationObserver(() => {
+  if (pageScanQueued) return;
+  pageScanQueued = true;
+  requestAnimationFrame(() => {
+    pageScanQueued = false;
+    attachAgencyExportDedupe();
+  });
+});
 pageObserver.observe(document.documentElement, { childList: true, subtree: true });
 
 if (document.readyState === 'loading') {

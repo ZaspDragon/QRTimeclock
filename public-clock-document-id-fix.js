@@ -1,3 +1,4 @@
+import { registerPunchWriter, PUNCH_WRITER_PRIORITY } from './punch-writer-lock.js';
 import { getApp, getApps, initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
 import { doc, getDoc, getFirestore, runTransaction, serverTimestamp, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 import {
@@ -375,35 +376,32 @@ function install() {
   if (document.documentElement.dataset.publicClockDocumentIdFix === 'true') return;
   document.documentElement.dataset.publicClockDocumentIdFix = 'true';
 
-  // Prevent older public/canonical writers from installing when this module loads first.
-  document.documentElement.dataset.publicClockPermissionHotfixV2 = 'true';
-  document.documentElement.dataset.canonicalPublicClockInstalled = 'true';
+  registerPunchWriter(
+    'public-clock-document-id-fix',
+    PUNCH_WRITER_PRIORITY.DOCUMENT_ID_FIX,
+    async (_action, button) => {
+      if (saving) return;
+      saving = true;
+      disableButtons(true);
+      const action = actionFromButton(button);
+      const name = prettyName(document.getElementById('workerNameInput')?.value);
+      setMessage(`Saving ${LABELS[action] || 'punch'} for ${name || 'worker'}...`);
 
-  document.addEventListener('click', async (event) => {
-    const button = event.target.closest?.('.worker-action-btn');
-    const card = document.getElementById('workerCard');
-    if (!button || !card || card.classList.contains('hidden') || saving) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-
-    saving = true;
-    disableButtons(true);
-    const action = actionFromButton(button);
-    const name = prettyName(document.getElementById('workerNameInput')?.value);
-    setMessage(`Saving ${LABELS[action] || 'punch'} for ${name || 'worker'}...`);
-
-    try {
-      await savePunch(action);
-      window.setTimeout(() => window.location.reload(), 900);
-    } catch (error) {
-      console.error('[public-clock-document-id-fix]', error);
-      setMessage(error?.message || 'The punch could not be saved. Please try again.', true);
-      saving = false;
-      disableButtons(false);
+      try {
+        await savePunch(action);
+        window.setTimeout(() => window.location.reload(), 900);
+      } catch (error) {
+        console.error('[public-clock-document-id-fix]', error);
+        setMessage(error?.message || 'The punch could not be saved. Please try again.', true);
+        saving = false;
+        disableButtons(false);
+      }
+    },
+    () => {
+      const card = document.getElementById('workerCard');
+      return Boolean(card) && !card.classList.contains('hidden');
     }
-  }, true);
+  );
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', installAgencyControl, { once: true });

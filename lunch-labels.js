@@ -31,13 +31,27 @@ function initializeLunchLabels() {
     window.setTimeout(() => replaceLunchText(), delay);
   });
 
+  // Batched to one pass per animation frame. Previously every inserted node
+  // triggered its own full querySelectorAll sweep, which is expensive when the
+  // manager tables render hundreds of rows at once.
+  let pending = [];
+  let queued = false;
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       mutation.addedNodes.forEach((node) => {
-        if (node.nodeType !== Node.ELEMENT_NODE) return;
-        replaceLunchText(node);
+        if (node.nodeType === Node.ELEMENT_NODE) pending.push(node);
       });
     }
+    if (!pending.length || queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      const nodes = pending;
+      pending = [];
+      nodes.forEach((node) => {
+        if (node.isConnected) replaceLunchText(node);
+      });
+    });
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
