@@ -124,7 +124,7 @@ const rules = readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8
 assert(!/allow\s+read\s*,\s*write\s*:\s*if\s+true/.test(rules), 'rules do not use allow read, write: if true');
 assert(/match \/punchGuards\/\{guardId\}[\s\S]*allow list: if false/.test(rules), 'public cannot list punchGuards');
 assert(/match \/punchStates\/\{stateId\}[\s\S]*allow list: if false/.test(rules), 'public cannot list punchStates');
-assert(/allow update:\s*if publicPunchStateUpdate/.test(rules), 'existing punchState can be updated by public transaction rules');
+assert(/allow update:\s*if safePublicPunchStateUpdate/.test(rules), 'existing punchState can be updated by public transaction rules');
 assert(/allow delete:\s*if false/.test(rules), 'public deletes remain denied');
 
 console.log('public punch regression passed');
