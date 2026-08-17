@@ -1,3 +1,4 @@
+import { registerPunchWriter, PUNCH_WRITER_PRIORITY } from './punch-writer-lock.js';
 import { getApp, getApps, initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
 import { addDoc, collection, doc, getDoc, getFirestore, serverTimestamp, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 import { findPublicWorkerMatches, chooseCanonicalPublicWorker, employeeName, employeeSite, employeeAgency, isActiveWorker, normalizeWorkerName, workerNameKey } from './public-worker-lookup-v3.js';
@@ -249,13 +250,9 @@ function actionFromButton(button) {
 function install() {
   if (document.documentElement.dataset.publicClockPermissionHotfixV2 === 'true') return;
   document.documentElement.dataset.publicClockPermissionHotfixV2 = 'true';
-  document.addEventListener('click', async event => {
-    const button = event.target.closest?.('.worker-action-btn');
+  registerPunchWriter('public-clock-permission-hotfix', PUNCH_WRITER_PRIORITY.PERMISSION_HOTFIX, async (_requestedAction, button) => {
     const card = document.getElementById('workerCard');
-    if (!button || !card || card.classList.contains('hidden') || saving) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
+    if (!card || card.classList.contains('hidden') || saving) return;
     saving = true;
     disableButtons(true);
     const action = actionFromButton(button);
@@ -270,7 +267,10 @@ function install() {
       saving = false;
       disableButtons(false);
     }
-  }, true);
+  }, () => {
+    const card = document.getElementById('workerCard');
+    return Boolean(card) && !card.classList.contains('hidden');
+  });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installAgencyControl, { once: true });
   else installAgencyControl();
 }
