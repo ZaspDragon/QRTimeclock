@@ -23,7 +23,7 @@ function createStore(seed = {}) {
       assert(ACTIONS.includes(action), 'valid action required');
       const stateKey = `${worker.branch}|${worker.agency}|${workerId}`;
       const state = data.states[stateKey];
-      const stale = state && timestampMs - state.timestampMs >= STALE_SHIFT_MS;
+      const stale = action === 'clock_in' && state && timestampMs - state.timestampMs >= STALE_SHIFT_MS;
       if (state && !stale) {
         if (state.action === action && timestampMs - state.timestampMs <= MINUTE) return state.punchId;
         assert(NEXT[state.action]?.includes(action), `invalid sequence ${state.action} -> ${action}`);
@@ -116,6 +116,7 @@ assert.equal(store.rows({ role: 'owner', branches: ['OH01', 'OHC'] }).find((row)
 
 store.punch('donald', 'clock_in', base);
 assert.throws(() => store.punch('donald', 'end_lunch', base + HOUR), /invalid sequence/, 'invalid sequence is rejected clearly');
+assert.throws(() => store.punch('donald', 'end_lunch', base + STALE_SHIFT_MS + MINUTE), /invalid sequence/, 'stale state does not permit End Lunch without Start Lunch');
 const recovered = store.punch('donald', 'clock_in', base + STALE_SHIFT_MS + MINUTE);
 assert(store.data.punches[recovered], 'stale incomplete shift permits safe new clock in');
 
