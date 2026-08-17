@@ -158,13 +158,17 @@ async function editPunch(button) {
     formatLocalEditValue(punch.timestampMs)
   );
   if (enteredDateTime === null) return;
+  const enteredReason = window.prompt('Reason required for this punch edit:');
+  if (enteredReason === null) return;
 
   const action = String(enteredAction || '').trim().toLowerCase();
   const timestampMs = parseLocalEditValue(enteredDateTime);
+  const editReason = String(enteredReason || '').trim();
   if (!['clock_in', 'start_lunch', 'end_lunch', 'clock_out'].includes(action)) {
     throw new Error('Use clock_in, start_lunch, end_lunch, or clock_out.');
   }
   if (!timestampMs) throw new Error('Use date/time format YYYY-MM-DD HH:MM.');
+  if (editReason.length < 2) throw new Error('Enter a clear reason for this punch edit.');
 
   button.disabled = true;
   button.setAttribute('aria-busy', 'true');
@@ -187,6 +191,8 @@ async function editPunch(button) {
     branch: siteId,
     editedAt: serverTimestamp(),
     editedBy: editor,
+    editedByUid: user.uid,
+    editReason,
     updatedAt: serverTimestamp(),
   };
   if (agencyId) updated.agencyId = agencyId;
@@ -221,6 +227,8 @@ async function editPunch(button) {
     agencyId,
     editedBy: editor,
     editedByUid: user.uid,
+    reason: editReason,
+    editReason,
     editedAt: serverTimestamp(),
   });
   await batch.commit();

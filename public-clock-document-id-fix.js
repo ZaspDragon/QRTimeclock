@@ -1,5 +1,5 @@
 import { getApp, getApps, initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
-import { addDoc, collection, doc, getDoc, getFirestore, serverTimestamp, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
+import { doc, getDoc, getFirestore, runTransaction, serverTimestamp, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 import {
   findPublicWorkerMatches,
   chooseCanonicalPublicWorker,
@@ -41,6 +41,14 @@ const LABELS = {
 };
 
 let saving = false;
+const DUPLICATE_WINDOW_MS = 60 * 1000;
+const STALE_SHIFT_MS = 18 * 60 * 60 * 1000;
+const ALLOWED_NEXT_ACTIONS = {
+  clock_in: new Set(['start_lunch', 'clock_out']),
+  start_lunch: new Set(['end_lunch', 'clock_out']),
+  end_lunch: new Set(['clock_out']),
+  clock_out: new Set(['clock_in']),
+};
 
 function dbInstance() {
   const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
@@ -58,6 +66,22 @@ function safePart(value) {
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 48) || 'worker';
+}
+
+async function stableKey(prefix, parts) {
+  const bytes = new TextEncoder().encode(parts.join('|'));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const hash = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
+  return `${prefix}_${hash.slice(0, 40)}`;
+}
+
+function sequenceError(action, lastAction) {
+  if (action === 'clock_in') return 'You already have an open shift. Ask a manager to correct the earlier punch, or clock out first.';
+  if (action === 'start_lunch') return lastAction === 'start_lunch'
+    ? 'Lunch has already started. Use End Lunch when you return.'
+    : 'Start Lunch requires an open shift. Clock in first.';
+  if (action === 'end_lunch') return 'End Lunch requires a Start Lunch punch first.';
+  return 'Clock Out requires an open shift. Clock in first.';
 }
 
 function dateKey(date) {
@@ -245,13 +269,10 @@ async function savePunch(action) {
 
   const now = new Date();
   const nowMs = Date.now();
-  const guard = `publicClockDocId:${employeeDocId}:${action}:${dateKey(now)}`;
-  const previous = Number(localStorage.getItem(guard) || 0);
-  if (previous && nowMs - previous < 60_000) {
-    throw new Error(`${LABELS[action]} was already saved. No second tap is needed.`);
-  }
-
-  await addDoc(collection(db, 'punches'), {
+  const windowId = Math.floor(nowMs / DUPLICATE_WINDOW_MS);
+  const guardId = await stableKey('public', [COMPANY_ID, siteId, punchAgencyId, employeeDocId, action, windowId]);
+  const stateId = await stableKey('public', [COMPANY_ID, siteId, punchAgencyId, employeeDocId]);
+  const punchPayload = {
     companyId: COMPANY_ID,
     siteId,
     siteIds: [siteId],
@@ -276,9 +297,62 @@ async function savePunch(action) {
     enforceLocation: false,
     active: true,
     status: 'active',
+    duplicateGuardKey: guardId,
+    idempotencyKey: guardId,
+    workerStateKey: stateId,
+  };
+
+  const result = await runTransaction(db, async (transaction) => {
+    const guardRef = doc(db, 'punchGuards', guardId);
+    const stateRef = doc(db, 'punchStates', stateId);
+    const guardSnapshot = await transaction.get(guardRef);
+    if (guardSnapshot.exists()) return { duplicate: true };
+
+    const stateSnapshot = await transaction.get(stateRef);
+    const previousState = stateSnapshot.exists() ? stateSnapshot.data() : null;
+    const lastAction = String(previousState?.lastAction || '');
+    const lastPunchAtMs = Number(previousState?.lastPunchAtMs || 0);
+    const stateIsStale = lastPunchAtMs > 0 && nowMs - lastPunchAtMs >= STALE_SHIFT_MS;
+
+    if (lastAction === action && !stateIsStale) {
+      if (nowMs - lastPunchAtMs <= DUPLICATE_WINDOW_MS) return { duplicate: true };
+      throw new Error(sequenceError(action, lastAction));
+    }
+    if (lastAction && !stateIsStale && !ALLOWED_NEXT_ACTIONS[lastAction]?.has(action)) {
+      throw new Error(sequenceError(action, lastAction));
+    }
+
+    transaction.set(doc(db, 'punches', guardId), punchPayload);
+    transaction.set(guardRef, {
+      duplicateGuardKey: guardId,
+      punchId: guardId,
+      companyId: COMPANY_ID,
+      siteId,
+      agencyId: punchAgencyId,
+      employeeId: employeeDocId,
+      action,
+      acceptedAtMs: nowMs,
+      createdAt: serverTimestamp(),
+      expiresAtMs: nowMs + DUPLICATE_WINDOW_MS,
+    });
+    transaction.set(stateRef, {
+      workerStateKey: stateId,
+      companyId: COMPANY_ID,
+      siteId,
+      agencyId: punchAgencyId,
+      employeeId: employeeDocId,
+      lastAction: action,
+      lastPunchAtMs: nowMs,
+      lastPunchId: guardId,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    return { duplicate: false };
   });
 
-  localStorage.setItem(guard, String(nowMs));
+  if (result.duplicate) {
+    throw new Error(`${LABELS[action]} was already saved. No second tap is needed.`);
+  }
+
   localStorage.setItem('workerPunchName', employeeName(worker) || name);
   if (document.getElementById('workerNameValue')) document.getElementById('workerNameValue').textContent = employeeName(worker) || name;
   if (document.getElementById('workerLastActionValue')) document.getElementById('workerLastActionValue').textContent = LABELS[action];
