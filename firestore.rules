@@ -615,11 +615,7 @@ service cloud.firestore {
           && inScope(request.resource.data)
         );
 
-      allow update: if (
-          publicEmployeeWrite()
-          && activeEmployee(resource.data)
-        )
-        || publicEmployeeAgencyAssignment(employeeId)
+      allow update: if publicEmployeeAgencyAssignment(employeeId)
         || (
           signedIn()
           && (isOwnerOrSuperAdmin() || isAdmin() || isManager())
