@@ -1,3 +1,4 @@
+import { registerPunchWriter, PUNCH_WRITER_PRIORITY } from './punch-writer-lock.js';
 import { firebaseConfig } from './firebase-config.js';
 import { getApp, getApps, initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
 import {
@@ -317,12 +318,8 @@ async function saveOneClickPunch(action) {
   window.setTimeout(() => window.location.reload(), 900);
 }
 
-document.addEventListener('click', async (event) => {
-  const button = event.target.closest('.worker-action-btn');
-  if (!button || saving || !shouldUseOneClickFallback()) return;
-
-  event.preventDefault();
-  event.stopImmediatePropagation();
+registerPunchWriter('new-worker-first-punch-hotfix', PUNCH_WRITER_PRIORITY.NEW_WORKER_FALLBACK, async (_requestedAction, button) => {
+  if (saving || !shouldUseOneClickFallback()) return;
   saving = true;
   setButtonsDisabled(true);
 
@@ -337,7 +334,7 @@ document.addEventListener('click', async (event) => {
     saving = false;
     setButtonsDisabled(false);
   }
-}, true);
+}, () => shouldUseOneClickFallback());
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', installAgencyControls, { once: true });
