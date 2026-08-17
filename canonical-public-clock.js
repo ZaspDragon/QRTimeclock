@@ -1,3 +1,4 @@
+import { registerPunchWriter, PUNCH_WRITER_PRIORITY } from './punch-writer-lock.js';
 import { getApp, getApps, initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
 import {
   addDoc,
@@ -428,14 +429,9 @@ function installClickGuard() {
 
   // Register at capture phase before the older hotfix handlers. This makes this
   // module the single writer for public punch-button clicks.
-  document.addEventListener('click', async (event) => {
-    const button = event.target.closest?.('.worker-action-btn');
+  registerPunchWriter('canonical-public-clock', PUNCH_WRITER_PRIORITY.CANONICAL, async (_requestedAction, button) => {
     const workerCard = document.getElementById('workerCard');
-    if (!button || !workerCard || workerCard.classList.contains('hidden') || saving) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
+    if (!workerCard || workerCard.classList.contains('hidden') || saving) return;
     saving = true;
     disableButtons(true);
     const action = String(button.dataset.action || '');
@@ -451,7 +447,10 @@ function installClickGuard() {
       saving = false;
       disableButtons(false);
     }
-  }, true);
+  }, () => {
+    const workerCard = document.getElementById('workerCard');
+    return Boolean(workerCard) && !workerCard.classList.contains('hidden');
+  });
 }
 
 installClickGuard();
