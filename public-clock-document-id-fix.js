@@ -312,7 +312,12 @@ async function savePunch(action) {
     const previousState = stateSnapshot.exists() ? stateSnapshot.data() : null;
     const lastAction = String(previousState?.lastAction || '');
     const lastPunchAtMs = Number(previousState?.lastPunchAtMs || 0);
-    const stateIsStale = lastPunchAtMs > 0 && nowMs - lastPunchAtMs >= STALE_SHIFT_MS;
+    // Staleness is recovery for a forgotten prior shift, not permission to
+    // perform an arbitrary out-of-sequence action. Only a fresh Clock In may
+    // recover after the 18-hour threshold; the old punch remains untouched.
+    const stateIsStale = action === 'clock_in'
+      && lastPunchAtMs > 0
+      && nowMs - lastPunchAtMs >= STALE_SHIFT_MS;
 
     if (lastAction === action && !stateIsStale) {
       if (nowMs - lastPunchAtMs <= DUPLICATE_WINDOW_MS) return { duplicate: true };
