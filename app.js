@@ -544,7 +544,7 @@ function wireEvents() {
   els.workerNameInput?.addEventListener('keydown', handleAutocompleteKeydown);
   els.workerViewTimeBtn?.addEventListener('click', showWorkerTimeThisWeek);
   els.workerViewMoreTimeBtn?.addEventListener('click', showWorkerMoreTime);
-  els.workerTimeLookupBtn?.addEventListener('click', lookupPublicWorkerTimeRange);
+  els.workerTimeLookupBtn?.addEventListener('click', () => lookupPublicWorkerTimeRange());
   document.querySelectorAll('.worker-range-quick').forEach((button) => {
     button.addEventListener('click', () => {
       applyQuickDateRange(button.dataset.range, els.workerTimeFromInput, els.workerTimeToInput);

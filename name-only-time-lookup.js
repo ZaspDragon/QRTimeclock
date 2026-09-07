@@ -6,6 +6,9 @@ const VALID_SITES = new Set(['OH01', 'OHC']);
 const VALID_AGENCIES = new Set(['sterling_staffing', 'excel_staffing', 'lifestyle_staffing']);
 const VALID_ACTIONS = new Set(['clock_in', 'start_lunch', 'end_lunch', 'clock_out']);
 let lookupBusy = false;
+const LOOKUP_TIMEOUT_MS = 15000;
+let lookupGeneration = 0;
+let pendingController = null;
 
 const element = (id) => document.getElementById(id);
 
@@ -17,7 +20,8 @@ function selectedSite() {
 }
 
 function selectedAgency() {
-  const value = String(element('workerAgencySelect')?.value || localStorage.getItem('workerPunchAgency') || '').trim();
+  // Use the visible selection. Lookup must never read or write punch-device caches.
+  const value = String(element('workerAgencySelect')?.value || '').trim();
   return VALID_AGENCIES.has(value) ? value : '';
 }
 
@@ -27,11 +31,11 @@ function enteredName() {
     .replace(/\s+/g, ' ');
 }
 
-function setLookupStatus(message, isError = false) {
-  const status = element('workerLookupStatus');
-  if (!status) return;
-  status.textContent = message;
-  status.style.borderColor = isError ? 'rgba(255,90,90,.55)' : 'rgba(43,213,118,.4)';
+function clearSummary() {
+  ['workerWeekHoursValue', 'workerRegularHoursValue', 'workerOvertimeHoursValue', 'workerDaysWorkedValue'].forEach((id) => {
+    if (element(id)) element(id).textContent = '—';
+  });
+  element('workerTimeRangeResults')?.replaceChildren();
 }
 
 function setRangeStatus(message) {
@@ -72,7 +76,7 @@ function applyQuickRange(rangeName) {
     from.setDate(from.getDate() - 7);
     to.setDate(to.getDate() - 7);
   } else if (rangeName === 'last_2_weeks') {
-    from.setDate(from.getDate() - 14);
+    from.setDate(from.getDate() - 7);
   } else if (rangeName === 'this_month') {
     from = new Date(now.getFullYear(), now.getMonth(), 1);
     to = endOfDay(new Date(now.getFullYear(), now.getMonth() + 1, 0));
@@ -117,6 +121,7 @@ function summarizePunches(rows) {
   });
 
   let totalMinutes = 0;
+  const weeklyMinutes = new Map();
   const days = [];
   [...byDate.entries()].sort(([left], [right]) => left.localeCompare(right)).forEach(([dateKey, punches]) => {
     punches.sort((left, right) => left.timestampMs - right.timestampMs);
@@ -133,11 +138,14 @@ function summarizePunches(rows) {
       }
     });
 
+    const week = dateInputValue(mondayStart(new Date(`${dateKey}T12:00:00`)));
+    weeklyMinutes.set(week, (weeklyMinutes.get(week) || 0) + minutes);
     totalMinutes += minutes;
     days.push({ dateKey, minutes, actions });
   });
 
-  return { days, totalMinutes };
+  const regularMinutes = [...weeklyMinutes.values()].reduce((total, minutes) => total + Math.min(minutes, 40 * 60), 0);
+  return { days, totalMinutes, regularMinutes, overtimeMinutes: totalMinutes - regularMinutes };
 }
 
 function formatTime(value) {
@@ -158,8 +166,8 @@ function renderSummary(rows) {
   const hours = summary.totalMinutes / 60;
 
   if (element('workerWeekHoursValue')) element('workerWeekHoursValue').textContent = hours.toFixed(2);
-  if (element('workerRegularHoursValue')) element('workerRegularHoursValue').textContent = Math.min(hours, 40).toFixed(2);
-  if (element('workerOvertimeHoursValue')) element('workerOvertimeHoursValue').textContent = Math.max(0, hours - 40).toFixed(2);
+  if (element('workerRegularHoursValue')) element('workerRegularHoursValue').textContent = (summary.regularMinutes / 60).toFixed(2);
+  if (element('workerOvertimeHoursValue')) element('workerOvertimeHoursValue').textContent = (summary.overtimeMinutes / 60).toFixed(2);
   if (element('workerDaysWorkedValue')) element('workerDaysWorkedValue').textContent = String(summary.days.length);
 
   const results = element('workerTimeRangeResults');
@@ -196,49 +204,77 @@ function renderSummary(rows) {
   setRangeStatus(`Total Hours: ${hours.toFixed(2)} from ${summary.days.length} day(s).`);
 }
 
-async function requestTimeByName(mode, suppliedRange = null) {
+async function requestTimeByName(mode, suppliedRange = null, signal = undefined) {
   const name = enteredName();
   if (name.length < 2) throw new Error('Enter the worker name.');
   const agencyId = selectedAgency();
   if (!agencyId) throw new Error('Choose the worker staffing agency before viewing time.');
   const range = suppliedRange || readRange(mode);
+  // One extra hour accommodates a 31-day range crossing the autumn DST change.
+  if (range.toMs - range.fromMs > 31 * 86400000 + 3600000) {
+    throw new Error('Choose up to 31 days at a time.');
+  }
 
   const response = await fetch(LOOKUP_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     cache: 'no-store',
+    signal,
     body: JSON.stringify({ name, siteId: selectedSite(), agencyId, ...range }),
   });
 
   let payload = null;
   try { payload = await response.json(); } catch { payload = null; }
-  if (!response.ok) throw new Error(payload?.error || 'Time lookup failed.');
+  if (!response.ok) {
+    if (response.status === 404 && !payload?.error) {
+      throw new Error('The hours service is unavailable. Ask your manager to enable time lookup. You can still clock in and out.');
+    }
+    throw new Error(payload?.error || 'Could not load your hours. Please try again. You can still clock in and out.');
+  }
+  if (!payload || !Array.isArray(payload.punches) || payload.punches.some((row) =>
+    !row || !VALID_ACTIONS.has(row.action) || !Number.isFinite(row.timestampMs)
+    || (row.dateKey && !/^\d{4}-\d{2}-\d{2}$/.test(row.dateKey)))) {
+    throw new Error('The hours service returned an incomplete response. Please try again.');
+  }
   return payload;
 }
 
 async function handleLookup(mode, suppliedRange = null) {
   if (lookupBusy) return;
   lookupBusy = true;
+  const generation = ++lookupGeneration;
+  const controller = new AbortController();
+  pendingController = controller;
+  const timeout = window.setTimeout(() => controller.abort(), LOOKUP_TIMEOUT_MS);
   setLookupButtonsDisabled(true);
   element('workerMyTimePanel')?.classList.remove('hidden');
   element('workerFixPanel')?.classList.add('hidden');
   element('workerTimeRangeControls')?.classList.toggle('hidden', mode === 'week');
   setRangeStatus('Looking up saved time by name...');
+  clearSummary();
 
   try {
-    const payload = await requestTimeByName(mode, suppliedRange);
+    const payload = await requestTimeByName(mode, suppliedRange, controller.signal);
+    if (generation !== lookupGeneration) return;
     const workerName = String(payload?.worker?.name || enteredName());
-    if (element('workerNameValue')) element('workerNameValue').textContent = workerName;
-    setLookupStatus(`Found saved time for ${workerName}.`);
     renderSummary(payload?.punches || []);
+    setRangeStatus(`${workerName} · ${element('workerTimeRangeStatus')?.textContent || ''} Refreshed ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`);
   } catch (error) {
-    const message = error?.message || 'Time lookup failed.';
-    setLookupStatus(message, true);
+    if (generation !== lookupGeneration) return;
+    const message = error?.name === 'AbortError'
+      ? 'Loading hours timed out. Please try again. You can still clock in and out.'
+      : error instanceof TypeError
+        ? 'Could not connect to the hours service. Please try again. You can still clock in and out.'
+        : error?.message || 'Could not load your hours. Please try again.';
+    clearSummary();
     setRangeStatus(message);
-    renderSummary([]);
   } finally {
-    lookupBusy = false;
-    setLookupButtonsDisabled(false);
+    window.clearTimeout(timeout);
+    if (generation === lookupGeneration) {
+      pendingController = null;
+      lookupBusy = false;
+      setLookupButtonsDisabled(false);
+    }
   }
 }
 
@@ -250,6 +286,7 @@ document.addEventListener('click', (event) => {
 
   event.preventDefault();
   event.stopImmediatePropagation();
+  if (lookupBusy) return;
 
   if (quickButton) {
     handleLookup('custom', applyQuickRange(String(quickButton.dataset.range || 'this_week')));
@@ -261,5 +298,19 @@ document.addEventListener('click', (event) => {
     handleLookup('custom');
   }
 }, true);
+
+// A previous worker's in-flight response must not appear under a new selection.
+function invalidateLookup(event) {
+  if (!['workerNameInput', 'workerBranchSelect', 'workerAgencySelect', 'workerTimeFromInput', 'workerTimeToInput'].includes(event.target?.id)) return;
+  lookupGeneration += 1;
+  pendingController?.abort();
+  pendingController = null;
+  lookupBusy = false;
+  setLookupButtonsDisabled(false);
+  clearSummary();
+  setRangeStatus('Select My Hours or Look Up Past Time to refresh.');
+}
+document.addEventListener('input', invalidateLookup);
+document.addEventListener('change', invalidateLookup);
 
 console.info('[QRTimeclock] Corrected exact-name time lookup installed.');
