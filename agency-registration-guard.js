@@ -87,6 +87,7 @@ async function loadActiveExactNameMatches(name) {
   const searches = [
     query(employees, where('active', '==', true), where('nameKey', '==', key), limit(30)),
     query(employees, where('status', '==', 'active'), where('nameKey', '==', key), limit(30)),
+    // Compatibility for older active profiles whose nameKey format is inconsistent.
     query(employees, where('active', '==', true), limit(500)),
     query(employees, where('status', '==', 'active'), limit(500)),
   ];
@@ -191,6 +192,8 @@ window.addEventListener('click', async (event) => {
   const target = event.target instanceof Element ? event.target.closest(LOOKUP_SELECTOR) : null;
   if (!target || bypassNextLookup) return;
 
+  // Stop only the time-lookup click while registration is checked. Punch actions
+  // use different selectors and never pass through this guard.
   event.preventDefault();
   event.stopPropagation();
   event.stopImmediatePropagation();
@@ -231,6 +234,7 @@ window.addEventListener('click', async (event) => {
   }
 }, true);
 
+// Any identity/scope change invalidates the current registration check.
 function invalidateRegistration(event) {
   if (!['workerNameInput', 'workerBranchSelect', 'workerAgencySelect'].includes(event.target?.id)) return;
   checkGeneration += 1;

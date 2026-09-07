@@ -56,7 +56,7 @@ function buildWorkerHourShortcuts() {
   const description = panel.querySelector('.card-head p');
   if (heading) heading.textContent = 'My Hours and Punches';
   if (description) {
-    description.textContent = 'See today, last week, all recorded hours, or choose your own dates. This is read-only and cannot change a punch.';
+    description.textContent = 'See today, last week, this month, or choose up to 31 days. This is read-only and cannot change a punch.';
   }
 
   const shortcuts = document.createElement('div');
@@ -79,11 +79,10 @@ function buildWorkerHourShortcuts() {
       },
     },
     {
-      label: 'Overall Hours',
+      label: 'This Month',
       getDates() {
-        // Safely includes every record created by this app while keeping the
-        // existing employee identity and branch/agency filters in control.
-        return [new Date(2020, 0, 1), new Date()];
+        const today = new Date();
+        return [new Date(today.getFullYear(), today.getMonth(), 1), today];
       },
     },
   ];

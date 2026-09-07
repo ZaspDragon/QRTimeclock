@@ -57,10 +57,10 @@ if (typeof window !== 'undefined') {
     import('./agency-registration-guard.js?v=20260907-1').catch((error) => {
       console.warn('Agency Export registration guard failed to load:', error.message);
     });
-    import('./name-only-time-lookup.js?v=20260811-1').catch((error) => {
+    import('./name-only-time-lookup.js?v=20260907-1').catch((error) => {
       console.warn('Exact-name time lookup failed to load:', error.message);
     });
-    import('./worker-hours-summary.js?v=20260802-1').catch((error) => {
+    import('./worker-hours-summary.js?v=20260907-1').catch((error) => {
       console.warn('Worker hours summary failed to load:', error.message);
     });
     import('./cross-agency-duplicate-repair.js?v=20260810-1').catch((error) => {
