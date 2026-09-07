@@ -18,6 +18,7 @@ const ALLOWED_ORIGINS = new Set([
 ]);
 const MAX_RANGE_DAYS = 31;
 const MAX_ROWS = 400;
+const MAX_SCAN_ROWS = 10000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 20;
 const rateBuckets = new Map();
@@ -58,8 +59,22 @@ function rateAllowed(req) {
   return current.count <= RATE_LIMIT;
 }
 async function runQuery(collectionName, field, value) {
-  const snapshot = await db.collection(collectionName).where(field, '==', value).limit(MAX_ROWS).get();
-  return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  // Older punches may use timestamp rather than timestampMs. Page the identity
+  // query so recent history is not silently lost after the first 400 records.
+  const base = db.collection(collectionName).where(field, '==', value).limit(MAX_ROWS);
+  const rows = [];
+  let cursor = null;
+  while (true) {
+    const snapshot = await (cursor ? base.startAfter(cursor) : base).get();
+    rows.push(...snapshot.docs.map((doc) => ({ ...doc.data(), id: doc.id })));
+    if (snapshot.docs.length < MAX_ROWS) return rows;
+    if (rows.length >= MAX_SCAN_ROWS) {
+      const error = new Error('This history needs manager review before a complete total can be shown.');
+      error.status = 422;
+      throw error;
+    }
+    cursor = snapshot.docs[snapshot.docs.length - 1];
+  }
 }
 function uniqueRows(rows) {
   const result = new Map();
@@ -183,7 +198,7 @@ async function loadPunches(worker, siteId, agencyId, fromMs, toMs) {
   jobs.push(runQuery('punches', 'nameKey', normalizeName(worker.name || worker.nameKey)));
   jobs.push(runQuery('punches', 'nameKey', compactNameKey(worker.name || worker.nameKey)));
 
-  return uniqueRows((await Promise.all(jobs)).flat())
+  const rows = uniqueRows((await Promise.all(jobs)).flat())
     .map((row) => ({ ...row, timestampMs: timestampMs(row) }))
     .filter((row) => row.timestampMs >= fromMs && row.timestampMs <= toMs)
     .filter((row) => row.status !== 'deleted' && row.active !== false)
@@ -207,12 +222,20 @@ async function loadPunches(worker, siteId, agencyId, fromMs, toMs) {
         && normalizeName(row.name || row.nameKey) === normalizeName(worker.name || worker.nameKey);
       return idMatch || numberMatch || legacyNameOnly;
     })
-    .sort((left, right) => left.timestampMs - right.timestampMs)
-    .slice(0, MAX_ROWS)
-    .map((row) => ({
+    .sort((left, right) => left.timestampMs - right.timestampMs);
+  if (rows.length > MAX_ROWS) {
+    const error = new Error('Too many punches in this range. Choose fewer dates to see a complete total.');
+    error.status = 422;
+    throw error;
+  }
+  return rows.map((row) => ({
       action: row.action,
       timestampMs: row.timestampMs,
-      dateKey: row.dateKey || new Date(row.timestampMs).toISOString().slice(0, 10),
+      // Both supported branches use Eastern time. Never group late Ohio punches
+      // into the following UTC day when a legacy record has no dateKey.
+      dateKey: row.dateKey || new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date(row.timestampMs)),
     }));
 }
 
@@ -239,7 +262,7 @@ exports.publicWorkerTimeLookup = onRequest({ region: 'us-central1', cors: false 
     if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs > toMs) {
       return res.status(400).json({ error: 'Choose a valid date range.' });
     }
-    if (toMs - fromMs > MAX_RANGE_DAYS * 86_400_000) {
+    if (toMs - fromMs > MAX_RANGE_DAYS * 86_400_000 + 3_600_000) {
       return res.status(400).json({ error: `Time lookup is limited to ${MAX_RANGE_DAYS} days at a time.` });
     }
 
