@@ -54,6 +54,9 @@ if (typeof window !== 'undefined') {
     import('./temp-self-service-compat.js?v=20260726-1').catch((error) => {
       console.warn('Temp worker self-service compatibility failed to load:', error.message);
     });
+    import('./agency-registration-guard.js?v=20260907-1').catch((error) => {
+      console.warn('Agency Export registration guard failed to load:', error.message);
+    });
     import('./name-only-time-lookup.js?v=20260811-1').catch((error) => {
       console.warn('Exact-name time lookup failed to load:', error.message);
     });
